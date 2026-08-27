@@ -2,6 +2,9 @@ import type { Scene } from '../render/geometry.ts';
 
 export type SnapKind = 'endpoint' | 'center' | 'intersection' | 'midpoint' | 'online' | 'free';
 
+/** 水平・垂直の拘束方向 */
+export type Axis = 'horizontal' | 'vertical';
+
 export interface SnapResult {
   x: number;
   y: number;
@@ -294,6 +297,98 @@ export class SnapIndex {
           const near = segDist2(pos, i, x, y) <= segDist2(pos, j, x, y) ? gi : gj;
           const sameScale = this.scene.scales[gi] === this.scene.scales[gj];
           consider(p[0], p[1], 'intersection', near, !sameScale);
+        }
+      }
+    }
+
+    return best;
+  }
+
+  /**
+   * 基準点から水平（または垂直）に伸ばした線の上だけで吸着先を探す。
+   * 「この面から真横に、あの壁まで」のような測り方をするための経路で、
+   * 拘束線と図形が交わる位置、拘束線の近くにある点、の順に優先する。
+   */
+  queryOnAxis(
+    originX: number, originY: number, axis: Axis,
+    targetX: number, targetY: number, radius: number,
+  ): SnapResult {
+    const horizontal = axis === 'horizontal';
+    // 拘束線に落とした位置。ここが基準になる
+    const px = horizontal ? targetX : originX;
+    const py = horizontal ? originY : targetY;
+
+    const pos = this.scene.linePos;
+    const group = this.scene.lineGroup;
+
+    let best: SnapResult = { x: px, y: py, kind: 'free', glayer: 0 };
+    let bestScore = Infinity;
+
+    /** 拘束線に沿った向きでの隔たり（この距離が近いほど良い） */
+    const along = (x: number, y: number): number =>
+      Math.abs(horizontal ? x - targetX : y - targetY);
+
+    const consider = (x: number, y: number, kind: SnapKind, glayer: number, ambiguous = false): void => {
+      const d = along(x, y);
+      if (d > radius) return;
+      const score = d * WEIGHT[kind];
+      if (score < bestScore) {
+        bestScore = score;
+        best = ambiguous
+          ? { x, y, kind, glayer, ambiguousGroup: true }
+          : { x, y, kind, glayer };
+      }
+    };
+
+    for (const i of this.nearbySegments(px, py, radius, 400)) {
+      const ax = pos[i * 4], ay = pos[i * 4 + 1];
+      const bx = pos[i * 4 + 2], by = pos[i * 4 + 3];
+
+      if (horizontal) {
+        // 拘束線と平行な線分とは交点が定まらないので、端点だけを見る
+        if (ay === by) {
+          if (Math.abs(ay - originY) <= 1e-9) {
+            consider(ax, ay, 'endpoint', group[i]);
+            consider(bx, by, 'endpoint', group[i]);
+          }
+          continue;
+        }
+        if ((ay - originY) * (by - originY) > 0) continue;
+        const t = (originY - ay) / (by - ay);
+        consider(ax + (bx - ax) * t, originY, 'intersection', group[i]);
+      } else {
+        if (ax === bx) {
+          if (Math.abs(ax - originX) <= 1e-9) {
+            consider(ax, ay, 'endpoint', group[i]);
+            consider(bx, by, 'endpoint', group[i]);
+          }
+          continue;
+        }
+        if ((ax - originX) * (bx - originX) > 0) continue;
+        const t = (originX - ax) / (bx - ax);
+        consider(originX, ay + (by - ay) * t, 'intersection', group[i]);
+      }
+    }
+
+    // 円の中心や実点は、拘束線の近くにあれば拾う（真上に乗ることは稀なため）
+    const pts = this.scene.snapPoint;
+    const pg = this.scene.snapPointGroup;
+    const near = radius * 0.25;
+    const gx0 = this.clampGx(Math.floor((px - radius - this.minX) / this.cell));
+    const gx1 = this.clampGx(Math.floor((px + radius - this.minX) / this.cell));
+    const gy0 = this.clampGy(Math.floor((py - radius - this.minY) / this.cell));
+    const gy1 = this.clampGy(Math.floor((py + radius - this.minY) / this.cell));
+    for (let gy = gy0; gy <= gy1; gy++) {
+      for (let gx = gx0; gx <= gx1; gx++) {
+        const c = gy * this.gw + gx;
+        for (let k = this.pOffsets[c]; k < this.pOffsets[c + 1]; k++) {
+          const i = this.pItems[k];
+          const x = pts[i * 2];
+          const y = pts[i * 2 + 1];
+          const off = horizontal ? Math.abs(y - originY) : Math.abs(x - originX);
+          if (off > near) continue;
+          // 拘束線上に落として使う
+          consider(horizontal ? x : originX, horizontal ? originY : y, 'center', pg[i]);
         }
       }
     }

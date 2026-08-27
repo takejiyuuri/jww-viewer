@@ -156,20 +156,21 @@ html, body {
   left: 0;
   right: 0;
   bottom: 0;
-  padding: 8px 10px calc(var(--safe-bottom) + 8px);
+  padding: 8px 8px calc(var(--safe-bottom) + 8px);
   display: flex;
-  gap: 6px;
+  gap: 5px;
   background: linear-gradient(0deg, rgba(11, 12, 16, 0.92), rgba(11, 12, 16, 0));
 }
 
 .tool {
   flex: 1;
+  min-width: 0;
   appearance: none;
   border: 1px solid var(--line);
   background: var(--panel);
   color: var(--fg);
   border-radius: 12px;
-  padding: 11px 4px;
+  padding: 11px 2px;
   font-size: 13px;
   font-weight: 600;
   font-family: inherit;

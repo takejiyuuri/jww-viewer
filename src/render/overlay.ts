@@ -1,6 +1,6 @@
 import type { View } from './renderer.ts';
 import type { MeasurePoint } from '../measure/measure.ts';
-import type { SnapResult } from '../measure/snap.ts';
+import type { Axis, SnapResult } from '../measure/snap.ts';
 import { SNAP_LABEL, formatLength } from '../measure/measure.ts';
 
 export interface MagnifierBox {
@@ -12,6 +12,10 @@ export interface MagnifierBox {
 
 export interface OverlayState {
   points: MeasurePoint[];
+  /** 水平・垂直に拘束しているときの基準点と向き */
+  constraint: { x: number; y: number; axis: Axis } | null;
+  /** つまんで動かしている点の番号 */
+  activeIndex: number | null;
   /** 長押し中のスナップ候補 */
   preview: SnapResult | null;
   /** 長押し中の指の位置（CSS ピクセル） */
@@ -69,6 +73,24 @@ export class Overlay {
 
     const pts = s.points.map((p) => this.toScreen(view, p.x, p.y));
 
+    // 直交拘束の基準線。この線の上だけを動くことを示す
+    if (s.constraint) {
+      const [cx, cy] = this.toScreen(view, s.constraint.x, s.constraint.y);
+      ctx.strokeStyle = 'rgba(53, 208, 127, 0.38)';
+      ctx.lineWidth = 1 * k;
+      ctx.setLineDash([9 * k, 7 * k]);
+      ctx.beginPath();
+      if (s.constraint.axis === 'horizontal') {
+        ctx.moveTo(0, cy);
+        ctx.lineTo(this.w, cy);
+      } else {
+        ctx.moveTo(cx, 0);
+        ctx.lineTo(cx, this.h);
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
     // 測線
     if (pts.length >= 2) {
       ctx.strokeStyle = ACCENT_SOFT;
@@ -98,9 +120,10 @@ export class Overlay {
       }
     }
 
-    // 確定した点
+    // 確定した点。動かしている点は大きく描く
     for (let i = 0; i < pts.length; i++) {
-      this.marker(pts[i][0], pts[i][1], k, i === pts.length - 1);
+      const strong = i === s.activeIndex || (s.activeIndex === null && i === pts.length - 1);
+      this.marker(pts[i][0], pts[i][1], k, strong);
     }
 
     // 長押し中のプレビュー

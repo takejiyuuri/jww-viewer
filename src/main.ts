@@ -3,7 +3,7 @@ import { TextLayer } from './render/textlayer.ts';
 import { Overlay, type MagnifierBox, type OverlayState } from './render/overlay.ts';
 import type { Scene } from './render/geometry.ts';
 import type { LoadResponse, LoadedInfo } from './jww/worker.ts';
-import { SnapIndex, type SnapResult } from './measure/snap.ts';
+import { SnapIndex, type Axis, type SnapResult } from './measure/snap.ts';
 import {
   SNAP_LABEL, formatArea, formatLength, measureArea, measureLengths,
   type MeasurePoint,
@@ -39,6 +39,12 @@ class App {
   private cssH = 0;
 
   private points: MeasurePoint[] = [];
+  /** 水平・垂直に拘束して測る */
+  private ortho = true;
+  /** つまんで動かしている計測点。null なら新しい点を置く */
+  private dragIndex: number | null = null;
+  /** 拘束の基準点と向き。表示用に覚えておく */
+  private constraint: { x: number; y: number; axis: Axis } | null = null;
   private mode: Mode = 'distance';
   private measureScale = 1;
   private manualScale = false;
@@ -255,6 +261,8 @@ class App {
 
     const state: OverlayState = {
       points: this.points,
+      constraint: this.holding ? this.constraint : null,
+      activeIndex: this.dragIndex,
       preview: this.preview,
       cursor: this.cursor,
       magnifier: this.magnifier,
@@ -303,7 +311,12 @@ class App {
   }
 
   private onDown(e: PointerEvent): void {
-    (e.target as Element).setPointerCapture?.(e.pointerId);
+    try {
+      // 捕捉できないポインタもある。ここで例外が出ると以降の処理が丸ごと止まる
+      (e.target as Element).setPointerCapture?.(e.pointerId);
+    } catch {
+      // 捕捉なしでも操作は続けられる
+    }
     this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
     this.maxPointers = Math.max(this.maxPointers, this.pointers.size);
@@ -312,6 +325,14 @@ class App {
       this.downAt = performance.now();
       this.moved = 0;
       clearTimeout(this.holdTimer);
+
+      // 置いた点をつまんだなら、その場で動かし始める
+      const grabbed = this.hitPoint(e.clientX, e.clientY);
+      if (grabbed !== null) {
+        this.dragIndex = grabbed;
+        this.startHold(e.clientX, e.clientY);
+        return;
+      }
       this.holdTimer = window.setTimeout(() => this.startHold(e.clientX, e.clientY), 260);
     } else {
       this.cancelHold();
@@ -368,8 +389,12 @@ class App {
 
     if (this.holding) {
       const hit = this.preview;
+      const index = this.dragIndex;
       this.cancelHold();
-      if (hit) this.addPoint(hit);
+      if (hit) {
+        if (index !== null) this.movePoint(index, hit);
+        else this.addPoint(hit);
+      }
       this.finishStroke();
       this.requestDraw(true);
       return;
@@ -379,7 +404,7 @@ class App {
     const quick = performance.now() - this.downAt < 400;
     // 2 本以上触れていた操作はピンチなので、点を打たない
     if (this.pointers.size === 0 && this.maxPointers === 1 && quick && this.moved < 9) {
-      const hit = this.snapAt(e.clientX, e.clientY);
+      const hit = this.snapFor(e.clientX, e.clientY, null);
       if (hit) this.addPoint(hit);
     }
     this.finishStroke();
@@ -449,7 +474,7 @@ class App {
 
   private updateHold(cssX: number, cssY: number): void {
     this.cursor = { x: cssX, y: cssY };
-    this.preview = this.snapAt(cssX, cssY, 26);
+    this.preview = this.snapFor(cssX, cssY, this.dragIndex, 26);
     this.magnifier = this.placeMagnifier(cssX, cssY);
   }
 
@@ -496,26 +521,82 @@ class App {
     this.preview = null;
     this.cursor = null;
     this.magnifier = null;
+    this.constraint = null;
+    this.dragIndex = null;
   }
 
   // ---------- 計測 ----------
 
-  private snapAt(cssX: number, cssY: number, radiusCssPx = 22): SnapResult | null {
-    if (!this.snapIndex) return null;
-    const w = this.toWorld(cssX, cssY);
-    return this.snapIndex.query(w.x, w.y, radiusCssPx * this.worldPerCssPx());
+  /**
+   * 拘束の基準になる点。
+   * 新しく置くときは直前の点、既にある点を動かすときはその手前（無ければ次）の点。
+   */
+  private anchorFor(index: number | null): MeasurePoint | null {
+    if (index === null) return this.points[this.points.length - 1] ?? null;
+    return this.points[index - 1] ?? this.points[index + 1] ?? null;
   }
 
-  private addPoint(hit: SnapResult): void {
+  /**
+   * 指の位置から吸着先を決める。
+   * 直交が入っているときは基準点から水平／垂直に伸ばした線の上だけを探し、
+   * その線が図形と交わるところに吸着する。
+   */
+  private snapFor(cssX: number, cssY: number, index: number | null, radiusCssPx = 22): SnapResult | null {
+    if (!this.snapIndex) return null;
+    const w = this.toWorld(cssX, cssY);
+    const radius = radiusCssPx * this.worldPerCssPx();
+
+    const anchor = this.ortho ? this.anchorFor(index) : null;
+    if (!anchor) {
+      this.constraint = null;
+      return this.snapIndex.query(w.x, w.y, radius);
+    }
+
+    // 指の向きが横寄りか縦寄りかで、どちらに拘束するかを決める
+    const axis: Axis = Math.abs(w.x - anchor.x) >= Math.abs(w.y - anchor.y) ? 'horizontal' : 'vertical';
+    this.constraint = { x: anchor.x, y: anchor.y, axis };
+    return this.snapIndex.queryOnAxis(anchor.x, anchor.y, axis, w.x, w.y, radius);
+  }
+
+  /** 指を置いた場所に既にある計測点があればその番号 */
+  private hitPoint(cssX: number, cssY: number): number | null {
+    if (this.points.length === 0) return null;
+    const w = this.toWorld(cssX, cssY);
+    const r = 24 * this.worldPerCssPx();
+    let best: number | null = null;
+    let bestD = Infinity;
+    for (let i = 0; i < this.points.length; i++) {
+      const d = Math.hypot(this.points[i].x - w.x, this.points[i].y - w.y);
+      if (d <= r && d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    }
+    return best;
+  }
+
+  /** 既にある計測点を動かす */
+  private movePoint(index: number, hit: SnapResult): void {
+    if (index < 0 || index >= this.points.length) return;
+    this.points[index] = this.toMeasurePoint(hit);
+    this.updateReadout();
+    if (navigator.vibrate) navigator.vibrate(4);
+  }
+
+  private toMeasurePoint(hit: SnapResult): MeasurePoint {
     // 縮尺が決め手を欠く点（何もない場所、縮尺の違う 2 本の交点）は null にして、
     // 区間ごとの計算で取り違えないようにする
     const known = hit.kind !== 'free' && !hit.ambiguousGroup && this.scene;
     const scale = known ? (this.scene!.scales[hit.glayer] || null) : null;
-    const p: MeasurePoint = { x: hit.x, y: hit.y, glayer: hit.glayer, kind: hit.kind, scale };
+    return { x: hit.x, y: hit.y, glayer: hit.glayer, kind: hit.kind, scale };
+  }
+
+  private addPoint(hit: SnapResult): void {
+    const p = this.toMeasurePoint(hit);
 
     // 最初の点が乗ったレイヤグループの縮尺を既定にする
-    if (!this.manualScale && this.points.length === 0 && scale != null) {
-      this.measureScale = scale;
+    if (!this.manualScale && this.points.length === 0 && p.scale != null) {
+      this.measureScale = p.scale;
       this.updateScaleButton();
     }
     this.points.push(p);
@@ -563,9 +644,22 @@ class App {
     const shown = this.points[1].scale ?? this.points[0].scale ?? this.measureScale;
     value.textContent = formatLength(segs[segs.length - 1]);
     sub.textContent = `1/${formatScale(m.mixed ? this.measureScale : shown)}`;
-    detail.textContent = (segs.length > 1
-      ? `合計 ${formatLength(total)} ／ ${segs.map((s) => formatLength(s)).join(' + ')}`
-      : `${SNAP_LABEL[this.points[0].kind]} → ${SNAP_LABEL[this.points[1].kind]}`) + warn;
+
+    let text: string;
+    if (segs.length > 1) {
+      text = `合計 ${formatLength(total)} ／ ${segs.map((s) => formatLength(s)).join(' + ')}`;
+    } else {
+      const a = this.points[0];
+      const b = this.points[1];
+      const scale = m.scales[0];
+      const dx = Math.abs(b.x - a.x) * scale;
+      const dy = Math.abs(b.y - a.y) * scale;
+      // 斜めに測ったときだけ、水平と垂直の内訳を添える
+      text = dx > 1e-6 && dy > 1e-6
+        ? `水平 ${formatLength(dx)} ／ 垂直 ${formatLength(dy)}`
+        : `${SNAP_LABEL[a.kind]} → ${SNAP_LABEL[b.kind]}`;
+    }
+    detail.textContent = text + warn;
   }
 
   private updateScaleButton(): void {
@@ -605,6 +699,13 @@ class App {
       btn.textContent = this.mode === 'distance' ? '距離' : '面積';
       btn.classList.toggle('on', this.mode === 'area');
       this.updateReadout();
+      this.requestDraw();
+    });
+
+    el('btn-ortho').addEventListener('click', () => {
+      this.ortho = !this.ortho;
+      el('btn-ortho').classList.toggle('on', this.ortho);
+      this.hint(this.ortho ? '水平・垂直に測ります' : '自由な向きで測ります');
       this.requestDraw();
     });
 

@@ -70,6 +70,8 @@ export function segmentLengths(points: MeasurePoint[]): number[] {
 export interface Measured {
   /** 区間ごとの実寸(mm) */
   segments: number[];
+  /** 区間ごとに使った縮尺の分母 */
+  scales: number[];
   total: number;
   /** 縮尺の異なるレイヤグループをまたいでいる */
   mixed: boolean;
@@ -81,6 +83,7 @@ export interface Measured {
  */
 export function measureLengths(points: MeasurePoint[], fallback: number): Measured {
   const segments: number[] = [];
+  const scales: number[] = [];
   let mixed = false;
   for (let i = 1; i < points.length; i++) {
     const a = points[i - 1];
@@ -98,8 +101,9 @@ export function measureLengths(points: MeasurePoint[], fallback: number): Measur
       scale = a.scale ?? b.scale ?? fallback;
     }
     segments.push(raw * scale);
+    scales.push(scale);
   }
-  return { segments, total: segments.reduce((x, y) => x + y, 0), mixed };
+  return { segments, scales, total: segments.reduce((x, y) => x + y, 0), mixed };
 }
 
 /** 多角形の面積を実寸(mm2)で返す。全点が同じ縮尺でなければ mixed になる */
