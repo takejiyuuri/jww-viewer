@@ -23,7 +23,6 @@ export interface OverlayState {
   magnifier: MagnifierBox | null;
   /** 計測に使う縮尺分母 */
   scale: number;
-  closed: boolean;
 }
 
 const ACCENT = '#35d07f';
@@ -99,13 +98,7 @@ export class Overlay {
       ctx.beginPath();
       ctx.moveTo(pts[0][0], pts[0][1]);
       for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
-      if (s.closed && pts.length >= 3) ctx.closePath();
       ctx.stroke();
-
-      if (s.closed && pts.length >= 3) {
-        ctx.fillStyle = 'rgba(53, 208, 127, 0.16)';
-        ctx.fill();
-      }
     }
 
     // 区間の長さ

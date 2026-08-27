@@ -90,13 +90,11 @@ await page.evaluate(([x, y]) => {
 }, [cx - box.x, cy - box.y]);
 await page.waitForTimeout(300);
 
-// 面積モード
-await page.click('#btn-mode');
-await page.waitForTimeout(200);
+// 3 点目を足して連続計測にする
 await page.touchscreen.tap(cx, cy + 90);
 await page.waitForTimeout(400);
-await page.screenshot({ path: path.join(outDir, 'e2e-5-area.png') });
-const areaValue = await page.textContent('#readout-value');
+await page.screenshot({ path: path.join(outDir, 'e2e-5-multi.png') });
+const multiDetail = await page.textContent('#readout-detail');
 
 // 描画性能
 const fps = await page.evaluate(async () => {
@@ -116,7 +114,7 @@ const fps = await page.evaluate(async () => {
 
 console.log(JSON.stringify({
   title, gl, distinctColorsInCenter: painted, held,
-  距離: readout, 内訳: detail, 面積: areaValue,
+  距離: readout, 内訳: detail, 連続計測: multiDetail,
   秒間フレーム: fps,
   errors,
 }, null, 2));

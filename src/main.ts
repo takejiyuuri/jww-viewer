@@ -5,12 +5,10 @@ import type { Scene } from './render/geometry.ts';
 import type { LoadResponse, LoadedInfo } from './jww/worker.ts';
 import { SnapIndex, type Axis, type SnapResult } from './measure/snap.ts';
 import {
-  SNAP_LABEL, formatArea, formatLength, measureArea, measureLengths,
+  SNAP_LABEL, formatLength, measureLengths,
   type MeasurePoint,
 } from './measure/measure.ts';
 import { loadLast, saveLast } from './storage.ts';
-
-type Mode = 'distance' | 'area';
 
 /** ルーペの拡大率 */
 const MAGNIFY = 5;
@@ -45,7 +43,6 @@ class App {
   private dragIndex: number | null = null;
   /** 拘束の基準点と向き。表示用に覚えておく */
   private constraint: { x: number; y: number; axis: Axis } | null = null;
-  private mode: Mode = 'distance';
   private measureScale = 1;
   private manualScale = false;
 
@@ -267,7 +264,6 @@ class App {
       cursor: this.cursor,
       magnifier: this.magnifier,
       scale: this.measureScale,
-      closed: this.mode === 'area' && this.points.length >= 3,
     };
     this.overlay.render(this.view, state);
   }
@@ -621,19 +617,6 @@ class App {
     const total = m.total;
     const warn = m.mixed ? '　※縮尺の違う図をまたいでいます' : '';
 
-    if (this.mode === 'area') {
-      const a = measureArea(this.points, this.measureScale);
-      const first = this.points[0];
-      const last = this.points[this.points.length - 1];
-      const closing = measureLengths([last, first], this.measureScale).total;
-      value.textContent = this.points.length >= 3 ? formatArea(a.area) : '—';
-      sub.textContent = `${this.points.length} 点`;
-      detail.textContent = this.points.length >= 3
-        ? `周長 ${formatLength(total + closing)}${a.mixed ? '　※縮尺の違う図をまたいでいます' : ''}`
-        : '3 点以上をタップしてください';
-      return;
-    }
-
     if (this.points.length === 1) {
       value.textContent = '—';
       sub.textContent = SNAP_LABEL[this.points[0].kind];
@@ -691,15 +674,6 @@ class App {
       if (!f) return;
       f.arrayBuffer().then((buf) => this.load(buf, f.name)).catch(() => this.fail('ファイルを読み取れませんでした'));
       file.value = '';
-    });
-
-    el('btn-mode').addEventListener('click', () => {
-      this.mode = this.mode === 'distance' ? 'area' : 'distance';
-      const btn = el('btn-mode');
-      btn.textContent = this.mode === 'distance' ? '距離' : '面積';
-      btn.classList.toggle('on', this.mode === 'area');
-      this.updateReadout();
-      this.requestDraw();
     });
 
     el('btn-ortho').addEventListener('click', () => {
