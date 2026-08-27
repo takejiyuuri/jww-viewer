@@ -21,6 +21,8 @@ export interface OverlayState {
   /** 長押し中の指の位置（CSS ピクセル） */
   cursor: { x: number; y: number } | null;
   magnifier: MagnifierBox | null;
+  /** 拡大鏡が映している図面座標と倍率（指の位置が中心） */
+  magnifierView: { x: number; y: number; zoom: number; dpr: number } | null;
   /** 計測に使う縮尺分母 */
   scale: number;
 }
@@ -71,6 +73,17 @@ export class Overlay {
     ctx.lineJoin = 'round';
 
     const pts = s.points.map((p) => this.toScreen(view, p.x, p.y));
+
+    // 拡大鏡が出ている間は、その中に測線やラベルを描き込まない。
+    // 拡大して見たいのは図面そのものなので、上に重ねると邪魔になる。
+    const mag = s.magnifier;
+    if (mag) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, this.w, this.h);
+      ctx.rect(mag.x * k, mag.y * k, mag.size * k, mag.size * k);
+      ctx.clip('evenodd');
+    }
 
     // 直交拘束の基準線。この線の上だけを動くことを示す
     if (s.constraint) {
@@ -139,6 +152,8 @@ export class Overlay {
       }
     }
 
+    if (mag) ctx.restore();
+
     // ルーペ
     if (s.magnifier) {
       const m = s.magnifier;
@@ -150,26 +165,53 @@ export class Overlay {
       this.roundRect(x, y, size, size, 14 * k);
       ctx.stroke();
 
-      // 中央の十字（スナップ位置）。図面の線に紛れないよう縁取りを付ける
       const cx = x + size / 2;
       const cy = y + size / 2;
-      const cross = (): void => {
+
+      // 中心は指が触れている場所。吸着先の印より控えめに、けれど見える程度に
+      ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+      ctx.lineWidth = 3.2 * k;
+      const center = () => {
         ctx.beginPath();
-        ctx.moveTo(cx - 14 * k, cy);
-        ctx.lineTo(cx + 14 * k, cy);
-        ctx.moveTo(cx, cy - 14 * k);
-        ctx.lineTo(cx, cy + 14 * k);
+        ctx.moveTo(cx - 10 * k, cy);
+        ctx.lineTo(cx + 10 * k, cy);
+        ctx.moveTo(cx, cy - 10 * k);
+        ctx.lineTo(cx, cy + 10 * k);
         ctx.stroke();
       };
-      ctx.strokeStyle = 'rgba(0,0,0,0.85)';
-      ctx.lineWidth = 4.5 * k;
-      cross();
-      ctx.strokeStyle = ACCENT;
-      ctx.lineWidth = 1.5 * k;
-      cross();
-      ctx.beginPath();
-      ctx.arc(cx, cy, 5 * k, 0, Math.PI * 2);
-      ctx.stroke();
+      center();
+      ctx.strokeStyle = 'rgba(255,255,255,0.72)';
+      ctx.lineWidth = 1.2 * k;
+      center();
+
+      // 吸着先は拡大鏡の中の該当する場所に描く。
+      // 中心を吸着先に合わせてしまうと、吸着先が変わるたび景色ごと飛んで見づらい。
+      const mv = s.magnifierView;
+      if (mv && s.preview) {
+        const sx = cx + ((s.preview.x - mv.x) * mv.zoom * k) / mv.dpr;
+        const sy = cy - ((s.preview.y - mv.y) * mv.zoom * k) / mv.dpr;
+        const inside =
+          sx > x + 6 * k && sx < x + size - 6 * k && sy > y + 6 * k && sy < y + size - 6 * k;
+        if (inside) {
+          const cross = (): void => {
+            ctx.beginPath();
+            ctx.moveTo(sx - 13 * k, sy);
+            ctx.lineTo(sx + 13 * k, sy);
+            ctx.moveTo(sx, sy - 13 * k);
+            ctx.lineTo(sx, sy + 13 * k);
+            ctx.stroke();
+          };
+          ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+          ctx.lineWidth = 4.5 * k;
+          cross();
+          ctx.strokeStyle = ACCENT;
+          ctx.lineWidth = 1.6 * k;
+          cross();
+          ctx.beginPath();
+          ctx.arc(sx, sy, 5.5 * k, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
     }
   }
 

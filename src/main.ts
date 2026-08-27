@@ -10,8 +10,15 @@ import {
 } from './measure/measure.ts';
 import { loadLast, saveLast } from './storage.ts';
 
-/** ルーペの拡大率 */
-const MAGNIFY = 5;
+/** 吸着先を探す半径（CSS ピクセル） */
+const SNAP_RADIUS = 22;
+
+/**
+ * ルーペの拡大率。
+ * 吸着先は指から最大 SNAP_RADIUS 離れるので、それを拡大しても
+ * ルーペの中に収まる倍率にしておく（一辺 170px なら 85 ÷ 22 ≒ 3.8）。
+ */
+const MAGNIFY = 3.5;
 
 const PAPER_NAMES = ['A0', 'A1', 'A2', 'A3', 'A4', '', '', '', '2A', '3A', '4A', '5A', '10m', '50m', '100m'];
 
@@ -240,14 +247,19 @@ class App {
     if (!this.scene) return;
     this.renderer.draw(this.view, this.dpr);
 
-    if (this.magnifier && this.preview) {
+    // ルーペの中心は指が触れている場所。吸着先を中心にすると、
+    // 吸着先が別の図形に移った瞬間に景色ごと大きく飛んでしまう。
+    const magView = this.magnifier && this.cursor
+      ? { ...this.toWorld(this.cursor.x, this.cursor.y), zoom: this.view.zoom * MAGNIFY }
+      : null;
+
+    if (this.magnifier && magView) {
       const m = this.magnifier;
       const k = this.dpr;
       const size = m.size * k;
       const glY = this.cssH * k - (m.y + m.size) * k;
-      const zoom = this.view.zoom * MAGNIFY;
       this.renderer.drawInset(
-        { cx: this.preview.x, cy: this.preview.y, zoom },
+        { cx: magView.x, cy: magView.y, zoom: magView.zoom },
         Math.round(m.x * k), Math.round(glY), Math.round(size), Math.round(size),
         this.dpr,
       );
@@ -263,6 +275,7 @@ class App {
       preview: this.preview,
       cursor: this.cursor,
       magnifier: this.magnifier,
+      magnifierView: magView ? { ...magView, dpr: this.dpr } : null,
       scale: this.measureScale,
     };
     this.overlay.render(this.view, state);
@@ -470,7 +483,7 @@ class App {
 
   private updateHold(cssX: number, cssY: number): void {
     this.cursor = { x: cssX, y: cssY };
-    this.preview = this.snapFor(cssX, cssY, this.dragIndex, 26);
+    this.preview = this.snapFor(cssX, cssY, this.dragIndex);
     this.magnifier = this.placeMagnifier(cssX, cssY);
   }
 
@@ -479,7 +492,7 @@ class App {
    * 指と重ならない位置に必ず置く。横向きなど画面が低いときは指の左右に逃がす。
    */
   private placeMagnifier(cssX: number, cssY: number): MagnifierBox {
-    const size = Math.round(Math.max(120, Math.min(168, Math.min(this.cssW, this.cssH) * 0.42)));
+    const size = Math.round(Math.max(128, Math.min(180, Math.min(this.cssW, this.cssH) * 0.44)));
     const margin = 12;
     const topLimit = 52;     // 上部のバー
     const bottomLimit = 104; // 下部のツールバー
@@ -537,7 +550,7 @@ class App {
    * 直交が入っているときは基準点から水平／垂直に伸ばした線の上だけを探し、
    * その線が図形と交わるところに吸着する。
    */
-  private snapFor(cssX: number, cssY: number, index: number | null, radiusCssPx = 22): SnapResult | null {
+  private snapFor(cssX: number, cssY: number, index: number | null, radiusCssPx = SNAP_RADIUS): SnapResult | null {
     if (!this.snapIndex) return null;
     const w = this.toWorld(cssX, cssY);
     const radius = radiusCssPx * this.worldPerCssPx();

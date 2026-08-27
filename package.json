@@ -18,7 +18,8 @@
     "verify:snap": "node tools/verify-snap.ts samples/*.jww",
     "fuzz": "node tools/fuzz.ts samples/*.jww",
     "e2e:robust": "node tools/e2e-robust.mjs",
-    "e2e:measure": "node tools/e2e-measure.mjs"
+    "e2e:measure": "node tools/e2e-measure.mjs",
+    "probe:magnifier": "node tools/probe-magnifier.mjs"
   },
   "devDependencies": {
     "playwright": "^1.62.1",

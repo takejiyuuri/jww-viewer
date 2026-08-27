@@ -11,6 +11,8 @@ uniform vec2 uPixel;
 uniform float uHalfWidth;
 
 out vec3 vColor;
+out float vEdge;
+out float vHalfPx;
 
 void main() {
   vec2 p1 = aSeg.xy;
@@ -20,14 +22,19 @@ void main() {
   vec2 dir = len > 0.0 ? d / len : vec2(1.0, 0.0);
   vec2 nrm = vec2(-dir.y, dir.x);
 
+  // 端をぼかすぶんだけ外側に広げる。線そのものの太さは変えない
+  float halfW = uHalfWidth + 0.5;
+
   vec2 base = mix(p1, p2, aCorner.x);
   vec2 clip = (base - uCenter) * uScale;
   // 線幅ぶんの押し出しと、継ぎ目を埋めるための端の張り出し
-  vec2 side = nrm * aCorner.y * uHalfWidth * uPixel;
-  vec2 cap = dir * (aCorner.x * 2.0 - 1.0) * uHalfWidth * uPixel;
+  vec2 side = nrm * aCorner.y * halfW * uPixel;
+  vec2 cap = dir * (aCorner.x * 2.0 - 1.0) * halfW * uPixel;
 
   gl_Position = vec4(clip + side + cap, 0.0, 1.0);
   vColor = aColor;
+  vEdge = aCorner.y * halfW;
+  vHalfPx = uHalfWidth;
 }`;
 
 const TRI_VS = `#version 300 es
@@ -44,12 +51,30 @@ void main() {
   vColor = aColor;
 }`;
 
+/** 塗り用。そのまま出す */
 const FS = `#version 300 es
 precision mediump float;
 in vec3 vColor;
 out vec4 fragColor;
 void main() {
   fragColor = vec4(vColor, 1.0);
+}`;
+
+/**
+ * 線用。端の 1 ピクセルを透かして階段状のギザつきを消す。
+ * 端末側の MSAA に頼らないので、拡大鏡の中でも同じように滑らかになる。
+ */
+const LINE_FS = `#version 300 es
+precision mediump float;
+in vec3 vColor;
+in float vEdge;
+in float vHalfPx;
+out vec4 fragColor;
+void main() {
+  float dist = abs(vEdge);
+  float a = clamp(vHalfPx + 0.5 - dist, 0.0, 1.0);
+  if (a <= 0.003) discard;
+  fragColor = vec4(vColor, a);
 }`;
 
 function compile(gl: WebGL2RenderingContext, type: number, src: string): WebGLShader {
@@ -119,8 +144,10 @@ export class Renderer {
     if (!gl) throw new Error('WebGL2 が利用できません');
     this.gl = gl;
 
-    this.lineProg = link(gl, LINE_VS, FS);
+    this.lineProg = link(gl, LINE_VS, LINE_FS);
     this.triProg = link(gl, TRI_VS, FS);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
     this.uLine = {
       center: gl.getUniformLocation(this.lineProg, 'uCenter')!,
@@ -153,8 +180,10 @@ export class Renderer {
   private rebuild(): void {
     const gl = this.gl;
     this.lost = false;
-    this.lineProg = link(gl, LINE_VS, FS);
+    this.lineProg = link(gl, LINE_VS, LINE_FS);
     this.triProg = link(gl, TRI_VS, FS);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     this.uLine = {
       center: gl.getUniformLocation(this.lineProg, 'uCenter')!,
       scale: gl.getUniformLocation(this.lineProg, 'uScale')!,
@@ -255,12 +284,13 @@ export class Renderer {
     gl.enable(gl.SCISSOR_TEST);
     gl.scissor(x, y, w, h);
     gl.viewport(x, y, w, h);
-    this.paint(view, w, h, dpr);
+    // 拡大して見ている場所なので、線もそれらしく太くする
+    this.paint(view, w, h, dpr, 1.6);
     gl.disable(gl.SCISSOR_TEST);
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
   }
 
-  private paint(view: View, w: number, h: number, dpr: number): void {
+  private paint(view: View, w: number, h: number, dpr: number, widthScale = 1): void {
     const gl = this.gl;
 
     gl.clearColor(this.background[0], this.background[1], this.background[2], 1);
@@ -282,7 +312,7 @@ export class Renderer {
       gl.uniform2f(this.uLine.center, view.cx, view.cy);
       gl.uniform2f(this.uLine.scale, sx, sy);
       gl.uniform2f(this.uLine.pixel, 2 / w, 2 / h);
-      gl.uniform1f(this.uLine.hw, (this.lineWidth * dpr) / 2);
+      gl.uniform1f(this.uLine.hw, (this.lineWidth * widthScale * dpr) / 2);
       gl.bindVertexArray(this.lineVao);
       gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, this.lineCount);
     }
