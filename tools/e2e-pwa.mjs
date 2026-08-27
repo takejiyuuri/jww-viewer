@@ -4,12 +4,15 @@ import { chromium, devices } from 'playwright';
 import path from 'node:path';
 import { startServer, projectRoot as root } from './serve.mjs';
 
-const sample = process.argv[2] ?? path.join(root, 'samples', 'A棟 11階躯体図2026.5.12提出スリーブ.jww');
-const outDir = process.argv[3] ?? '.';
+// 第 1 引数が URL なら、そこを検査対象にする（公開済みのサイトを確かめるとき）
+const remote = process.argv[2]?.startsWith('http') ? process.argv[2] : null;
+const rest = remote ? process.argv.slice(3) : process.argv.slice(2);
+const sample = rest[0] ?? path.join(root, 'samples', 'A棟 11階躯体図2026.5.12提出スリーブ.jww');
+const outDir = rest[1] ?? '.';
 
 // 本番ビルドを HTTPS で配信する。Service Worker は安全なコンテキストでしか動かない
-const srv = await startServer({ port: 5443, https: true, preview: true, host: false, quiet: true });
-const url = srv.url;
+const srv = remote ? null : await startServer({ port: 5443, https: true, preview: true, host: false, quiet: true });
+const url = remote ?? srv.url;
 
 const browser = await chromium.launch({
   args: [
@@ -200,5 +203,5 @@ await context.setOffline(false);
 const failed = results.filter((r) => !r.ok);
 console.log(JSON.stringify({ results, 失敗: failed.length, errors: errors.slice(0, 6) }, null, 2));
 await browser.close();
-await srv.close();
+if (srv) await srv.close();
 process.exit(failed.length ? 1 : 0);

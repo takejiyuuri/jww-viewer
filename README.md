@@ -3,6 +3,11 @@
 Jw_cad の図面（`.jww`）を iPhone の Safari でそのまま開き、実寸で長さと面積を測るためのビューアです。
 サーバに図面を送らず、すべて端末内で処理します。
 
+**→ https://takejiyuuri.github.io/jww-viewer/**
+
+iPhone の Safari で開き、共有ボタンから「ホーム画面に追加」すると、
+電波の入らない現場でもそのまま使えます。図面はどこにも送信されません。
+
 ## できること
 
 - `.jww` を直接読む（Jw_cad Ver.2.30〜7.x の内部形式に対応）
@@ -48,14 +53,21 @@ npm run dev:https
 
 1〜3 は最初の一度だけです。証明書は `certs/` に作られ、PC の IP が変わると自動で作り直されます。
 
-### 配布する
+### 公開する
+
+`main` に push すると GitHub Actions が型チェックとビルドを通し、
+GitHub Pages（https://takejiyuuri.github.io/jww-viewer/）へ反映します。
+設定は [.github/workflows/deploy.yml](.github/workflows/deploy.yml) にあります。
+
+手元で成果物だけ作る場合:
 
 ```bash
 npm run build
 ```
 
-`dist/` をそのまま静的ホスティング（GitHub Pages、Netlify、Cloudflare Pages など）に置けば動きます。
-HTTPS で配信されるので、証明書の手順は不要になります。
+`dist/` をそのまま静的ホスティングに置けば動きます（HTTPS であること）。
+
+なお `samples/` の図面と `certs/` の鍵はリポジトリに含めていません。
 
 ## 使い方
 
