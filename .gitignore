@@ -1,0 +1,14 @@
+node_modules
+dist
+
+# ローカル HTTPS 用の鍵と証明書
+certs/
+
+# 実務の図面。検証にだけ使うもので、公開リポジトリには入れない
+samples/
+
+# 検証スクリプトが吐く画像
+*.png
+!public/icon-*.png
+e2e-*.png
+preview.png

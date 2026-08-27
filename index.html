@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no, maximum-scale=1">
+<meta name="theme-color" content="#0b0c10">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="JWW Viewer">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="apple-touch-icon" href="./icon-180.png">
+<title>JWW ビューア</title>
+<link rel="stylesheet" href="./src/style.css">
+</head>
+<body>
+<div id="stage">
+  <canvas id="gl"></canvas>
+  <canvas id="text"></canvas>
+  <canvas id="overlay"></canvas>
+</div>
+
+<div id="topbar">
+  <button id="btn-open" class="chip">ファイル</button>
+  <div id="title" class="title">図面を開いてください</div>
+  <button id="btn-info" class="chip icon" aria-label="図面情報">i</button>
+</div>
+
+<div id="readout" class="hidden">
+  <div class="readout-main">
+    <span id="readout-value">—</span>
+    <span id="readout-sub" class="sub"></span>
+  </div>
+  <div id="readout-detail" class="detail"></div>
+</div>
+
+<div id="toolbar">
+  <button id="btn-mode" class="tool" data-mode="distance">距離</button>
+  <button id="btn-undo" class="tool">戻す</button>
+  <button id="btn-clear" class="tool">消去</button>
+  <button id="btn-fit" class="tool">全体</button>
+  <button id="btn-scale" class="tool">1/—</button>
+</div>
+
+<div id="hint" class="hint hidden"></div>
+
+<div id="loading" class="overlay-panel hidden">
+  <div class="spinner"></div>
+  <div id="loading-text">読み込み中…</div>
+</div>
+
+<div id="info-panel" class="overlay-panel sheet hidden">
+  <div class="sheet-head">
+    <strong>図面情報</strong>
+    <button id="btn-info-close" class="chip">閉じる</button>
+  </div>
+  <div id="info-body" class="sheet-body"></div>
+</div>
+
+<div id="welcome" class="overlay-panel sheet">
+  <div class="sheet-body welcome-body">
+    <h1>JWW ビューア</h1>
+    <p>Jw_cad の図面（.jww）をそのまま開いて、実寸で長さと面積を測れます。</p>
+    <button id="btn-open-2" class="primary">図面を開く</button>
+    <ul class="tips">
+      <li>1 本指でスクロール、2 本指で拡大縮小</li>
+      <li>タップで計測点を追加（端点・交点に吸着）</li>
+      <li>長押しすると拡大鏡が出て、指を離した位置で確定</li>
+    </ul>
+  </div>
+</div>
+
+<input id="file" type="file" hidden>
+<script type="module" src="./src/main.ts"></script>
+</body>
+</html>
