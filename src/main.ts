@@ -1,6 +1,6 @@
 import { Renderer, type View } from './render/renderer.ts';
 import { TextLayer } from './render/textlayer.ts';
-import { Overlay, type MagnifierBox, type OverlayState } from './render/overlay.ts';
+import { Overlay, type Highlight, type MagnifierBox, type OverlayState } from './render/overlay.ts';
 import type { Scene } from './render/geometry.ts';
 import type { LoadResponse, LoadedInfo } from './jww/worker.ts';
 import { SnapIndex, type Axis, type SnapResult } from './measure/snap.ts';
@@ -9,11 +9,15 @@ import {
   type MeasurePoint,
 } from './measure/measure.ts';
 import {
-  loadDisplay, loadHiddenPens, loadLast, saveDisplay, saveHiddenPens, saveLast,
+  loadDisplay, loadLast, loadViewState, saveDisplay, saveLast, saveViewState,
 } from './storage.ts';
 import {
   BACKGROUND_RGB, buildPalette, displayColor, type DisplaySettings,
 } from './render/theme.ts';
+import { LayerVisibility, renderLayerList, type LayerSnapshot } from './ui/layers.ts';
+import { describeEntity, entityShape, pickEntity } from './ui/inspect.ts';
+import { KIND } from './render/geometry.ts';
+import { hex1, layerTag } from './jww/names.ts';
 
 /** 吸着先を探す半径（CSS ピクセル） */
 const SNAP_RADIUS = 22;
@@ -26,6 +30,18 @@ const SNAP_RADIUS = 22;
 const MAGNIFY = 3.5;
 
 const PAPER_NAMES = ['A0', 'A1', 'A2', 'A3', 'A4', '', '', '', '2A', '3A', '4A', '5A', '10m', '50m', '100m'];
+
+type Tool = 'measure' | 'inspect';
+
+/** 図面の見えている範囲を狭めているものの幅（CSS ピクセル） */
+interface Insets {
+  top: number;
+  bottom: number;
+  /** 横向きで右に寄せたパネル */
+  right: number;
+}
+type Sheet = 'info-panel' | 'display-panel' | 'layer-panel';
+const SHEETS: Sheet[] = ['info-panel', 'display-panel', 'layer-panel'];
 
 const el = <T extends HTMLElement>(id: string): T => {
   const node = document.getElementById(id);
@@ -62,6 +78,27 @@ class App {
   private display: DisplaySettings = loadDisplay();
   /** 隠している色グループ（scene.groups の添字） */
   private hiddenGroups = new Set<number>();
+  /** レイヤグループ・レイヤの表示状態 */
+  private layers = new LayerVisibility();
+  /** 属性から「このレイヤだけ表示」「隠す」をする前の状態。「元に戻す」で戻す */
+  private layerSnapshot: LayerSnapshot | null = null;
+  /** レイヤ一覧で開いているグループ */
+  private expandedGroups = new Set<number>();
+  /** いま見えている色番号とレイヤ（1 なら表示）。図形を拾うときに見えないものを除く */
+  private colorVisible: Uint8Array = new Uint8Array(0);
+  private layerMask: Uint8Array = new Uint8Array(256).fill(1);
+
+  /** タップで計測点を置くか、図形の属性を見るか */
+  private tool: Tool = 'measure';
+  /** 属性を表示している図形（scene.entities の添字）。-1 なら無し */
+  private selected = -1;
+  /** 属性で長押ししている間、指の下にある図形 */
+  private previewEntity = -1;
+  private shapeCache: { index: number; shape: Highlight } | null = null;
+  /** 長押しを始めたときの、上下のバー・パネルの幅。拡大鏡をそこに重ねないために使う */
+  private insets: Insets = { top: 52, bottom: 104, right: 0 };
+  /** 読み込み時に決めた既定の縮尺。「自動」に戻したときに使う */
+  private defaultScale = 1;
 
   // ジェスチャ
   private pointers = new Map<number, { x: number; y: number }>();
@@ -80,6 +117,7 @@ class App {
   private textTimer = 0;
   private loadTimer = 0;
   private hintTimer = 0;
+  private hintHideTimer = 0;
 
   constructor() {
     this.renderer = new Renderer(el<HTMLCanvasElement>('gl'));
@@ -87,6 +125,7 @@ class App {
     this.overlay = new Overlay(el<HTMLCanvasElement>('overlay'));
     // 描画コンテキストが戻ったら描き直す
     this.renderer.onRestored = () => this.requestDraw(true);
+    this.overlay.drawMagnifierText = (ctx, view, x, y, w, h) => this.textLayer.renderInset(ctx, view, x, y, w, h);
 
     this.bindUI();
     this.bindGestures();
@@ -184,23 +223,43 @@ class App {
     this.info = info;
     this.renderer.setScene(scene);
     this.textLayer.setTexts(scene.texts);
-    this.snapIndex = new SnapIndex(scene);
+    const index = new SnapIndex(scene);
+    this.snapIndex = index;
     this.points = [];
     this.manualScale = false;
+    this.selected = -1;
+    this.previewEntity = -1;
+    this.shapeCache = null;
+    this.layerSnapshot = null;
 
-    // 同じ図面を開き直したときは、前に隠していた色をそのまま隠す
-    const hiddenPens = new Set(loadHiddenPens(info.name));
+    // 同じ図面を開き直したときは、前に隠していた色とレイヤをそのまま隠す。
+    // 記録がなければ、レイヤは Jw_cad で保存したときの表示状態から始める
+    const saved = loadViewState(info.name);
+    const hiddenPens = new Set(saved.pens);
     this.hiddenGroups = new Set();
     scene.groups.forEach((g, i) => {
       if (hiddenPens.has(g.penColor)) this.hiddenGroups.add(i);
     });
+    // 図面の側でレイヤの状態が変わっていたら（別の図面・保存し直した図面）、記録は使わない
+    if (saved.groups && saved.layers && saved.jw === jwFingerprint(info)) {
+      this.layers.applyHidden({ groups: saved.groups, layers: saved.layers });
+    } else {
+      this.layers.resetToJw(info.groups, info.writeGroup);
+    }
+    // 図形の入ったグループが一つだけなら、最初からレイヤを並べておく
+    this.expandedGroups.clear();
+    const usedGroups = info.groups.filter((g) => g.used);
+    if (usedGroups.length === 1) this.expandedGroups.add(usedGroups[0].no);
+
     this.applyDisplay(false);
     this.buildDisplayPanel();
+    this.buildLayerPanel();
 
-    // 図形が最も多いレイヤグループの縮尺を既定にする
+    // 見えている線が最も多いレイヤグループの縮尺を既定にする
     const tally = new Map<number, number>();
-    for (let i = 0; i < scene.lineGroup.length; i++) {
-      const g = scene.lineGroup[i];
+    for (let i = 0; i < scene.lineLayer.length; i++) {
+      if (!index.lineVisible(i)) continue;
+      const g = scene.entities.group[scene.lineEntity[i]];
       tally.set(g, (tally.get(g) ?? 0) + 1);
     }
     let bestGroup = info.writeGroup;
@@ -209,13 +268,18 @@ class App {
       if (c > bestCount) { bestCount = c; bestGroup = g; }
     }
     this.measureScale = scene.scales[bestGroup] || 1;
+    this.defaultScale = this.measureScale;
 
     el('title').textContent = info.name;
-    this.updateScaleButton();
+    this.updatePanels();
     this.updateReadout();
+    this.updateInspect();
     this.buildInfoPanel();
     this.fit();
-    this.hint(`${info.counts.lines.toLocaleString()} 本の線を ${Math.round(info.parseMs)}ms で読み込みました`);
+    const hiddenLayers = this.layers.hiddenCount(scene.layerCounts);
+    this.hint(hiddenLayers > 0
+      ? `読み込みました。${hiddenLayers} 個のレイヤが非表示です`
+      : `${info.counts.lines.toLocaleString()} 本の線を ${Math.round(info.parseMs)}ms で読み込みました`);
   }
 
   // ---------- ビュー ----------
@@ -223,13 +287,26 @@ class App {
   private fit(): void {
     if (!this.scene) return;
     const b = this.scene.fitBounds;
-    const w = this.cssW * this.dpr;
-    const h = this.cssH * this.dpr;
+    // 上のバーと下（横向きでは右）のパネルに隠れない範囲に収める。狭すぎるときは画面全体に
+    const ins = this.measureInsets();
+    let top = ins.top;
+    let availH = this.cssH - ins.top - ins.bottom;
+    if (availH < this.cssH * 0.4) {
+      top = 0;
+      availH = this.cssH;
+    }
+    let availW = this.cssW - ins.right;
+    if (availW < this.cssW * 0.4) availW = this.cssW;
+    const w = availW * this.dpr;
+    const h = availH * this.dpr;
     const bw = Math.max(b.maxX - b.minX, 1e-6);
     const bh = Math.max(b.maxY - b.minY, 1e-6);
     const zoom = Math.min(w / bw, h / bh) * 0.94;
-    const cx = (b.minX + b.maxX) / 2;
-    const cy = (b.minY + b.maxY) / 2;
+    // 見えている範囲の中央に図面の中央が来るように、画面の中央からずらす
+    const midX = (availW / 2) * this.dpr;
+    const midY = (top + availH / 2) * this.dpr;
+    const cx = (b.minX + b.maxX) / 2 - (midX - (this.cssW * this.dpr) / 2) / zoom;
+    const cy = (b.minY + b.maxY) / 2 + (midY - (this.cssH * this.dpr) / 2) / zoom;
     this.view = Number.isFinite(zoom) && zoom > 0 && Number.isFinite(cx) && Number.isFinite(cy)
       ? { cx, cy, zoom }
       : { cx: 0, cy: 0, zoom: 1 };
@@ -290,6 +367,7 @@ class App {
 
     const state: OverlayState = {
       points: this.points,
+      highlight: this.currentHighlight(),
       constraint: this.holding ? this.constraint : null,
       activeIndex: this.dragIndex,
       preview: this.preview,
@@ -297,8 +375,28 @@ class App {
       magnifier: this.magnifier,
       magnifierView: magView ? { ...magView, dpr: this.dpr } : null,
       scale: this.measureScale,
+      fixedScale: this.manualScale,
     };
     this.overlay.render(this.view, state);
+  }
+
+  /** 属性で見ている図形（長押し中は指の下の図形）の形 */
+  private currentHighlight(): Highlight | null {
+    if (!this.scene || this.tool !== 'inspect') return null;
+    const i = this.holding ? this.previewEntity : this.selected;
+    if (i < 0) return null;
+    if (this.shapeCache?.index !== i) {
+      const shape = entityShape(this.scene, i);
+      // 寸法線・補助線では寸法値の枠も示すが、その文字が隠れているなら何もない所を囲むことになる
+      const e = this.scene.entities;
+      const t = this.scene.texts[e.text[i]];
+      if ((e.kind[i] === KIND.dim || e.kind[i] === KIND.dimAux) && t
+        && !(this.colorVisible[t.color] === 1 && this.layerMask[t.layer] === 1)) {
+        shape.box = null;
+      }
+      this.shapeCache = { index: i, shape };
+    }
+    return this.shapeCache.shape;
   }
 
   /**
@@ -356,7 +454,7 @@ class App {
       clearTimeout(this.holdTimer);
 
       // 置いた点をつまんだなら、その場で動かし始める
-      const grabbed = this.hitPoint(e.clientX, e.clientY);
+      const grabbed = this.tool === 'measure' ? this.hitPoint(e.clientX, e.clientY) : null;
       if (grabbed !== null) {
         this.dragIndex = grabbed;
         this.startHold(e.clientX, e.clientY);
@@ -419,8 +517,12 @@ class App {
     if (this.holding) {
       const hit = this.preview;
       const index = this.dragIndex;
+      const entity = this.previewEntity;
+      const inspecting = this.tool === 'inspect';
       this.cancelHold();
-      if (hit) {
+      if (inspecting) {
+        this.select(entity);
+      } else if (hit) {
         if (index !== null) this.movePoint(index, hit);
         else this.addPoint(hit);
       }
@@ -433,8 +535,12 @@ class App {
     const quick = performance.now() - this.downAt < 400;
     // 2 本以上触れていた操作はピンチなので、点を打たない
     if (this.pointers.size === 0 && this.maxPointers === 1 && quick && this.moved < 9) {
-      const hit = this.snapFor(e.clientX, e.clientY, null);
-      if (hit) this.addPoint(hit);
+      if (this.tool === 'inspect') {
+        this.select(this.pickAt(e.clientX, e.clientY));
+      } else {
+        const hit = this.snapFor(e.clientX, e.clientY, null);
+        if (hit) this.addPoint(hit);
+      }
     }
     this.finishStroke();
     this.requestDraw(true);
@@ -494,6 +600,8 @@ class App {
   private startHold(cssX: number, cssY: number): void {
     if (!this.scene) return;
     this.holding = true;
+    // 開いているシートも避ける（シートの上に見えている図面でも長押しできるので）
+    this.insets = this.measureInsets(true);
     if (navigator.vibrate) navigator.vibrate(8);
     // 切り抜き位置と文字の位置を合わせるため、ここで transform を畳んでおく
     this.textLayer.render(this.view);
@@ -503,8 +611,39 @@ class App {
 
   private updateHold(cssX: number, cssY: number): void {
     this.cursor = { x: cssX, y: cssY };
-    this.preview = this.snapFor(cssX, cssY, this.dragIndex);
+    if (this.tool === 'inspect') {
+      this.preview = null;
+      this.previewEntity = this.pickAt(cssX, cssY);
+    } else {
+      this.preview = this.snapFor(cssX, cssY, this.dragIndex);
+    }
     this.magnifier = this.placeMagnifier(cssX, cssY);
+  }
+
+  /**
+   * 図面の見えている範囲を狭めているもの（上のバー、下のパネルとツールバー、横向きで右に寄せたパネル）。
+   * withSheets なら開いているシートも数える。全体表示では一時的なシートは数えない。
+   */
+  private measureInsets(withSheets = false): Insets {
+    const bar = document.getElementById('topbar')?.getBoundingClientRect();
+    let bottomEdge = this.cssH;
+    let rightEdge = this.cssW;
+    const ids: string[] = ['toolbar', 'readout', 'inspect-panel'];
+    if (withSheets) ids.push(...SHEETS);
+    for (const id of ids) {
+      const node = document.getElementById(id);
+      if (!node || node.classList.contains('hidden')) continue;
+      const r = node.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) continue;
+      // 横に広いものは下を、右に寄せた細いもの（横向きのパネル）は右を塞ぐ
+      if (r.width >= this.cssW * 0.6) bottomEdge = Math.min(bottomEdge, r.top);
+      else if (r.left > this.cssW / 2) rightEdge = Math.min(rightEdge, r.left);
+    }
+    return {
+      top: bar && bar.height > 0 ? bar.bottom + 4 : 52,
+      bottom: this.cssH - bottomEdge + 8,
+      right: rightEdge < this.cssW ? this.cssW - rightEdge + 8 : 0,
+    };
   }
 
   /**
@@ -512,14 +651,18 @@ class App {
    * 指と重ならない位置に必ず置く。横向きなど画面が低いときは指の左右に逃がす。
    */
   private placeMagnifier(cssX: number, cssY: number): MagnifierBox {
-    const size = Math.round(Math.max(128, Math.min(180, Math.min(this.cssW, this.cssH) * 0.44)));
     const margin = 12;
-    const topLimit = 52;     // 上部のバー
-    const bottomLimit = 104; // 下部のツールバー
-    const gap = 28;          // 指との間隔
+    const topLimit = this.insets.top;       // 上部のバー
+    const bottomLimit = this.insets.bottom; // 下部のパネルとツールバー（開いているシートも）
+    const rightLimit = this.insets.right;   // 横向きで右に寄せたパネル
+    const gap = 28;                         // 指との間隔
+    // 横向きやシートを開いているときは、見えている範囲に収まるまで小さくする
+    const roomH = this.cssH - topLimit - bottomLimit;
+    const roomW = this.cssW - rightLimit - margin * 2;
+    const size = Math.round(Math.max(64, Math.min(180, Math.min(this.cssW, this.cssH) * 0.44, roomH, roomW)));
+    const maxX = this.cssW - rightLimit - size - margin;
 
-    const clampX = (v: number): number =>
-      Math.max(margin, Math.min(this.cssW - size - margin, v));
+    const clampX = (v: number): number => Math.max(margin, Math.min(maxX, v));
     const clampY = (v: number): number =>
       Math.max(topLimit, Math.min(this.cssH - bottomLimit - size, v));
 
@@ -535,12 +678,11 @@ class App {
 
     // 縦に逃がせないので左右へ。指から遠い側に置く
     const y = clampY(cssY - size / 2);
+    const mid = (this.cssW - rightLimit) / 2;
     const left = cssX - gap - size;
     const right = cssX + gap;
-    let x = cssX > this.cssW / 2 ? left : right;
-    if (x < margin || x + size > this.cssW - margin) {
-      x = cssX > this.cssW / 2 ? margin : this.cssW - size - margin;
-    }
+    let x = cssX > mid ? left : right;
+    if (x < margin || x > maxX) x = cssX > mid ? margin : maxX;
     return { x, y, size };
   }
 
@@ -548,6 +690,7 @@ class App {
     clearTimeout(this.holdTimer);
     this.holding = false;
     this.preview = null;
+    this.previewEntity = -1;
     this.cursor = null;
     this.magnifier = null;
     this.constraint = null;
@@ -626,7 +769,7 @@ class App {
     // 最初の点が乗ったレイヤグループの縮尺を既定にする
     if (!this.manualScale && this.points.length === 0 && p.scale != null) {
       this.measureScale = p.scale;
-      this.updateScaleButton();
+      this.buildInfoPanel();
     }
     this.points.push(p);
     this.updateReadout();
@@ -634,32 +777,30 @@ class App {
   }
 
   private updateReadout(): void {
-    const box = el('readout');
     const value = el('readout-value');
-    const sub = el('readout-sub');
     const detail = el('readout-detail');
+    const scale = el('btn-scale');
+    const n = this.points.length;
+    el<HTMLButtonElement>('btn-undo').disabled = n === 0;
+    el<HTMLButtonElement>('btn-clear').disabled = n === 0;
 
-    if (this.points.length === 0) {
-      box.classList.add('hidden');
+    if (n < 2) {
+      value.textContent = '—';
+      scale.textContent = `1/${formatScale(this.measureScale)}`;
+      detail.textContent = n === 0
+        ? 'タップで計測点を置きます。長押しで拡大鏡'
+        : `1 点目は${SNAP_LABEL[this.points[0].kind]}。2 点目をタップしてください`;
       return;
     }
-    box.classList.remove('hidden');
 
-    const m = measureLengths(this.points, this.measureScale);
+    const m = measureLengths(this.points, this.measureScale, this.manualScale);
     const segs = m.segments;
     const total = m.total;
     const warn = m.mixed ? '　※縮尺の違う図をまたいでいます' : '';
 
-    if (this.points.length === 1) {
-      value.textContent = '—';
-      sub.textContent = SNAP_LABEL[this.points[0].kind];
-      detail.textContent = '2 点目をタップしてください';
-      return;
-    }
-
-    const shown = this.points[1].scale ?? this.points[0].scale ?? this.measureScale;
     value.textContent = formatLength(segs[segs.length - 1]);
-    sub.textContent = `1/${formatScale(m.mixed ? this.measureScale : shown)}`;
+    // 表示している長さ（最後の区間）に使った縮尺
+    scale.textContent = `1/${formatScale(m.scales[m.scales.length - 1])}`;
 
     let text: string;
     if (segs.length > 1) {
@@ -678,8 +819,156 @@ class App {
     detail.textContent = text + warn;
   }
 
-  private updateScaleButton(): void {
-    el('btn-scale').textContent = `1/${formatScale(this.measureScale)}`;
+  // ---------- 属性 ----------
+
+  /** 指の位置にある図形。見えていない色・レイヤの図形は拾わない */
+  private pickAt(cssX: number, cssY: number): number {
+    if (!this.scene || !this.snapIndex) return -1;
+    const w = this.toWorld(cssX, cssY);
+    const r = SNAP_RADIUS * this.worldPerCssPx();
+    return pickEntity(this.scene, this.snapIndex, w.x, w.y, r,
+      (color, layer) => this.colorVisible[color] === 1 && this.layerMask[layer] === 1);
+  }
+
+  private entityVisible(i: number): boolean {
+    const e = this.scene?.entities;
+    if (!e || i < 0 || i >= e.count) return false;
+    return this.colorVisible[e.color[i]] === 1 && this.layerMask[e.layer[i]] === 1;
+  }
+
+  private select(i: number): void {
+    this.selected = i;
+    this.updateInspect();
+    // レイヤ一覧を開いたままなら、印と開いているグループも新しい図形に合わせる
+    if (!el('layer-panel').classList.contains('hidden')) {
+      if (i >= 0 && this.scene) this.expandedGroups.add(this.scene.entities.layer[i] >> 4);
+      this.buildLayerPanel();
+    }
+    if (i >= 0) this.reveal(i);
+    this.requestDraw(true);
+    if (i >= 0 && navigator.vibrate) navigator.vibrate(4);
+  }
+
+  /**
+   * 属性パネルが伸びて、選んだ図形がその下に隠れたときは、図面をずらして見えるようにする。
+   * 図形が見えている範囲より大きいときは、上端（左端）を合わせる。
+   */
+  private reveal(i: number): void {
+    const shape = this.currentHighlight() ?? (this.scene ? entityShape(this.scene, i) : null);
+    if (!shape) return;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    const add = (arr: ArrayLike<number>): void => {
+      for (let k = 0; k + 1 < arr.length; k += 2) {
+        const x = arr[k], y = arr[k + 1];
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    };
+    add(shape.lines);
+    add(shape.tris);
+    if (shape.box) add(shape.box);
+    if (shape.point) add(shape.point);
+    if (!Number.isFinite(minX)) return;
+
+    const k = this.dpr / this.view.zoom; // 1 CSS ピクセルあたりの図面座標
+    const left = (minX - this.view.cx) / k + this.cssW / 2;
+    const right = (maxX - this.view.cx) / k + this.cssW / 2;
+    const top = this.cssH / 2 - (maxY - this.view.cy) / k;
+    const bottom = this.cssH / 2 - (minY - this.view.cy) / k;
+    const ins = this.measureInsets();
+    const pad = 16;
+
+    let dy = 0;
+    const limitBottom = this.cssH - ins.bottom - pad;
+    if (bottom > limitBottom) dy = Math.min(bottom - limitBottom, top - (ins.top + pad));
+    let dx = 0;
+    const limitRight = this.cssW - ins.right - pad;
+    if (ins.right > 0 && right > limitRight) dx = Math.min(right - limitRight, left - pad);
+    if (dy <= 0 && dx <= 0) return;
+    // 図形を上（左）へ動かす
+    if (dy > 0) this.view.cy -= dy * k;
+    if (dx > 0) this.view.cx += dx * k;
+  }
+
+  /**
+   * 色番号の見本（style 属性の中身）。いまの背景の上で、色分けしたときの線の色。
+   * パネルは背景に関係なく暗いので、見本は図面の地色の輪の中に描く。
+   */
+  private swatchColor(color: number): string {
+    const c = this.scene?.colors;
+    if (!c) return '';
+    const [r, g, b] = displayColor(c[color * 3], c[color * 3 + 1], c[color * 3 + 2],
+      { background: this.display.background, mono: false });
+    const paper = BACKGROUND_RGB[this.display.background];
+    return `--ink:rgb(${r},${g},${b});--paper:rgb(${paper.join(',')})`;
+  }
+
+  private updateInspect(): void {
+    const kind = el('inspect-kind');
+    const tag = el('inspect-tag');
+    const body = el('inspect-body');
+    const scene = this.scene;
+    const info = this.info;
+    const i = this.selected;
+    const canUndo = this.layerSnapshot !== null;
+    el('btn-layer-back').classList.toggle('hidden', !canUndo);
+
+    if (!scene || !info || i < 0) {
+      kind.textContent = '属性';
+      tag.classList.add('hidden');
+      body.innerHTML = '<div class="inspect-empty">図形をタップすると、レイヤ・線色・線種・長さを表示します。長押しすると拡大鏡で選べます</div>';
+      el('btn-layer-only').classList.add('hidden');
+      el('btn-layer-hide').classList.add('hidden');
+      el('inspect-actions').classList.toggle('hidden', !canUndo);
+      return;
+    }
+
+    const d = describeEntity(scene, info, i, (c) => this.swatchColor(c));
+    kind.textContent = d.kind;
+    tag.textContent = layerTag(d.layer);
+    tag.classList.remove('hidden');
+    body.innerHTML = d.rows
+      .map((r) => `<span class="k">${escapeHtml(r.label)}</span><span class="v">${r.html}</span>`)
+      .join('');
+    el('btn-layer-only').classList.remove('hidden');
+    el('btn-layer-hide').classList.remove('hidden');
+    el('inspect-actions').classList.remove('hidden');
+  }
+
+  private setTool(tool: Tool): void {
+    if (this.tool === tool) return;
+    this.cancelHold();
+    this.tool = tool;
+    this.updatePanels();
+    this.requestDraw();
+    this.hint(tool === 'inspect' ? '図形をタップすると属性を表示します' : 'タップで計測点を置きます');
+  }
+
+  /** 下のパネル（計測・属性）とツールボタンの状態を、いまのツールに合わせる */
+  private updatePanels(): void {
+    const loaded = this.scene !== null;
+    el('readout').classList.toggle('hidden', !loaded || this.tool !== 'measure');
+    el('inspect-panel').classList.toggle('hidden', !loaded || this.tool !== 'inspect');
+    for (const [id, t] of [['btn-tool-measure', 'measure'], ['btn-tool-inspect', 'inspect']] as const) {
+      const on = this.tool === t;
+      el(id).classList.toggle('on', on);
+      el(id).setAttribute('aria-pressed', String(on));
+    }
+  }
+
+  /** 下から出るシートは同時に一つだけ。null ならすべて閉じる */
+  private openSheet(id: Sheet | null): void {
+    for (const s of SHEETS) el(s).classList.toggle('hidden', s !== id);
+    el('btn-layers').setAttribute('aria-expanded', String(id === 'layer-panel'));
+    el('btn-display').setAttribute('aria-expanded', String(id === 'display-panel'));
+  }
+
+  private toggleSheet(id: Sheet): boolean {
+    const open = el(id).classList.contains('hidden');
+    this.openSheet(open ? id : null);
+    return open;
   }
 
   private hint(text: string): void {
@@ -687,10 +976,12 @@ class App {
     node.textContent = text;
     node.classList.remove('hidden');
     node.style.opacity = '1';
+    // 前のヒントが消えかけている途中でも、新しいヒントを巻き込んで消さないように両方止める
     clearTimeout(this.hintTimer);
+    clearTimeout(this.hintHideTimer);
     this.hintTimer = window.setTimeout(() => {
       node.style.opacity = '0';
-      window.setTimeout(() => node.classList.add('hidden'), 260);
+      this.hintHideTimer = window.setTimeout(() => node.classList.add('hidden'), 260);
     }, 2600);
   }
 
@@ -709,9 +1000,13 @@ class App {
       file.value = '';
     });
 
+    el('btn-tool-measure').addEventListener('click', () => this.setTool('measure'));
+    el('btn-tool-inspect').addEventListener('click', () => this.setTool('inspect'));
+
     el('btn-ortho').addEventListener('click', () => {
       this.ortho = !this.ortho;
       el('btn-ortho').classList.toggle('on', this.ortho);
+      el('btn-ortho').setAttribute('aria-pressed', String(this.ortho));
       this.hint(this.ortho ? '水平・垂直に測ります' : '自由な向きで測ります');
       this.requestDraw();
     });
@@ -731,25 +1026,84 @@ class App {
     el('btn-fit').addEventListener('click', () => this.fit());
 
     el('btn-scale').addEventListener('click', () => {
-      el('display-panel').classList.add('hidden');
-      el('info-panel').classList.remove('hidden');
+      this.openSheet('info-panel');
       this.buildInfoPanel();
     });
 
     el('btn-info').addEventListener('click', () => {
-      el('display-panel').classList.add('hidden');
-      el('info-panel').classList.toggle('hidden');
-      this.buildInfoPanel();
+      if (this.toggleSheet('info-panel')) this.buildInfoPanel();
     });
-    el('btn-info-close').addEventListener('click', () => el('info-panel').classList.add('hidden'));
+    el('btn-info-close').addEventListener('click', () => this.openSheet(null));
+
+    // ---- 属性 ----
+    el('btn-layer-only').addEventListener('click', () => {
+      if (!this.scene || this.selected < 0) return;
+      const k = this.scene.entities.layer[this.selected];
+      // 続けて操作しても、「元に戻す」は最初の状態に戻す
+      if (!this.layerSnapshot) this.layerSnapshot = this.layers.snapshot();
+      this.layers.only(k);
+      this.afterLayerChange(false);
+      this.hint(`レイヤ ${layerTag(k)} だけを表示しています`);
+    });
+    el('btn-layer-hide').addEventListener('click', () => {
+      if (!this.scene || this.selected < 0) return;
+      const k = this.scene.entities.layer[this.selected];
+      if (!this.layerSnapshot) this.layerSnapshot = this.layers.snapshot();
+      this.layers.layer[k] = false;
+      this.afterLayerChange(false);
+      this.hint(`レイヤ ${layerTag(k)} を隠しました`);
+    });
+    el('btn-layer-back').addEventListener('click', () => {
+      if (!this.layerSnapshot) return;
+      this.layers.restore(this.layerSnapshot);
+      this.layerSnapshot = null;
+      this.afterLayerChange(false);
+    });
+
+    // ---- レイヤ ----
+    el('btn-layers').addEventListener('click', () => {
+      if (!this.toggleSheet('layer-panel')) return;
+      // 属性を見ている図形のレイヤが見えるように、そのグループを開いておく
+      if (this.scene && this.selected >= 0) this.expandedGroups.add(this.scene.entities.layer[this.selected] >> 4);
+      this.buildLayerPanel();
+      el('layer-list').querySelector('.l-row.mark')?.scrollIntoView({ block: 'center' });
+    });
+    el('btn-layer-close').addEventListener('click', () => this.openSheet(null));
+    el('btn-layer-jw').addEventListener('click', () => {
+      if (!this.info) return;
+      this.layers.resetToJw(this.info.groups, this.info.writeGroup);
+      this.afterLayerChange(true);
+      this.hint('Jw_cad で保存したときの表示に戻しました');
+    });
+    el('btn-layer-all').addEventListener('click', () => {
+      this.layers.showAll();
+      this.afterLayerChange(true);
+    });
+    el('layer-list').addEventListener('click', (e) => {
+      const target = e.target as HTMLElement;
+      const sw = target.closest<HTMLElement>('.sw');
+      const head = target.closest<HTMLElement>('.lg-head');
+      const row = target.closest<HTMLElement>('.l-row');
+      if (sw?.dataset.group !== undefined) {
+        const g = Number(sw.dataset.group);
+        this.layers.group[g] = !this.layers.group[g];
+        this.afterLayerChange(true);
+      } else if (head) {
+        const g = Number(head.dataset.toggle);
+        if (this.expandedGroups.has(g)) this.expandedGroups.delete(g);
+        else this.expandedGroups.add(g);
+        this.buildLayerPanel();
+      } else if (row) {
+        // 行のどこを触っても、そのレイヤの表示を切り替える
+        this.toggleLayer(Number(row.dataset.k));
+      }
+    });
 
     // ---- 表示 ----
     el('btn-display').addEventListener('click', () => {
-      el('info-panel').classList.add('hidden');
-      el('display-panel').classList.toggle('hidden');
-      this.buildDisplayPanel();
+      if (this.toggleSheet('display-panel')) this.buildDisplayPanel();
     });
-    el('btn-display-close').addEventListener('click', () => el('display-panel').classList.add('hidden'));
+    el('btn-display-close').addEventListener('click', () => this.openSheet(null));
 
     el('seg-bg').addEventListener('click', (e) => {
       const b = (e.target as HTMLElement).closest<HTMLButtonElement>('button');
@@ -796,15 +1150,90 @@ class App {
     saveDisplay(next);
     this.applyDisplay();
     this.buildDisplayPanel();
+    // 属性の色見本も背景に合わせる
+    this.updateInspect();
+  }
+
+  /**
+   * 図面ごとの表示状態（隠した色・レイヤ）を覚えておく。
+   * 「このレイヤだけ表示」「隠す」は一時的なものなので、その前の状態を覚える。
+   * レイヤが Jw_cad の状態のままなら記録しない（図面の側の状態にいつも従うように）。
+   */
+  private saveViewState(): void {
+    const info = this.info;
+    const scene = this.scene;
+    if (!info || !scene) return;
+    let layers = this.layers;
+    if (this.layerSnapshot) {
+      layers = new LayerVisibility();
+      layers.restore(this.layerSnapshot);
+    }
+    const jw = new LayerVisibility();
+    jw.resetToJw(info.groups, info.writeGroup);
+    const hidden = layers.hidden();
+    const same = JSON.stringify(hidden) === JSON.stringify(jw.hidden());
+    saveViewState(info.name, {
+      pens: [...this.hiddenGroups].map((i) => scene.groups[i].penColor),
+      groups: same ? null : hidden.groups,
+      layers: same ? null : hidden.layers,
+      jw: jwFingerprint(info),
+    });
   }
 
   private afterVisibilityChange(): void {
-    if (this.info && this.scene) {
-      const scene = this.scene;
-      saveHiddenPens(this.info.name, [...this.hiddenGroups].map((i) => scene.groups[i].penColor));
-    }
+    this.saveViewState();
     this.applyDisplay();
     this.buildDisplayPanel();
+  }
+
+  /**
+   * レイヤの表示を変えたあと。
+   * fromList はレイヤ一覧で変えたとき。一覧で手を入れたら、属性からの「元に戻す」は意味が変わるので捨てる。
+   */
+  private afterLayerChange(fromList: boolean): void {
+    if (fromList) this.layerSnapshot = null;
+    this.saveViewState();
+    this.applyDisplay();
+    this.buildLayerPanel();
+    this.updateInspect();
+  }
+
+  /**
+   * レイヤ一つの表示を切り替える。
+   * グループごと隠れているレイヤを表示にしたときは、グループを表示にして、そのレイヤだけを見せる
+   * （グループ内のほかのレイヤまで一度に現れると、何を出したのか分からなくなる）。
+   */
+  private toggleLayer(k: number): void {
+    const g = k >> 4;
+    if (!this.layers.group[g]) {
+      this.layers.group[g] = true;
+      for (let l = 0; l < 16; l++) this.layers.layer[(g << 4) | l] = false;
+      this.layers.layer[k] = true;
+    } else {
+      this.layers.layer[k] = !this.layers.layer[k];
+    }
+    this.afterLayerChange(true);
+  }
+
+  private buildLayerPanel(): void {
+    const list = el('layer-list');
+    const summary = el('layer-summary');
+    const scene = this.scene;
+    const info = this.info;
+    if (!scene || !info) {
+      list.innerHTML = '<p class="sub">図面が読み込まれていません。</p>';
+      summary.textContent = '';
+      return;
+    }
+    const mark = this.selected >= 0 ? scene.entities.layer[this.selected] : null;
+    renderLayerList(list, info.groups, scene.layerCounts, this.layers, this.expandedGroups, mark);
+
+    let used = 0;
+    for (let k = 0; k < 256; k++) if (scene.layerCounts[k] > 0) used++;
+    const hidden = this.layers.hiddenCount(scene.layerCounts);
+    summary.textContent = hidden === 0
+      ? `${used} レイヤ・すべて表示`
+      : `${used} レイヤ中 ${hidden} を非表示`;
   }
 
   /**
@@ -823,11 +1252,25 @@ class App {
       const palette = buildPalette(scene.colors, scene.colorGroup, this.hiddenGroups, s);
       this.renderer.setPalette(palette);
       this.textLayer.setPalette(palette);
-      // 隠した色の線には吸着させない
+      // 隠した色・レイヤの図形には吸着させない
       const n = scene.colorGroup.length;
       const visible = new Uint8Array(n);
       for (let i = 0; i < n; i++) visible[i] = palette[i * 4 + 3] > 127 ? 1 : 0;
+      this.colorVisible = visible;
       this.snapIndex?.setVisibleColors(visible);
+
+      const mask = this.layers.mask();
+      this.layerMask = mask;
+      this.shapeCache = null;
+      this.renderer.setLayerVisibility(mask);
+      this.textLayer.setLayerVisibility(mask);
+      this.snapIndex?.setVisibleLayers(mask);
+
+      // 属性を見ていた図形が隠れたら、選択を外す
+      if (this.selected >= 0 && !this.entityVisible(this.selected)) {
+        this.selected = -1;
+        this.updateInspect();
+      }
       if (textNow) this.textLayer.render(this.view);
     }
     this.requestDraw();
@@ -901,13 +1344,18 @@ class App {
       rows.push(`<p class="sub">${escapeHtml(info.warnings.join(' / '))}</p>`);
     }
 
-    rows.push('<div class="group-list"><div class="sub">計測に使う縮尺（レイヤグループ）</div>');
+    // 「自動」は区間ごとに点が乗った図形の縮尺で測る。グループを選ぶとすべての区間をその縮尺で測る
+    rows.push('<div class="group-list"><div class="sub">計測に使う縮尺</div>');
+    rows.push(
+      `<div class="group-row pick${this.manualScale ? '' : ' active'}" data-auto="1">` +
+      '<span>自動（点が乗った図形の縮尺）</span><span></span></div>',
+    );
     for (const g of info.groups) {
       if (!g.used) continue;
-      const active = Math.abs(g.scale - this.measureScale) < 1e-9 ? ' active' : '';
+      const active = this.manualScale && Math.abs(g.scale - this.measureScale) < 1e-9 ? ' active' : '';
       rows.push(
         `<div class="group-row pick${active}" data-scale="${g.scale}">` +
-        `<span>グループ ${g.no}${g.name ? ` ${escapeHtml(g.name)}` : ''}</span>` +
+        `<span>グループ ${hex1(g.no)}${g.name ? ` ${escapeHtml(g.name)}` : ''}</span>` +
         `<span>1/${formatScale(g.scale)}</span></div>`,
       );
     }
@@ -916,15 +1364,30 @@ class App {
 
     for (const row of body.querySelectorAll<HTMLElement>('.group-row.pick')) {
       row.addEventListener('click', () => {
-        this.measureScale = Number(row.dataset.scale);
-        this.manualScale = true;
-        this.updateScaleButton();
+        if (row.dataset.auto) {
+          this.manualScale = false;
+          this.measureScale = this.points[0]?.scale ?? this.defaultScale;
+        } else {
+          this.measureScale = Number(row.dataset.scale);
+          this.manualScale = true;
+        }
         this.updateReadout();
         this.buildInfoPanel();
         this.requestDraw();
       });
     }
   }
+}
+
+/**
+ * 図面に保存されているレイヤの状態の要約。
+ * 同じ名前でも中身が変わった図面には、前に覚えたレイヤの表示を当てないために使う。
+ */
+function jwFingerprint(info: LoadedInfo): string {
+  return JSON.stringify([
+    info.writeGroup,
+    info.groups.map((g) => [g.state, g.writeLayer, g.layers.map((l) => l.state)]),
+  ]);
 }
 
 function formatScale(scale: number): string {

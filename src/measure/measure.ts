@@ -52,8 +52,9 @@ export interface Measured {
 /**
  * 区間ごとに、その両端が乗っているレイヤグループの縮尺で実寸に直す。
  * 図面には縮尺の違う図が同居しているので、全区間を一つの縮尺で通すと桁が狂う。
+ * fixed なら、利用者が選んだ縮尺 fallback ですべての区間を測る。
  */
-export function measureLengths(points: MeasurePoint[], fallback: number): Measured {
+export function measureLengths(points: MeasurePoint[], fallback: number, fixed = false): Measured {
   const segments: number[] = [];
   const scales: number[] = [];
   let mixed = false;
@@ -62,7 +63,9 @@ export function measureLengths(points: MeasurePoint[], fallback: number): Measur
     const b = points[i];
     const raw = Math.hypot(b.x - a.x, b.y - a.y);
     let scale: number;
-    if (a.scale != null && b.scale != null) {
+    if (fixed) {
+      scale = fallback;
+    } else if (a.scale != null && b.scale != null) {
       if (a.scale === b.scale) {
         scale = a.scale;
       } else {

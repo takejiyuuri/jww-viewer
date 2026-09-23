@@ -19,6 +19,8 @@ export class TextLayer {
   private styles: string[] = [];
   /** 色番号ごとに表示するかどうか */
   private visible: Uint8Array = new Uint8Array(0);
+  /** レイヤ（0〜255）ごとに表示するかどうか */
+  private layerVisible: Uint8Array = new Uint8Array(256).fill(1);
 
   /** 画面上でこの高さ未満の文字は描かない（デバイスピクセル） */
   minHeight = 6;
@@ -89,29 +91,51 @@ export class TextLayer {
     return Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5;
   }
 
+  /** レイヤ（0〜255）ごとの表示を差し替える */
+  setLayerVisibility(visible: Uint8Array): void {
+    this.layerVisible = visible;
+    this.drawnAt = null;
+  }
+
   render(view: View): void {
     const ctx = this.ctx;
     const { w, h } = this;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, w, h);
+    this.paint(ctx, view, 0, 0, w, h);
+    this.drawnAt = { ...view };
+    this.canvas.style.transform = '';
+  }
 
+  /**
+   * 別のキャンバスの一部（拡大鏡の中など）に、view で見た文字を描く。
+   * x, y, w, h はそのキャンバスのデバイスピクセルで、切り抜きは呼び出し側で済ませておく。
+   */
+  renderInset(ctx: CanvasRenderingContext2D, view: View, x: number, y: number, w: number, h: number): void {
+    ctx.save();
+    this.paint(ctx, view, x, y, w, h);
+    ctx.restore();
+  }
+
+  /** (ox, oy) を左上とする w × h の範囲の中央に view の中心が来るように描く */
+  private paint(ctx: CanvasRenderingContext2D, view: View, ox: number, oy: number, w: number, h: number): void {
     const z = view.zoom;
-    const halfW = w / 2;
-    const halfH = h / 2;
+    const cx = ox + w / 2;
+    const cy = oy + h / 2;
     let font = '';
     let style = '';
 
     for (const t of this.texts) {
-      if (!this.visible[t.color]) continue;
+      if (!this.visible[t.color] || !this.layerVisible[t.layer]) continue;
       const hpx = t.height * z;
       if (hpx < this.minHeight) continue;
 
-      const sx = (t.x - view.cx) * z + halfW;
-      const sy = halfH - (t.y - view.cy) * z;
+      const sx = (t.x - view.cx) * z + cx;
+      const sy = cy - (t.y - view.cy) * z;
       const wpx = t.width * z;
-      // 回転を考慮して余裕をもたせた画面外判定
+      // 回転を考慮して余裕をもたせた範囲外判定
       const margin = Math.max(wpx, hpx) + 8;
-      if (sx < -margin || sy < -margin || sx > w + margin || sy > h + margin) continue;
+      if (sx < ox - margin || sy < oy - margin || sx > ox + w + margin || sy > oy + h + margin) continue;
 
       const px = Math.round(hpx * 10) / 10;
       const next = `${px}px ${FONT_STACK}`;
@@ -136,8 +160,5 @@ export class TextLayer {
       ctx.fillText(t.text, 0, 0);
       ctx.restore();
     }
-
-    this.drawnAt = { ...view };
-    this.canvas.style.transform = '';
   }
 }

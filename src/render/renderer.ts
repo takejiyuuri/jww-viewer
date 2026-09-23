@@ -8,12 +8,19 @@ const PALETTE_LOOKUP = `
 uniform highp sampler2D uPalette;
 vec4 paletteColor(uint index) {
   return texelFetch(uPalette, ivec2(int(index & 255u), int(index >> 8u)), 0);
+}
+
+// レイヤ（0〜255）ごとに表示するかどうかを 256 ビットで持つ
+uniform uint uLayerMask[8];
+bool layerVisible(uint layer) {
+  return (uLayerMask[layer >> 5u] & (1u << (layer & 31u))) != 0u;
 }`;
 
 const LINE_VS = `#version 300 es
 layout(location = 0) in vec2 aCorner;
 layout(location = 1) in vec4 aSeg;
 layout(location = 2) in uint aColorIndex;
+layout(location = 3) in uint aLayer;
 
 uniform vec2 uCenter;
 uniform vec2 uScale;
@@ -29,8 +36,8 @@ void main() {
   vec4 pc = paletteColor(aColorIndex);
   vColor = pc.rgb;
   vHalfPx = uHalfWidth;
-  if (pc.a < 0.5) {
-    // 隠している色の線は、描画範囲の外へ追い出して描かない
+  if (pc.a < 0.5 || !layerVisible(aLayer)) {
+    // 隠している色やレイヤの線は、描画範囲の外へ追い出して描かない
     vEdge = 0.0;
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
     return;
@@ -59,6 +66,7 @@ void main() {
 const TRI_VS = `#version 300 es
 layout(location = 0) in vec2 aPos;
 layout(location = 1) in uint aColorIndex;
+layout(location = 2) in uint aLayer;
 
 uniform vec2 uCenter;
 uniform vec2 uScale;
@@ -69,7 +77,7 @@ out vec3 vColor;
 void main() {
   vec4 pc = paletteColor(aColorIndex);
   vColor = pc.rgb;
-  gl_Position = pc.a < 0.5
+  gl_Position = pc.a < 0.5 || !layerVisible(aLayer)
     ? vec4(2.0, 2.0, 2.0, 1.0)
     : vec4((aPos - uCenter) * uScale, 0.0, 1.0);
 }`;
@@ -138,12 +146,14 @@ interface LineUniforms {
   pixel: WebGLUniformLocation;
   hw: WebGLUniformLocation;
   palette: WebGLUniformLocation;
+  layers: WebGLUniformLocation;
 }
 
 interface TriUniforms {
   center: WebGLUniformLocation;
   scale: WebGLUniformLocation;
   palette: WebGLUniformLocation;
+  layers: WebGLUniformLocation;
 }
 
 export class Renderer {
@@ -171,6 +181,8 @@ export class Renderer {
   private scene: Scene | null = null;
   /** いま使っているパレット（RGBA）。同じく積み直し用 */
   private palette: Uint8Array = new Uint8Array([255, 255, 255, 255]);
+  /** レイヤごとの表示（256 ビット）。既定はすべて表示 */
+  private layerMask = new Uint32Array(8).fill(0xffffffff);
   private lost = false;
   /** コンテキストが戻ったときに呼ばれる。再描画のきっかけに使う */
   onRestored: (() => void) | null = null;
@@ -220,11 +232,13 @@ export class Renderer {
       pixel: gl.getUniformLocation(this.lineProg, 'uPixel')!,
       hw: gl.getUniformLocation(this.lineProg, 'uHalfWidth')!,
       palette: gl.getUniformLocation(this.lineProg, 'uPalette')!,
+      layers: gl.getUniformLocation(this.lineProg, 'uLayerMask')!,
     };
     this.uTri = {
       center: gl.getUniformLocation(this.triProg, 'uCenter')!,
       scale: gl.getUniformLocation(this.triProg, 'uScale')!,
       palette: gl.getUniformLocation(this.triProg, 'uPalette')!,
+      layers: gl.getUniformLocation(this.triProg, 'uLayerMask')!,
     };
   }
 
@@ -255,6 +269,18 @@ export class Renderer {
     this.palette = rgba;
     if (this.isLost) return;
     this.uploadPalette();
+  }
+
+  /**
+   * レイヤ（0〜255）ごとの表示を差し替える。1 なら表示。
+   * 毎フレーム uniform で渡すので、コンテキストが戻ったときも自然に復元される。
+   */
+  setLayerVisibility(visible: Uint8Array): void {
+    const mask = new Uint32Array(8);
+    for (let k = 0; k < 256; k++) {
+      if (visible[k]) mask[k >> 5] |= 1 << (k & 31);
+    }
+    this.layerMask = mask;
   }
 
   private uploadPalette(): void {
@@ -314,6 +340,11 @@ export class Renderer {
     gl.vertexAttribIPointer(2, 1, gl.UNSIGNED_SHORT, 0, 0);
     gl.vertexAttribDivisor(2, 1);
 
+    this.newBuffer(gl.ARRAY_BUFFER, scene.lineLayer);
+    gl.enableVertexAttribArray(3);
+    gl.vertexAttribIPointer(3, 1, gl.UNSIGNED_BYTE, 0, 0);
+    gl.vertexAttribDivisor(3, 1);
+
     // --- 塗り三角形 ---
     this.triCount = scene.triPos.length / 2;
     this.triVao = gl.createVertexArray();
@@ -326,6 +357,10 @@ export class Renderer {
     this.newBuffer(gl.ARRAY_BUFFER, scene.triColor);
     gl.enableVertexAttribArray(1);
     gl.vertexAttribIPointer(1, 1, gl.UNSIGNED_SHORT, 0, 0);
+
+    this.newBuffer(gl.ARRAY_BUFFER, scene.triLayer);
+    gl.enableVertexAttribArray(2);
+    gl.vertexAttribIPointer(2, 1, gl.UNSIGNED_BYTE, 0, 0);
 
     gl.bindVertexArray(null);
   }
@@ -378,6 +413,7 @@ export class Renderer {
     if (this.triCount > 0) {
       gl.useProgram(this.triProg);
       gl.uniform1i(this.uTri.palette, 0);
+      gl.uniform1uiv(this.uTri.layers, this.layerMask);
       gl.uniform2f(this.uTri.center, view.cx, view.cy);
       gl.uniform2f(this.uTri.scale, sx, sy);
       gl.bindVertexArray(this.triVao);
@@ -387,6 +423,7 @@ export class Renderer {
     if (this.lineCount > 0) {
       gl.useProgram(this.lineProg);
       gl.uniform1i(this.uLine.palette, 0);
+      gl.uniform1uiv(this.uLine.layers, this.layerMask);
       gl.uniform2f(this.uLine.center, view.cx, view.cy);
       gl.uniform2f(this.uLine.scale, sx, sy);
       gl.uniform2f(this.uLine.pixel, 2 / w, 2 / h);

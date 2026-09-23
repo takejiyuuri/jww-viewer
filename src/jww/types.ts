@@ -139,6 +139,8 @@ export interface JwwHeader {
   sxfColors: { rgb: number; width: number }[];
   /** SXF 拡張色の名前（色番号 100 から順）。空文字のこともある */
   sxfColorNames: string[];
+  /** SXF 拡張線種の名前（線種番号 30 から順）。空文字のこともある */
+  sxfLineTypeNames: string[];
   /** 保存時の画面倍率・原点 */
   zoom: number;
   originX: number;

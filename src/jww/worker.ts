@@ -1,26 +1,13 @@
 import { parseJww } from './parser.ts';
 import { buildScene } from '../render/geometry.ts';
 import type { Scene } from '../render/geometry.ts';
+import { buildInfo, type LoadedInfo } from './info.ts';
+
+export type { LayerState, LayerInfo, LayerGroupInfo, LoadedInfo } from './info.ts';
 
 export interface LoadRequest {
   buffer: ArrayBuffer;
   name: string;
-}
-
-export interface LoadedInfo {
-  name: string;
-  version: number;
-  paperSize: number;
-  memo: string;
-  counts: {
-    lines: number; arcs: number; points: number; texts: number;
-    solids: number; dims: number; blocks: number;
-  };
-  /** レイヤグループ番号ごとの縮尺分母と、実際に図形があるか */
-  groups: { no: number; scale: number; name: string; used: boolean }[];
-  writeGroup: number;
-  parseMs: number;
-  warnings: string[];
 }
 
 export type LoadResponse =
@@ -35,40 +22,16 @@ self.onmessage = (ev: MessageEvent<LoadRequest>) => {
     const scene = buildScene(doc);
     const parseMs = performance.now() - t0;
 
-    const used = new Set<number>();
-    for (let i = 0; i < scene.lineGroup.length; i++) used.add(scene.lineGroup[i]);
+    const info = buildInfo(doc, scene, name, parseMs);
 
-    const info: LoadedInfo = {
-      name,
-      version: doc.header.version,
-      paperSize: doc.header.paperSize,
-      memo: doc.header.memo,
-      counts: {
-        lines: doc.entities.lines.length,
-        arcs: doc.entities.arcs.length,
-        points: doc.entities.points.length,
-        texts: doc.entities.texts.length,
-        solids: doc.entities.solids.length,
-        dims: doc.entities.dims.length,
-        blocks: doc.entities.blocks.length,
-      },
-      groups: doc.header.groups.map((g, i) => ({
-        no: i,
-        scale: g.scale,
-        name: g.name,
-        used: used.has(i),
-      })),
-      writeGroup: doc.header.writeGroup,
-      parseMs,
-      warnings: doc.warnings,
-    };
-
+    // 型付き配列は複製せずに受け渡す（数十万要素あるので複製すると重い）
     const transfer: Transferable[] = [
-      scene.linePos.buffer, scene.lineColor.buffer, scene.lineGroup.buffer,
-      scene.lineSnap.buffer, scene.triPos.buffer, scene.triColor.buffer,
-      scene.snapPoint.buffer, scene.snapPointGroup.buffer, scene.snapPointColor.buffer,
-      scene.scales.buffer, scene.colors.buffer, scene.colorGroup.buffer,
-    ];
+      scene.linePos, scene.lineColor, scene.lineLayer, scene.lineSnap, scene.lineEntity,
+      scene.triPos, scene.triColor, scene.triLayer, scene.triEntity,
+      scene.snapPoint, scene.snapPointLayer, scene.snapPointColor, scene.snapPointEntity,
+      scene.scales, scene.colors, scene.colorGroup, scene.layerCounts,
+      ...Object.values(scene.entities).filter(ArrayBuffer.isView),
+    ].map((a) => (a as ArrayBufferView).buffer as ArrayBuffer);
     const res: LoadResponse = { ok: true, scene, info };
     (self as unknown as Worker).postMessage(res, transfer);
   } catch (err) {

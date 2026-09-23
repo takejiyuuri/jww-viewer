@@ -1,14 +1,15 @@
 import type {
-  JwwArc, JwwBlockDef, JwwDocument, JwwEntities, JwwHeader, JwwLine, JwwSolid, JwwText,
+  JwwArc, JwwBlockDef, JwwCommon, JwwDim, JwwDocument, JwwEntities, JwwHeader, JwwLine, JwwSolid, JwwText,
 } from '../jww/types.ts';
 
 /**
  * 描画・計測用に平坦化したシーン。
- * 線分は「1 線分 = 4 float + 色番号」のインスタンス配列として持ち、
+ * 線分は「1 線分 = 4 float + 色番号 + レイヤ」のインスタンス配列として持ち、
  * GPU 側では単位クアッドのインスタンス描画で一括して描く。
  *
  * 色は RGB を直接持たず、パレットの添字（色番号）で持つ。
- * 背景の白黒や色ごとの表示・非表示は、パレットを差し替えるだけで済む。
+ * レイヤは「上位 4 ビットがレイヤグループ、下位 4 ビットがレイヤ」の 0〜255 で持つ。
+ * 背景の白黒・色ごとやレイヤごとの表示非表示は、どれも線のデータを作り直さずに切り替えられる。
  */
 export interface Scene {
   /** 全図形を含む範囲 */
@@ -19,21 +20,28 @@ export interface Scene {
   linePos: Float32Array;
   /** 線分ごとの色番号（colors の添字） */
   lineColor: Uint16Array;
-  /** 線分ごとのレイヤグループ番号（縮尺の判定に使う） */
-  lineGroup: Uint8Array;
+  /** 線分ごとのレイヤ（0〜255）。縮尺の判定には上位 4 ビットのレイヤグループを使う */
+  lineLayer: Uint8Array;
   /** 線分ごとのスナップ可否（寸法の補助線などは対象外） */
   lineSnap: Uint8Array;
+  /** 線分ごとの、元になった図形の番号（entities の添字） */
+  lineEntity: Uint32Array;
   /** 塗り三角形の頂点 */
   triPos: Float32Array;
   /** 三角形の頂点ごとの色番号 */
   triColor: Uint16Array;
+  /** 三角形の頂点ごとのレイヤ */
+  triLayer: Uint8Array;
+  /** 三角形ごと（頂点ごとではない）の元の図形の番号 */
+  triEntity: Uint32Array;
   /** 文字（Canvas2D で描画） */
   texts: SceneText[];
   /** 円・円弧の中心、実点などの単独スナップ点 [x,y,...] */
   snapPoint: Float32Array;
-  snapPointGroup: Uint8Array;
+  snapPointLayer: Uint8Array;
   /** 単独スナップ点の色番号。隠した色の点には吸着させない */
   snapPointColor: Uint16Array;
+  snapPointEntity: Uint32Array;
   /** レイヤグループごとの縮尺分母 */
   scales: Float64Array;
   /** 色番号ごとの元の色（図面に保存されている画面色）RGB */
@@ -42,6 +50,12 @@ export interface Scene {
   colorGroup: Uint16Array;
   /** 表示・非表示を切り替える単位。Jw_cad の線色ごとにひとつ */
   groups: ColorGroup[];
+  /** レイヤ（0〜255）ごとの図形の数 */
+  layerCounts: Uint32Array;
+  /** 元の図形ごとの属性。属性の取得（タップした図形の情報）に使う */
+  entities: SceneEntities;
+  /** 部品（ブロック）の名前。entities.block の添字 */
+  blockNames: string[];
 }
 
 export interface ColorGroup {
@@ -68,7 +82,65 @@ export interface SceneText {
   text: string;
   /** 色番号 */
   color: number;
-  glayer: number;
+  /** レイヤ（0〜255） */
+  layer: number;
+  /** 元の図形の番号 */
+  entity: number;
+}
+
+/** 図形の種類 */
+export const KIND = {
+  line: 0,
+  arc: 1,
+  circle: 2,
+  text: 3,
+  solid: 4,
+  point: 5,
+  /** 寸法線 */
+  dim: 6,
+  /** 寸法値 */
+  dimText: 7,
+  /** 寸法の補助線（引出線） */
+  dimAux: 8,
+} as const;
+
+/**
+ * 元の図形ごとの属性を、図形の数だけ並べた配列の束で持つ。
+ * 図面によっては数万個あるので、オブジェクトの配列にせず Worker から丸ごと受け渡せる形にしている。
+ */
+export interface SceneEntities {
+  count: number;
+  kind: Uint8Array;
+  /** レイヤ（0〜255） */
+  layer: Uint8Array;
+  /** Jw_cad の線色番号 */
+  pen: Uint16Array;
+  /** Jw_cad の線種番号。文字では基点位置を兼ねるので属性表示には使わない */
+  style: Uint16Array;
+  /** 色番号（パレットの添字） */
+  color: Uint16Array;
+  /** 部品名（blockNames の添字）。部品の外なら -1 */
+  block: Int32Array;
+  lineStart: Uint32Array;
+  lineCount: Uint32Array;
+  /** 三角形単位の範囲 */
+  triStart: Uint32Array;
+  triCount: Uint32Array;
+  /**
+   * 実寸に直すときに使うレイヤグループ。ふつうは layer の上位 4 ビットと同じだが、
+   * 寸法は寸法線・補助線・寸法値が別のグループに載っていることがあるので、寸法そのもののグループにそろえる
+   */
+  group: Uint8Array;
+  /** 対応する文字（texts の添字）。寸法線では寸法値の文字。なければ -1 */
+  text: Int32Array;
+  /** 線・寸法の長さ、円・円弧の半径（楕円なら長いほう）、文字の高さ（図面座標） */
+  size: Float32Array;
+  /** 円・円弧の短いほうの半径。真円なら size と同じ。ほかの図形では 0 */
+  size2: Float32Array;
+  /** 円弧の長さ（図面座標） */
+  length: Float32Array;
+  /** 任意色の COLORREF。任意色でなければ -1 */
+  rgb: Int32Array;
 }
 
 /** 2x3 アフィン変換 */
@@ -122,6 +194,18 @@ function finite4(a: number, b: number, c: number, d: number): boolean {
 /** COLORREF (0x00BBGGRR) を RGB に分解 */
 function colorref(v: number): [number, number, number] {
   return [v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff];
+}
+
+/** 図形のレイヤ（0〜255）。ブロックの中身は配置した側のレイヤを引き継ぐ */
+function layerOf(c: JwwCommon, inherit: number | null): number {
+  return inherit ?? (((c.glayer & 15) << 4) | (c.layer & 15));
+}
+
+/** 変換で長さが何倍になるか（ブロックの倍率）。縦横で違えば平均を取る */
+function lengthScale(t: Xform): number {
+  const sx = Math.hypot(t.a, t.b);
+  const sy = Math.hypot(t.c, t.d);
+  return (sx + sy) / 2 || 1;
 }
 
 /** 色番号は Uint16 で持つので、これを超える種類の色は最後の番号にまとめる */
@@ -197,9 +281,18 @@ class Palette {
   }
 }
 
-class F32Buf {
-  data = new Float32Array(1 << 14);
+type Typed = Float32Array | Uint8Array | Uint16Array | Uint32Array | Int32Array;
+
+/** 伸びる型付き配列 */
+class Buf<T extends Typed> {
+  data: T;
   len = 0;
+  private readonly make: (n: number) => T;
+
+  constructor(make: (n: number) => T) {
+    this.make = make;
+    this.data = make(1 << 12);
+  }
 
   push(...vals: number[]): void {
     if (this.len + vals.length > this.data.length) this.grow(vals.length);
@@ -209,77 +302,67 @@ class F32Buf {
   private grow(need: number): void {
     let size = this.data.length * 2;
     while (size < this.len + need) size *= 2;
-    const next = new Float32Array(size);
+    const next = this.make(size);
     next.set(this.data);
     this.data = next;
   }
 
-  trim(): Float32Array {
-    return this.data.slice(0, this.len);
+  trim(): T {
+    return this.data.slice(0, this.len) as T;
   }
 }
 
-class U8Buf {
-  data = new Uint8Array(1 << 14);
-  len = 0;
-
-  push(...vals: number[]): void {
-    if (this.len + vals.length > this.data.length) this.grow(vals.length);
-    for (let i = 0; i < vals.length; i++) this.data[this.len++] = vals[i];
-  }
-
-  private grow(need: number): void {
-    let size = this.data.length * 2;
-    while (size < this.len + need) size *= 2;
-    const next = new Uint8Array(size);
-    next.set(this.data);
-    this.data = next;
-  }
-
-  trim(): Uint8Array {
-    return this.data.slice(0, this.len);
-  }
-}
-
-class U16Buf {
-  data = new Uint16Array(1 << 14);
-  len = 0;
-
-  push(...vals: number[]): void {
-    if (this.len + vals.length > this.data.length) this.grow(vals.length);
-    for (let i = 0; i < vals.length; i++) this.data[this.len++] = vals[i];
-  }
-
-  private grow(need: number): void {
-    let size = this.data.length * 2;
-    while (size < this.len + need) size *= 2;
-    const next = new Uint16Array(size);
-    next.set(this.data);
-    this.data = next;
-  }
-
-  trim(): Uint16Array {
-    return this.data.slice(0, this.len);
-  }
-}
+const f32 = (n: number) => new Float32Array(n);
+const u8 = (n: number) => new Uint8Array(n);
+const u16 = (n: number) => new Uint16Array(n);
+const u32 = (n: number) => new Uint32Array(n);
+const i32 = (n: number) => new Int32Array(n);
 
 class Builder {
-  linePos = new F32Buf();
-  lineColor = new U16Buf();
-  lineGroup = new U8Buf();
-  lineSnap = new U8Buf();
-  triPos = new F32Buf();
-  triColor = new U16Buf();
+  linePos = new Buf(f32);
+  lineColor = new Buf(u16);
+  lineLayer = new Buf(u8);
+  lineSnap = new Buf(u8);
+  lineEntity = new Buf(u32);
+  triPos = new Buf(f32);
+  triColor = new Buf(u16);
+  triLayer = new Buf(u8);
+  triEntity = new Buf(u32);
   texts: SceneText[] = [];
-  snapPoint = new F32Buf();
-  snapPointGroup = new U8Buf();
-  snapPointColor = new U16Buf();
+  snapPoint = new Buf(f32);
+  snapPointLayer = new Buf(u8);
+  snapPointColor = new Buf(u16);
+  snapPointEntity = new Buf(u32);
+  layerCounts = new Uint32Array(256);
+
+  // 図形ごとの属性
+  entKind = new Buf(u8);
+  entLayer = new Buf(u8);
+  entGroup = new Buf(u8);
+  entPen = new Buf(u16);
+  entStyle = new Buf(u16);
+  entColor = new Buf(u16);
+  entBlock = new Buf(i32);
+  entLineStart = new Buf(u32);
+  entLineCount = new Buf(u32);
+  entTriStart = new Buf(u32);
+  entTriCount = new Buf(u32);
+  entText = new Buf(i32);
+  entSize = new Buf(f32);
+  entSize2 = new Buf(f32);
+  entLength = new Buf(f32);
+  entRgb = new Buf(i32);
+  blockNames: string[] = [];
+  private blockIndex = new Map<number, number>();
+  /** いま書き出している図形の番号 */
+  private cur = 0;
+
   /**
    * 初期表示の範囲を決めるための代表点。
    * 線分ごとに取ると円弧の分割数で点の数が変わり、
    * 同じ図面でも表示範囲が動いてしまうため、図形ごとに数点だけ入れる。
    */
-  boundsPts = new F32Buf();
+  boundsPts = new Buf(f32);
   minX = Infinity; minY = Infinity; maxX = -Infinity; maxY = -Infinity;
   /** 壊れたファイルで際限なく膨らむのを防ぐための打ち切り */
   truncated = false;
@@ -290,6 +373,52 @@ class Builder {
   constructor(palette: Palette, blockDefs: Map<number, JwwBlockDef>) {
     this.palette = palette;
     this.blockDefs = blockDefs;
+  }
+
+  /** 部品名の番号。Ver.4.10 以降の名前に付く "@@SfigorgFlag@@..." は取り除く */
+  blockOf(defNo: number): number {
+    const hit = this.blockIndex.get(defNo);
+    if (hit !== undefined) return hit;
+    const raw = this.blockDefs.get(defNo)?.name ?? '';
+    const name = raw.split('@@SfigorgFlag@@')[0].trim() || `部品 ${defNo}`;
+    const i = this.blockNames.length;
+    this.blockNames.push(name);
+    this.blockIndex.set(defNo, i);
+    return i;
+  }
+
+  /**
+   * 図形をひとつ書き始める。以後の線分・三角形・文字はこの図形に属する。
+   * group は実寸に直すときのレイヤグループ（寸法以外はレイヤのグループそのもの）
+   */
+  begin(
+    kind: number, pen: number, style: number, layer: number, color: number, block: number,
+    rgb = -1, group = layer >> 4,
+  ): number {
+    this.cur = this.entKind.len;
+    this.entKind.push(kind);
+    this.entLayer.push(layer);
+    this.entGroup.push(group);
+    this.entPen.push(pen);
+    this.entStyle.push(style);
+    this.entColor.push(color);
+    this.entBlock.push(block);
+    this.entLineStart.push(this.lineLayer.len);
+    this.entTriStart.push(this.triEntity.len);
+    this.entText.push(-1);
+    this.entRgb.push(rgb);
+    this.layerCounts[layer]++;
+    return this.cur;
+  }
+
+  /** 書き始めた図形を閉じる */
+  end(size = 0, length = 0, size2 = 0): void {
+    const i = this.cur;
+    this.entLineCount.push(this.lineLayer.len - this.entLineStart.data[i]);
+    this.entTriCount.push(this.triEntity.len - this.entTriStart.data[i]);
+    this.entSize.push(size);
+    this.entSize2.push(size2);
+    this.entLength.push(length);
   }
 
   /** 表示範囲の候補として 1 点覚える */
@@ -306,7 +435,7 @@ class Builder {
 
   addSegment(
     x1: number, y1: number, x2: number, y2: number,
-    color: number, glayer: number, snap: boolean,
+    color: number, layer: number, snap: boolean,
   ): void {
     // 壊れたファイルでは座標が NaN や Infinity になりうる。
     // そのまま入れると範囲計算も索引も総崩れになるので、ここで落とす。
@@ -314,48 +443,58 @@ class Builder {
     if (this.linePos.len >= MAX_LINE_FLOATS) { this.truncated = true; return; }
     this.linePos.push(x1, y1, x2, y2);
     this.lineColor.push(color);
-    this.lineGroup.push(glayer);
+    this.lineLayer.push(layer);
     this.lineSnap.push(snap ? 1 : 0);
+    this.lineEntity.push(this.cur);
     this.track(x1, y1);
     this.track(x2, y2);
   }
 
   addTriangle(
     x1: number, y1: number, x2: number, y2: number, x3: number, y3: number,
-    color: number,
+    color: number, layer: number,
   ): void {
     if (!finite4(x1, y1, x2, y2) || !finite4(x3, y3, 0, 0)) return;
     if (this.triPos.len >= MAX_TRI_FLOATS) { this.truncated = true; return; }
     this.triPos.push(x1, y1, x2, y2, x3, y3);
     this.triColor.push(color, color, color);
+    this.triLayer.push(layer, layer, layer);
+    this.triEntity.push(this.cur);
     this.track(x1, y1);
     this.track(x2, y2);
     this.track(x3, y3);
   }
 
-  addPoint(x: number, y: number, glayer: number, color: number): void {
+  addPoint(x: number, y: number, layer: number, color: number): void {
     if (!finite4(x, y, 0, 0)) return;
     this.snapPoint.push(x, y);
-    this.snapPointGroup.push(glayer);
+    this.snapPointLayer.push(layer);
     this.snapPointColor.push(color);
+    this.snapPointEntity.push(this.cur);
   }
 }
 
-/**
- * ブロックの中身は定義時のレイヤ番号を持ったままだが、
- * 実際にどの縮尺で描かれるかは配置した側のレイヤグループで決まる。
- * group に値が入っていればそちらを使う。
- */
-function emitLine(b: Builder, l: JwwLine, t: Xform, snap: boolean, group: number | null): void {
+/** 線分をひとつ出す（図形の begin/end は呼び出し側）。長さを返す */
+function lineSegment(b: Builder, l: JwwLine, t: Xform, snap: boolean, color: number, layer: number): number {
   const [x1, y1] = apply(t, l.x1, l.y1);
   const [x2, y2] = apply(t, l.x2, l.y2);
-  b.addSegment(x1, y1, x2, y2, b.palette.entry(l.penColor), group ?? l.glayer, snap);
+  b.addSegment(x1, y1, x2, y2, color, layer, snap);
   b.sample(x1, y1);
   b.sample(x2, y2);
+  return Math.hypot(x2 - x1, y2 - y1);
+}
+
+function emitLine(b: Builder, l: JwwLine, t: Xform, inherit: number | null, block: number): void {
+  const layer = layerOf(l, inherit);
+  const color = b.palette.entry(l.penColor);
+  b.begin(KIND.line, l.penColor, l.penStyle, layer, color, block);
+  const len = lineSegment(b, l, t, true, color, layer);
+  b.end(len);
 }
 
 /** 円弧を折れ線に展開する。扁平率と傾きを考慮した楕円弧。 */
-function emitArc(b: Builder, a: JwwArc, t: Xform, snap: boolean, group: number | null): void {
+function emitArc(b: Builder, a: JwwArc, t: Xform, inherit: number | null, block: number): void {
+  const layer = layerOf(a, inherit);
   const sweep = a.isCircle ? Math.PI * 2 : a.arcAngle;
   const n = arcSegments(a.radius, sweep);
   const color = b.palette.entry(a.penColor);
@@ -363,27 +502,76 @@ function emitArc(b: Builder, a: JwwArc, t: Xform, snap: boolean, group: number |
   const sin = Math.sin(a.tilt);
   const ry = a.radius * (a.flatness || 1);
 
+  b.begin(a.isCircle ? KIND.circle : KIND.arc, a.penColor, a.penStyle, layer, color, block);
   let px = 0, py = 0;
+  let length = 0;
   for (let i = 0; i <= n; i++) {
     const th = a.startAngle + (sweep * i) / n;
-    // 代表点は始点・中間・終点だけにして、分割数に左右されないようにする
-    
     const lx = a.radius * Math.cos(th);
     const ly = ry * Math.sin(th);
     const [x, y] = apply(t, a.cx + lx * cos - ly * sin, a.cy + lx * sin + ly * cos);
-    if (i > 0) b.addSegment(px, py, x, y, color, group ?? a.glayer, snap);
+    if (i > 0) {
+      b.addSegment(px, py, x, y, color, layer, true);
+      length += Math.hypot(x - px, y - py);
+    }
+    // 代表点は始点・中間・終点だけにして、分割数に左右されないようにする
     if (i === 0 || i === n || i * 2 === n) b.sample(x, y);
     px = x;
     py = y;
   }
-  if (snap) {
-    const [cx, cy] = apply(t, a.cx, a.cy);
-    b.addPoint(cx, cy, group ?? a.glayer, color);
-  }
+  const [cx, cy] = apply(t, a.cx, a.cy);
+  b.addPoint(cx, cy, layer, color);
+  const [major, minor] = ellipseAxes(t, a.radius, ry, a.tilt);
+  b.end(major, arcLength(a, t, sweep, ry, cos, sin, major, minor, length), minor);
 }
 
-function emitSolid(b: Builder, s: JwwSolid, t: Xform, group: number | null): void {
-  const color = b.palette.entry(s.penColor, s.penColor === 10 ? s.rgb : undefined);
+/**
+ * 変換後の楕円の半径（長いほう・短いほう）。
+ * 半径 (rx, ry) を傾き tilt で回した楕円に、ブロックの変換 t を掛けたものの特異値になる。
+ */
+function ellipseAxes(t: Xform, rx: number, ry: number, tilt: number): [number, number] {
+  const c = Math.cos(tilt), s = Math.sin(tilt);
+  // M = [[t.a, t.c], [t.b, t.d]] に R(tilt)·diag(rx, ry) を掛けた 2x2 行列
+  const m00 = (t.a * c + t.c * s) * rx, m01 = (-t.a * s + t.c * c) * ry;
+  const m10 = (t.b * c + t.d * s) * rx, m11 = (-t.b * s + t.d * c) * ry;
+  const sum = m00 * m00 + m01 * m01 + m10 * m10 + m11 * m11;
+  const det = m00 * m11 - m01 * m10;
+  const root = Math.sqrt(Math.max(0, sum * sum - 4 * det * det));
+  const major = Math.sqrt(Math.max(0, (sum + root) / 2));
+  const minor = Math.sqrt(Math.max(0, (sum - root) / 2));
+  // 真円どうしは誤差で食い違わないよう同じ値にそろえる
+  return [major, Math.abs(major - minor) <= major * 1e-7 ? major : minor];
+}
+
+/**
+ * 円弧の長さ。描画用に分割した折れ線の長さは弦の和なので実際より短い。
+ * 真円なら半径 × 角度で正確に、楕円はずっと細かく分けて足し合わせる。
+ */
+function arcLength(
+  a: JwwArc, t: Xform, sweep: number, ry: number, cos: number, sin: number,
+  major: number, minor: number, chords: number,
+): number {
+  if (major === minor) return major * Math.abs(sweep);
+  const steps = 2048;
+  let length = 0;
+  let px = 0, py = 0;
+  for (let i = 0; i <= steps; i++) {
+    const th = a.startAngle + (sweep * i) / steps;
+    const lx = a.radius * Math.cos(th);
+    const ly = ry * Math.sin(th);
+    const [x, y] = apply(t, a.cx + lx * cos - ly * sin, a.cy + lx * sin + ly * cos);
+    if (i > 0) length += Math.hypot(x - px, y - py);
+    px = x;
+    py = y;
+  }
+  return Number.isFinite(length) ? length : chords;
+}
+
+function emitSolid(b: Builder, s: JwwSolid, t: Xform, inherit: number | null, block: number): void {
+  const layer = layerOf(s, inherit);
+  const custom = s.penColor === 10 ? s.rgb : undefined;
+  const color = b.palette.entry(s.penColor, custom);
+  b.begin(KIND.solid, s.penColor, s.penStyle, layer, color, block, custom ?? -1);
 
   if (s.penStyle >= 101) {
     // 円系ソリッド。CDataSolid を流用しており各点の意味が異なる。
@@ -413,8 +601,8 @@ function emitSolid(b: Builder, s: JwwSolid, t: Xform, group: number | null): voi
         const th = start + (sweep * i) / n;
         const [cx2, cy2] = pt(th, radius);
         const [dx2, dy2] = pt(th, inner);
-        b.addTriangle(ax, ay, bx, by, cx2, cy2, color);
-        b.addTriangle(bx, by, dx2, dy2, cx2, cy2, color);
+        b.addTriangle(ax, ay, bx, by, cx2, cy2, color, layer);
+        b.addTriangle(bx, by, dx2, dy2, cx2, cy2, color, layer);
         ax = cx2; ay = cy2; bx = dx2; by = dy2;
       }
     } else {
@@ -423,14 +611,15 @@ function emitSolid(b: Builder, s: JwwSolid, t: Xform, group: number | null): voi
       for (let i = 1; i <= n; i++) {
         const th = start + (sweep * i) / n;
         const [qx, qy] = pt(th, radius);
-        b.addTriangle(ox, oy, px, py, qx, qy, color);
+        b.addTriangle(ox, oy, px, py, qx, qy, color, layer);
         px = qx; py = qy;
       }
     }
     const [ox, oy] = apply(t, cx, cy);
-    b.addPoint(ox, oy, group ?? s.glayer, color);
+    b.addPoint(ox, oy, layer, color);
     b.sample(ox - radius, oy - radius);
     b.sample(ox + radius, oy + radius);
+    b.end(Math.abs(radius) * lengthScale(t));
     return;
   }
 
@@ -438,26 +627,28 @@ function emitSolid(b: Builder, s: JwwSolid, t: Xform, group: number | null): voi
   const [x2, y2] = apply(t, s.x2, s.y2);
   const [x3, y3] = apply(t, s.x3, s.y3);
   const [x4, y4] = apply(t, s.x4, s.y4);
-  b.addTriangle(x1, y1, x2, y2, x3, y3, color);
-  b.addTriangle(x1, y1, x3, y3, x4, y4, color);
+  b.addTriangle(x1, y1, x2, y2, x3, y3, color, layer);
+  b.addTriangle(x1, y1, x3, y3, x4, y4, color, layer);
   b.sample(x1, y1);
   b.sample(x2, y2);
   b.sample(x3, y3);
   b.sample(x4, y4);
+  b.end();
 }
 
-function emitText(b: Builder, m: JwwText, t: Xform, group: number | null): void {
-  if (!m.text) return;
+/** 文字をひとつ出す（図形の begin/end は呼び出し側）。texts の添字を返す。出さなければ -1 */
+function textItem(b: Builder, m: JwwText, t: Xform, color: number, layer: number, entity: number): number {
+  if (!m.text) return -1;
   const [x1, y1] = apply(t, m.x1, m.y1);
   const [x2, y2] = apply(t, m.x2, m.y2);
-  if (!finite4(x1, y1, x2, y2) || !Number.isFinite(m.sizeY)) return;
-  const color = b.palette.entry(m.penColor);
+  if (!finite4(x1, y1, x2, y2) || !Number.isFinite(m.sizeY)) return -1;
   const dx = x2 - x1;
   const dy = y2 - y1;
   const width = Math.hypot(dx, dy);
   // 始終点から実際の描画角度を得る（ブロックの回転もこれで反映される）
   const angle = width > 1e-9 ? (Math.atan2(dy, dx) * 180) / Math.PI : m.angle;
   const sy = Math.hypot(t.c, t.d) || 1;
+  const index = b.texts.length;
   b.texts.push({
     x: x1, y: y1,
     width: width || m.sizeX * m.text.length,
@@ -465,40 +656,84 @@ function emitText(b: Builder, m: JwwText, t: Xform, group: number | null): void 
     angle,
     text: m.text,
     color,
-    glayer: group ?? m.glayer,
+    layer,
+    entity,
   });
   b.track(x1, y1);
   b.track(x2, y2);
   b.sample(x1, y1);
   b.sample(x2, y2);
+  return index;
+}
+
+function emitText(b: Builder, m: JwwText, t: Xform, inherit: number | null, block: number): void {
+  if (!m.text) return;
+  const layer = layerOf(m, inherit);
+  const color = b.palette.entry(m.penColor);
+  // 文字の penStyle は線種ではなく基点位置なので、線種としては持たない
+  const e = b.begin(KIND.text, m.penColor, 0, layer, color, block);
+  const index = textItem(b, m, t, color, layer, e);
+  b.entText.data[e] = index;
+  b.end(m.sizeY * (Math.hypot(t.c, t.d) || 1));
+}
+
+/**
+ * 寸法。寸法線（と補助線）と寸法値は、それぞれ自分のレイヤで表示が決まる。
+ * 実際の図面では寸法線だけが非表示の補助線レイヤにあり、値は見えている、ということがある。
+ * そのため寸法線と寸法値は別の図形として扱い、互いに参照できるようにしておく。
+ */
+function emitDim(b: Builder, d: JwwDim, t: Xform, inherit: number | null, block: number): void {
+  // 寸法線と寸法値が縮尺の違うグループに載っていることがある。寸法値と合うのは寸法そのもののグループ
+  const group = layerOf(d, inherit) >> 4;
+  const lineLayer = layerOf(d.line, inherit);
+  const lineColor = b.palette.entry(d.line.penColor);
+  const lineEnt = b.begin(KIND.dim, d.line.penColor, d.line.penStyle, lineLayer, lineColor, block, -1, group);
+  const len = lineSegment(b, d.line, t, true, lineColor, lineLayer);
+  b.end(len);
+  const members = [lineEnt];
+  if (d.extras) {
+    // 補助線は計測の吸着先にしない。レイヤと線色はそれぞれが持つものに従うので、図形としても分けておく
+    for (const aux of [d.extras.aux1, d.extras.aux2]) {
+      const auxLayer = layerOf(aux, inherit);
+      const auxColor = b.palette.entry(aux.penColor, undefined, false);
+      members.push(b.begin(KIND.dimAux, aux.penColor, aux.penStyle, auxLayer, auxColor, block, -1, group));
+      b.end(lineSegment(b, aux, t, false, auxColor, auxLayer));
+    }
+  }
+
+  if (!d.text.text) return;
+  const textLayer = layerOf(d.text, inherit);
+  const textColor = b.palette.entry(d.text.penColor);
+  const textEnt = b.begin(KIND.dimText, d.text.penColor, 0, textLayer, textColor, block, -1, group);
+  const index = textItem(b, d.text, t, textColor, textLayer, textEnt);
+  b.entText.data[textEnt] = index;
+  for (const m of members) b.entText.data[m] = index;
+  b.end(len);
 }
 
 function emitEntities(
   b: Builder, e: JwwEntities, t: Xform, depth: number,
-  open: Set<number>, group: number | null,
+  open: Set<number>, inherit: number | null, block: number,
 ): void {
-  for (const l of e.lines) emitLine(b, l, t, true, group);
-  for (const a of e.arcs) emitArc(b, a, t, true, group);
-  for (const s of e.solids) emitSolid(b, s, t, group);
-  for (const m of e.texts) emitText(b, m, t, group);
+  for (const l of e.lines) emitLine(b, l, t, inherit, block);
+  for (const a of e.arcs) emitArc(b, a, t, inherit, block);
+  for (const s of e.solids) emitSolid(b, s, t, inherit, block);
+  for (const m of e.texts) emitText(b, m, t, inherit, block);
 
   for (const p of e.points) {
     if (p.temporary) continue;
     const [x, y] = apply(t, p.x, p.y);
-    // 実点は線として描かないので、図形数には数えない
-    b.addPoint(x, y, group ?? p.glayer, b.palette.entry(p.penColor, undefined, false));
+    const layer = layerOf(p, inherit);
+    // 実点は線として描かないので、色の図形数には数えない
+    const color = b.palette.entry(p.penColor, undefined, false);
+    b.begin(KIND.point, p.penColor, 0, layer, color, block);
+    b.addPoint(x, y, layer, color);
+    b.end();
     b.track(x, y);
     b.sample(x, y);
   }
 
-  for (const d of e.dims) {
-    emitLine(b, d.line, t, true, group);
-    emitText(b, d.text, t, group);
-    if (d.extras) {
-      emitLine(b, d.extras.aux1, t, false, group);
-      emitLine(b, d.extras.aux2, t, false, group);
-    }
-  }
+  for (const d of e.dims) emitDim(b, d, t, inherit, block);
 
   if (depth >= 16) return;
   for (const ref of e.blocks) {
@@ -515,14 +750,19 @@ function emitEntities(
       e: ref.x, f: ref.y,
     };
     open.add(ref.defNo);
-    emitEntities(b, def.entities, compose(local, t), depth + 1, open, ref.glayer);
+    // 部品の中身は、いちばん外側で配置したレイヤに従って表示・非表示が決まる。
+    // 部品の名前は、その図形をじかに含んでいる部品のものを使う。
+    emitEntities(
+      b, def.entities, compose(local, t), depth + 1, open,
+      inherit ?? layerOf(ref, null), b.blockOf(ref.defNo),
+    );
     open.delete(ref.defNo);
   }
 }
 
 export function buildScene(doc: JwwDocument): Scene {
   const b = new Builder(new Palette(doc.header), doc.blockDefs);
-  emitEntities(b, doc.entities, IDENTITY, 0, new Set(), null);
+  emitEntities(b, doc.entities, IDENTITY, 0, new Set(), null, -1);
   if (b.truncated) {
     doc.warnings.push('図形が多すぎたため、描画データを途中で打ち切りました');
   }
@@ -536,25 +776,49 @@ export function buildScene(doc: JwwDocument): Scene {
     ? { minX: 0, minY: 0, maxX: 100, maxY: 100 }
     : { minX: b.minX, minY: b.minY, maxX: b.maxX, maxY: b.maxY };
 
-  const linePos = b.linePos.trim();
   return {
     bounds,
     fitBounds: unite(robustBounds(b.boundsPts.trim(), bounds), paper),
-    linePos,
+    linePos: b.linePos.trim(),
     lineColor: b.lineColor.trim(),
-    lineGroup: b.lineGroup.trim(),
+    lineLayer: b.lineLayer.trim(),
     lineSnap: b.lineSnap.trim(),
+    lineEntity: b.lineEntity.trim(),
     triPos: b.triPos.trim(),
     triColor: b.triColor.trim(),
+    triLayer: b.triLayer.trim(),
+    triEntity: b.triEntity.trim(),
     texts: b.texts,
     snapPoint: b.snapPoint.trim(),
-    snapPointGroup: b.snapPointGroup.trim(),
+    snapPointLayer: b.snapPointLayer.trim(),
     snapPointColor: b.snapPointColor.trim(),
+    snapPointEntity: b.snapPointEntity.trim(),
     scales,
     colors: Uint8Array.from(b.palette.rgb),
     colorGroup: Uint16Array.from(b.palette.entryGroup),
     // 並び替えると colorGroup の添字とずれるので、払い出し順のまま渡す（並べるのは表示側）
     groups: b.palette.groups,
+    layerCounts: b.layerCounts,
+    entities: {
+      count: b.entKind.len,
+      kind: b.entKind.trim(),
+      layer: b.entLayer.trim(),
+      group: b.entGroup.trim(),
+      pen: b.entPen.trim(),
+      style: b.entStyle.trim(),
+      color: b.entColor.trim(),
+      block: b.entBlock.trim(),
+      lineStart: b.entLineStart.trim(),
+      lineCount: b.entLineCount.trim(),
+      triStart: b.entTriStart.trim(),
+      triCount: b.entTriCount.trim(),
+      text: b.entText.trim(),
+      size: b.entSize.trim(),
+      size2: b.entSize2.trim(),
+      length: b.entLength.trim(),
+      rgb: b.entRgb.trim(),
+    },
+    blockNames: b.blockNames,
   };
 }
 

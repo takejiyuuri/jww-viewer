@@ -97,7 +97,9 @@ export class Reader {
     const b = this.u8();
     if (b === 0) return '';
     const len = b === 0xff ? this.u16() : b;
-    return this.raw(len);
+    const s = this.raw(len);
+    // Shift-JIS にない文字は、Jw_cad が "\U+01B0" のような形で書き込んでいる
+    return s.includes('\\U+') ? s.replace(/\\U\+([0-9A-Fa-f]{4})/g, (_, h: string) => String.fromCharCode(parseInt(h, 16))) : s;
   }
 
   /**

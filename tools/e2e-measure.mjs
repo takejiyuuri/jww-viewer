@@ -83,7 +83,25 @@ const tapAt = async (x, y) => {
 // ---------- 2. 2 点目が水平か垂直に乗る ----------
 {
   await page.evaluate(() => { window.__jww.points = []; window.__jww.updateReadout(); });
-  await tapAt(160, 380);
+  // 置いた点から真横に伸ばした線の上に図形がある場所を 1 点目にする
+  const start = await page.evaluate(() => {
+    const a = window.__jww;
+    const unit = a.dpr / a.view.zoom;
+    const r = 22 * unit;
+    const bottom = document.getElementById('readout').getBoundingClientRect().top - 30;
+    for (let y = 200; y < bottom; y += 20) {
+      for (let x = 60; x < 220; x += 20) {
+        const w = a.toWorld(x, y);
+        const p = a.snapIndex.query(w.x, w.y, r);
+        if (p.kind === 'free') continue;
+        for (let d = 30; d < 260; d += 8) {
+          if (a.snapIndex.queryOnAxis(p.x, p.y, 'horizontal', p.x + d * unit, p.y, r).kind !== 'free') return { x, y };
+        }
+      }
+    }
+    return { x: 160, y: 380 };
+  });
+  await tapAt(start.x, start.y);
   const anchor0 = (await points())[0];
   // 基準点から真横に伸ばした線の上で、実際に図形と交わる位置を探して狙う
   const target = await page.evaluate(([ax, ay]) => {
@@ -126,11 +144,15 @@ const tapAt = async (x, y) => {
   check('つまんだ点が動く', moved > 0, { 移動量: moved.toFixed(3) });
   check('動かしても図形に吸着する', after[0].kind !== 'free', { 吸着: after[0].kind });
   // 1 点目を動かしたときは 2 点目との間で拘束が効く
-  const dx = Math.abs(after[1].x - after[0].x);
-  const dy = Math.abs(after[1].y - after[0].y);
-  check('動かした後も水平か垂直を保つ', dy < 1e-9 || dx < 1e-9, {
-    dx: dx.toFixed(6), dy: dy.toFixed(6),
-  });
+  if (after.length >= 2) {
+    const dx = Math.abs(after[1].x - after[0].x);
+    const dy = Math.abs(after[1].y - after[0].y);
+    check('動かした後も水平か垂直を保つ', dy < 1e-9 || dx < 1e-9, {
+      dx: dx.toFixed(6), dy: dy.toFixed(6),
+    });
+  } else {
+    check('動かした後も水平か垂直を保つ', false, { 点数: after.length });
+  }
   await page.screenshot({ path: path.join(outDir, 'e2e-drag.png') });
 }
 
@@ -148,13 +170,13 @@ const tapAt = async (x, y) => {
 {
   await page.click('#btn-ortho');
   await page.evaluate(() => { window.__jww.points = []; window.__jww.updateReadout(); });
-  await tapAt(150, 360);
-  await tapAt(300, 500);
+  await tapAt(150, 300);
+  await tapAt(300, 420);
   const p = await points();
-  const dx = Math.abs(p[1].x - p[0].x);
-  const dy = Math.abs(p[1].y - p[0].y);
+  const dx = p.length === 2 ? Math.abs(p[1].x - p[0].x) : 0;
+  const dy = p.length === 2 ? Math.abs(p[1].y - p[0].y) : 0;
   check('直交を切ると斜めに置ける', p.length === 2 && dx > 1e-9 && dy > 1e-9, {
-    dx: dx.toFixed(4), dy: dy.toFixed(4),
+    点数: p.length, dx: dx.toFixed(4), dy: dy.toFixed(4),
   });
   const detail = await page.textContent('#readout-detail');
   check('斜めのとき水平・垂直の内訳が出る', /水平.*垂直/.test(detail ?? ''), { 内訳: detail });
@@ -164,14 +186,16 @@ const tapAt = async (x, y) => {
 // ---------- 6. 拘束線と線分の交点に吸着しているか ----------
 {
   await page.evaluate(() => { window.__jww.points = []; window.__jww.updateReadout(); });
-  await tapAt(180, 400);
+  await tapAt(180, 260);
   const anchor = (await points())[0];
-  // 基準点から真下に伸ばした線の上で、図形と交わる位置を探して狙う
+  // 基準点から真下に伸ばした線の上で、図形と交わる位置を探して狙う（下のパネルに隠れていない範囲で）
   const t = await page.evaluate(([ax, ay]) => {
     const a = window.__jww;
     const unit = a.dpr / a.view.zoom;
     const r = 22 * unit;
-    for (let d = 30; d < 260; d += 8) {
+    const ayScreen = a.cssH / 2 - (ay - a.view.cy) / unit;
+    const limit = document.getElementById('readout').getBoundingClientRect().top - 30 - ayScreen;
+    for (let d = 30; d < Math.min(260, limit); d += 8) {
       const hit = a.snapIndex.queryOnAxis(ax, ay, 'vertical', ax, ay - d * unit, r);
       if (hit.kind !== 'free') return { x: hit.x, y: hit.y, kind: hit.kind };
     }

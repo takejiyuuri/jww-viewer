@@ -75,25 +75,53 @@ export function saveDisplay(d: DisplaySettings): void {
   }
 }
 
-/**
- * 最後に開いた図面で隠していた線色番号。
- * 同じ図面を開き直したときだけ戻し、別の図面では全部表示から始める。
- */
-export function loadHiddenPens(name: string): number[] {
-  try {
-    const v = JSON.parse(localStorage.getItem(HIDDEN_KEY) ?? 'null') as { name?: string; pens?: unknown } | null;
-    if (v && v.name === name && Array.isArray(v.pens)) {
-      return v.pens.filter((p): p is number => Number.isInteger(p));
-    }
-  } catch {
-    // 壊れていたら無視する
-  }
-  return [];
+/** 図面ごとに覚えておく表示の状態 */
+export interface ViewState {
+  /** 隠している線色番号 */
+  pens: number[];
+  /**
+   * 隠しているレイヤグループ（0〜15）とレイヤ（0〜255）。
+   * null のときは記録がないので、Jw_cad で保存したときの状態から始める。
+   */
+  groups: number[] | null;
+  layers: number[] | null;
+  /**
+   * 記録したときの、図面に保存されていたレイヤの状態の要約。
+   * 図面の側が変わっていたら（同じ名前の別の図面など）、レイヤの記録は当てない
+   */
+  jw: string | null;
 }
 
-export function saveHiddenPens(name: string, pens: number[]): void {
+const EMPTY_VIEW: ViewState = { pens: [], groups: null, layers: null, jw: null };
+
+function intList(v: unknown, max: number): number[] | null {
+  if (!Array.isArray(v)) return null;
+  return v.filter((p): p is number => Number.isInteger(p) && p >= 0 && p < max);
+}
+
+/**
+ * 最後に開いた図面の表示状態。
+ * 同じ図面を開き直したときだけ戻し、別の図面では最初から（色は全部、レイヤは Jw_cad の状態）。
+ * 色だけを覚えていた以前の形式もそのまま読める。
+ */
+export function loadViewState(name: string): ViewState {
   try {
-    localStorage.setItem(HIDDEN_KEY, JSON.stringify({ name, pens }));
+    const v = JSON.parse(localStorage.getItem(HIDDEN_KEY) ?? 'null') as Record<string, unknown> | null;
+    if (!v || v.name !== name) return { ...EMPTY_VIEW };
+    return {
+      pens: intList(v.pens, 1 << 16) ?? [],
+      groups: intList(v.groups, 16),
+      layers: intList(v.layers, 256),
+      jw: typeof v.jw === 'string' ? v.jw : null,
+    };
+  } catch {
+    return { ...EMPTY_VIEW };
+  }
+}
+
+export function saveViewState(name: string, state: ViewState): void {
+  try {
+    localStorage.setItem(HIDDEN_KEY, JSON.stringify({ name, ...state }));
   } catch {
     // 保存できなくても表示には影響しない
   }

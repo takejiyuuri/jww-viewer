@@ -68,6 +68,8 @@ export class SnapIndex {
    * 画面で隠している色の線に吸着すると、見えない所に点が乗って混乱するため。
    */
   private visibleColor: Uint8Array | null = null;
+  /** レイヤ（0〜255）ごとに吸着させるかどうか。null なら全部 */
+  private visibleLayer: Uint8Array | null = null;
 
   constructor(scene: Scene) {
     this.scene = scene;
@@ -89,11 +91,10 @@ export class SnapIndex {
     const bigList: number[] = [];
 
     const pos = scene.linePos;
-    const snap = scene.lineSnap;
 
-    // 1 パス目: セルごとの件数を数える
+    // 1 パス目: セルごとの件数を数える。
+    // 吸着先にしない線（寸法の補助線）も、タップで図形を拾うときのために載せておく
     for (let i = 0; i < segCount; i++) {
-      if (!snap[i]) continue;
       const r = this.cellRange(pos[i * 4], pos[i * 4 + 1], pos[i * 4 + 2], pos[i * 4 + 3]);
       if ((r.x1 - r.x0 + 1) * (r.y1 - r.y0 + 1) > BIG_SPAN) {
         bigList.push(i);
@@ -111,7 +112,6 @@ export class SnapIndex {
     // 2 パス目: 実際に詰める
     const cursor = this.offsets.slice(0, cells);
     for (let i = 0; i < segCount; i++) {
-      if (!snap[i]) continue;
       const r = this.cellRange(pos[i * 4], pos[i * 4 + 1], pos[i * 4 + 2], pos[i * 4 + 3]);
       if ((r.x1 - r.x0 + 1) * (r.y1 - r.y0 + 1) > BIG_SPAN) continue;
       for (let gy = r.y0; gy <= r.y1; gy++) {
@@ -145,9 +145,24 @@ export class SnapIndex {
     this.visibleColor = visible;
   }
 
+  /** レイヤ（0〜255）ごとの表示状態（1 なら表示）を渡す。隠したレイヤには吸着しなくなる */
+  setVisibleLayers(visible: Uint8Array | null): void {
+    this.visibleLayer = visible;
+  }
+
   private pointVisible(i: number): boolean {
     const v = this.visibleColor;
-    return !v || v[this.scene.snapPointColor[i]] === 1;
+    const l = this.visibleLayer;
+    return (!v || v[this.scene.snapPointColor[i]] === 1)
+      && (!l || l[this.scene.snapPointLayer[i]] === 1);
+  }
+
+  /** 線分が見えているか（色とレイヤの両方で表示になっているか） */
+  lineVisible(i: number): boolean {
+    const v = this.visibleColor;
+    const l = this.visibleLayer;
+    return (!v || v[this.scene.lineColor[i]] === 1)
+      && (!l || l[this.scene.lineLayer[i]] === 1);
   }
 
   private clampGx(v: number): number {
@@ -178,7 +193,9 @@ export class SnapIndex {
    * グリッドの走査順で先着順に打ち切ると、指の真下の線分が候補から漏れて
    * 遠い線分に吸着してしまうので、必ず距離で選び直す。
    */
-  private nearbySegments(x: number, y: number, r: number, limit: number): number[] {
+  /** pickable が true なら、吸着先にしない線（寸法の補助線）も含める */
+  private nearbySegments(x: number, y: number, r: number, limit: number, pickable = false): number[] {
+    const snap = this.scene.lineSnap;
     const out: number[] = [];
     const gx0 = this.clampGx(Math.floor((x - r - this.minX) / this.cell));
     const gx1 = this.clampGx(Math.floor((x + r - this.minX) / this.cell));
@@ -186,8 +203,6 @@ export class SnapIndex {
     const gy1 = this.clampGy(Math.floor((y + r - this.minY) / this.cell));
     const seen = new Set<number>();
     const pos = this.scene.linePos;
-    const lineColor = this.scene.lineColor;
-    const vis = this.visibleColor;
     const r2 = r * r;
     const dist: number[] = [];
 
@@ -198,7 +213,8 @@ export class SnapIndex {
           const i = this.items[k];
           if (seen.has(i)) continue;
           seen.add(i);
-          if (vis && !vis[lineColor[i]]) continue;
+          if (!pickable && !snap[i]) continue;
+          if (!this.lineVisible(i)) continue;
           const d2 = segDist2(pos, i, x, y);
           if (d2 > r2) continue;
           out.push(i);
@@ -212,7 +228,8 @@ export class SnapIndex {
       const i = this.big[k];
       if (seen.has(i)) continue;
       seen.add(i);
-      if (vis && !vis[lineColor[i]]) continue;
+      if (!pickable && !snap[i]) continue;
+      if (!this.lineVisible(i)) continue;
       const d2 = segDist2(pos, i, x, y);
       if (d2 > r2) continue;
       out.push(i);
@@ -234,7 +251,10 @@ export class SnapIndex {
    */
   query(x: number, y: number, radius: number): SnapResult {
     const pos = this.scene.linePos;
-    const group = this.scene.lineGroup;
+    // 縮尺の判定に使うレイヤグループは、レイヤ番号の上位 4 ビット
+    // 実寸に直すときのレイヤグループ（寸法は寸法そのもののグループ）
+    const { lineEntity, entities } = this.scene;
+    const group = (i: number): number => entities.group[lineEntity[i]];
     const r2 = radius * radius;
 
     let best: SnapResult = { x, y, kind: 'free', glayer: 0 };
@@ -258,7 +278,8 @@ export class SnapIndex {
 
     // 単独点（円中心・実点）
     const pts = this.scene.snapPoint;
-    const pg = this.scene.snapPointGroup;
+    const pointEntity = this.scene.snapPointEntity;
+    const pg = (i: number): number => this.scene.entities.group[pointEntity[i]];
     const gx0 = this.clampGx(Math.floor((x - radius - this.minX) / this.cell));
     const gx1 = this.clampGx(Math.floor((x + radius - this.minX) / this.cell));
     const gy0 = this.clampGy(Math.floor((y - radius - this.minY) / this.cell));
@@ -269,7 +290,7 @@ export class SnapIndex {
         for (let k = this.pOffsets[c]; k < this.pOffsets[c + 1]; k++) {
           const i = this.pItems[k];
           if (!this.pointVisible(i)) continue;
-          consider(pts[i * 2], pts[i * 2 + 1], 'center', pg[i]);
+          consider(pts[i * 2], pts[i * 2 + 1], 'center', pg(i));
         }
       }
     }
@@ -279,7 +300,7 @@ export class SnapIndex {
     for (const i of segs) {
       const ax = pos[i * 4], ay = pos[i * 4 + 1];
       const bx = pos[i * 4 + 2], by = pos[i * 4 + 3];
-      const g = group[i];
+      const g = group(i);
       consider(ax, ay, 'endpoint', g);
       consider(bx, by, 'endpoint', g);
       consider((ax + bx) / 2, (ay + by) / 2, 'midpoint', g);
@@ -309,8 +330,8 @@ export class SnapIndex {
         if (!p) continue;
         // 交わる 2 本のレイヤグループが違うと、どちらの縮尺で測るべきか決まらない。
         // 近い方を採ったうえで、決め手がないことを呼び出し側に伝える。
-        const gi = group[i];
-        const gj = group[j];
+        const gi = group(i);
+        const gj = group(j);
         if (gi === gj) {
           consider(p[0], p[1], 'intersection', gi);
         } else {
@@ -322,6 +343,53 @@ export class SnapIndex {
     }
 
     return best;
+  }
+
+  /**
+   * 見えている線分のうち、指の位置にいちばん近いもの。半径内になければ index は -1。
+   * 属性の取得（タップした図形を調べる）に使う。
+   */
+  nearestLine(x: number, y: number, radius: number): { index: number; dist: number } {
+    const pos = this.scene.linePos;
+    let index = -1;
+    let best = Infinity;
+    for (const i of this.nearbySegments(x, y, radius, SCAN_MAX, true)) {
+      const d = segDist2(pos, i, x, y);
+      if (d < best) {
+        best = d;
+        index = i;
+      }
+    }
+    return { index, dist: index >= 0 ? Math.sqrt(best) : Infinity };
+  }
+
+  /** 見えている単独点（実点・円の中心）のうち、半径内でいちばん近いもの。なければ -1 */
+  nearestPoint(x: number, y: number, radius: number): number {
+    const pts = this.scene.snapPoint;
+    const r2 = radius * radius;
+    const gx0 = this.clampGx(Math.floor((x - radius - this.minX) / this.cell));
+    const gx1 = this.clampGx(Math.floor((x + radius - this.minX) / this.cell));
+    const gy0 = this.clampGy(Math.floor((y - radius - this.minY) / this.cell));
+    const gy1 = this.clampGy(Math.floor((y + radius - this.minY) / this.cell));
+    let index = -1;
+    let best = r2;
+    for (let gy = gy0; gy <= gy1; gy++) {
+      for (let gx = gx0; gx <= gx1; gx++) {
+        const c = gy * this.gw + gx;
+        for (let k = this.pOffsets[c]; k < this.pOffsets[c + 1]; k++) {
+          const i = this.pItems[k];
+          if (!this.pointVisible(i)) continue;
+          const dx = pts[i * 2] - x;
+          const dy = pts[i * 2 + 1] - y;
+          const d = dx * dx + dy * dy;
+          if (d <= best) {
+            best = d;
+            index = i;
+          }
+        }
+      }
+    }
+    return index;
   }
 
   /**
@@ -339,7 +407,10 @@ export class SnapIndex {
     const py = horizontal ? originY : targetY;
 
     const pos = this.scene.linePos;
-    const group = this.scene.lineGroup;
+    // 縮尺の判定に使うレイヤグループは、レイヤ番号の上位 4 ビット
+    // 実寸に直すときのレイヤグループ（寸法は寸法そのもののグループ）
+    const { lineEntity, entities } = this.scene;
+    const group = (i: number): number => entities.group[lineEntity[i]];
 
     let best: SnapResult = { x: px, y: py, kind: 'free', glayer: 0 };
     let bestScore = Infinity;
@@ -368,31 +439,32 @@ export class SnapIndex {
         // 拘束線と平行な線分とは交点が定まらないので、端点だけを見る
         if (ay === by) {
           if (Math.abs(ay - originY) <= 1e-9) {
-            consider(ax, ay, 'endpoint', group[i]);
-            consider(bx, by, 'endpoint', group[i]);
+            consider(ax, ay, 'endpoint', group(i));
+            consider(bx, by, 'endpoint', group(i));
           }
           continue;
         }
         if ((ay - originY) * (by - originY) > 0) continue;
         const t = (originY - ay) / (by - ay);
-        consider(ax + (bx - ax) * t, originY, 'intersection', group[i]);
+        consider(ax + (bx - ax) * t, originY, 'intersection', group(i));
       } else {
         if (ax === bx) {
           if (Math.abs(ax - originX) <= 1e-9) {
-            consider(ax, ay, 'endpoint', group[i]);
-            consider(bx, by, 'endpoint', group[i]);
+            consider(ax, ay, 'endpoint', group(i));
+            consider(bx, by, 'endpoint', group(i));
           }
           continue;
         }
         if ((ax - originX) * (bx - originX) > 0) continue;
         const t = (originX - ax) / (bx - ax);
-        consider(originX, ay + (by - ay) * t, 'intersection', group[i]);
+        consider(originX, ay + (by - ay) * t, 'intersection', group(i));
       }
     }
 
     // 円の中心や実点は、拘束線の近くにあれば拾う（真上に乗ることは稀なため）
     const pts = this.scene.snapPoint;
-    const pg = this.scene.snapPointGroup;
+    const pointEntity = this.scene.snapPointEntity;
+    const pg = (i: number): number => this.scene.entities.group[pointEntity[i]];
     const near = radius * 0.25;
     const gx0 = this.clampGx(Math.floor((px - radius - this.minX) / this.cell));
     const gx1 = this.clampGx(Math.floor((px + radius - this.minX) / this.cell));
@@ -409,7 +481,7 @@ export class SnapIndex {
           const off = horizontal ? Math.abs(y - originY) : Math.abs(x - originX);
           if (off > near) continue;
           // 拘束線上に落として使う
-          consider(horizontal ? x : originX, horizontal ? originY : y, 'center', pg[i]);
+          consider(horizontal ? x : originX, horizontal ? originY : y, 'center', pg(i));
         }
       }
     }

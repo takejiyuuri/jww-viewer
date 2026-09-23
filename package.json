@@ -20,7 +20,9 @@
     "e2e:robust": "node tools/e2e-robust.mjs",
     "e2e:measure": "node tools/e2e-measure.mjs",
     "probe:magnifier": "node tools/probe-magnifier.mjs",
-    "e2e:display": "node tools/e2e-display.mjs"
+    "e2e:display": "node tools/e2e-display.mjs",
+    "e2e:layers": "node tools/e2e-layers.mjs",
+    "verify:inspect": "node tools/verify-inspect.ts samples/*.jww"
   },
   "devDependencies": {
     "playwright": "^1.62.1",

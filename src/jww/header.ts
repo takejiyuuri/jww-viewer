@@ -102,6 +102,7 @@ export function parseHeader(r: Reader): JwwHeader {
 
   const sxfColors: { rgb: number; width: number }[] = [];
   const sxfColorNames: string[] = [];
+  const sxfLineTypeNames: string[] = [];
   if (version >= 420) {
     for (let n = 0; n <= 256; n++) {
       sxfColors.push({ rgb: r.u32(), width: r.u32() });
@@ -112,7 +113,7 @@ export function parseHeader(r: Reader): JwwHeader {
     }
     for (let n = 0; n <= 32; n++) r.skip(4 * 4); // SXF 線種パターン
     for (let n = 0; n <= 32; n++) {
-      r.str();       // 線種名
+      sxfLineTypeNames.push(r.str()); // 線種名
       r.skip(4);     // セグメント数
       r.skip(10 * 8); // ピッチ
     }
@@ -135,6 +136,7 @@ export function parseHeader(r: Reader): JwwHeader {
     penColors,
     sxfColors,
     sxfColorNames,
+    sxfLineTypeNames,
     zoom,
     originX,
     originY,
