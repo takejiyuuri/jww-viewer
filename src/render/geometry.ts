@@ -14,8 +14,10 @@ import type {
 export interface Scene {
   /** 全図形を含む範囲 */
   bounds: Bounds;
-  /** 用紙外に散らばった図形を外れ値として除いた、初期表示に使う範囲 */
+  /** すべての図形を見せたときの「全体」の範囲（表示しているレイヤ・色だけで求め直すには fitScene を使う） */
   fitBounds: Bounds;
+  /** 用紙の枠（用紙の大きさが分からなければ null） */
+  paper: Bounds | null;
   /** 線分 [x1,y1,x2,y2, ...] */
   linePos: Float32Array;
   /** 線分ごとの色番号（colors の添字） */
@@ -357,12 +359,6 @@ class Builder {
   /** いま書き出している図形の番号 */
   private cur = 0;
 
-  /**
-   * 初期表示の範囲を決めるための代表点。
-   * 線分ごとに取ると円弧の分割数で点の数が変わり、
-   * 同じ図面でも表示範囲が動いてしまうため、図形ごとに数点だけ入れる。
-   */
-  boundsPts = new Buf(f32);
   minX = Infinity; minY = Infinity; maxX = -Infinity; maxY = -Infinity;
   /** 壊れたファイルで際限なく膨らむのを防ぐための打ち切り */
   truncated = false;
@@ -421,11 +417,6 @@ class Builder {
     this.entLength.push(length);
   }
 
-  /** 表示範囲の候補として 1 点覚える */
-  sample(x: number, y: number): void {
-    if (Number.isFinite(x) && Number.isFinite(y)) this.boundsPts.push(x, y);
-  }
-
   track(x: number, y: number): void {
     if (x < this.minX) this.minX = x;
     if (y < this.minY) this.minY = y;
@@ -479,8 +470,6 @@ function lineSegment(b: Builder, l: JwwLine, t: Xform, snap: boolean, color: num
   const [x1, y1] = apply(t, l.x1, l.y1);
   const [x2, y2] = apply(t, l.x2, l.y2);
   b.addSegment(x1, y1, x2, y2, color, layer, snap);
-  b.sample(x1, y1);
-  b.sample(x2, y2);
   return Math.hypot(x2 - x1, y2 - y1);
 }
 
@@ -514,8 +503,6 @@ function emitArc(b: Builder, a: JwwArc, t: Xform, inherit: number | null, block:
       b.addSegment(px, py, x, y, color, layer, true);
       length += Math.hypot(x - px, y - py);
     }
-    // 代表点は始点・中間・終点だけにして、分割数に左右されないようにする
-    if (i === 0 || i === n || i * 2 === n) b.sample(x, y);
     px = x;
     py = y;
   }
@@ -617,8 +604,6 @@ function emitSolid(b: Builder, s: JwwSolid, t: Xform, inherit: number | null, bl
     }
     const [ox, oy] = apply(t, cx, cy);
     b.addPoint(ox, oy, layer, color);
-    b.sample(ox - radius, oy - radius);
-    b.sample(ox + radius, oy + radius);
     b.end(Math.abs(radius) * lengthScale(t));
     return;
   }
@@ -629,10 +614,6 @@ function emitSolid(b: Builder, s: JwwSolid, t: Xform, inherit: number | null, bl
   const [x4, y4] = apply(t, s.x4, s.y4);
   b.addTriangle(x1, y1, x2, y2, x3, y3, color, layer);
   b.addTriangle(x1, y1, x3, y3, x4, y4, color, layer);
-  b.sample(x1, y1);
-  b.sample(x2, y2);
-  b.sample(x3, y3);
-  b.sample(x4, y4);
   b.end();
 }
 
@@ -661,8 +642,6 @@ function textItem(b: Builder, m: JwwText, t: Xform, color: number, layer: number
   });
   b.track(x1, y1);
   b.track(x2, y2);
-  b.sample(x1, y1);
-  b.sample(x2, y2);
   return index;
 }
 
@@ -730,7 +709,6 @@ function emitEntities(
     b.addPoint(x, y, layer, color);
     b.end();
     b.track(x, y);
-    b.sample(x, y);
   }
 
   for (const d of e.dims) emitDim(b, d, t, inherit, block);
@@ -776,9 +754,10 @@ export function buildScene(doc: JwwDocument): Scene {
     ? { minX: 0, minY: 0, maxX: 100, maxY: 100 }
     : { minX: b.minX, minY: b.minY, maxX: b.maxX, maxY: b.maxY };
 
-  return {
+  const scene: Scene = {
     bounds,
-    fitBounds: unite(robustBounds(b.boundsPts.trim(), bounds), paper),
+    fitBounds: { ...bounds },
+    paper,
     linePos: b.linePos.trim(),
     lineColor: b.lineColor.trim(),
     lineLayer: b.lineLayer.trim(),
@@ -820,6 +799,8 @@ export function buildScene(doc: JwwDocument): Scene {
     },
     blockNames: b.blockNames,
   };
+  scene.fitBounds = fitScene(scene, () => true);
+  return scene;
 }
 
 /**
@@ -841,10 +822,204 @@ const PAPER_SIZES: Record<number, [number, number]> = {
   14: [100000, 70711],
 };
 
-function paperRect(paperSize: number): Bounds | null {
+export function paperRect(paperSize: number): Bounds | null {
   const size = PAPER_SIZES[paperSize];
   if (!size) return null;
   return { minX: -size[0] / 2, maxX: size[0] / 2, minY: -size[1] / 2, maxY: size[1] / 2 };
+}
+
+/** 「全体」の範囲を求めるための図形の点と線 */
+export interface FitSource {
+  /** 図形の点（x, y の並び）。線分の両端、文字の四隅、点、塗りの頂点 */
+  pts: Float32Array;
+  /** 線分（x1, y1, x2, y2 の並び） */
+  segs: Float32Array;
+  /** 線分以外の点（文字の四隅、点、塗りの頂点）。用紙の外へ続いているかを数えるのに使う */
+  marks: Float32Array;
+}
+
+/**
+ * 見えている図形（visible が true を返す色・レイヤ）だけで「全体」の範囲を求める。
+ * 隠したレイヤに残った図形で、図面本体が小さく映らないようにするため。
+ */
+export function fitScene(scene: Scene, visible: (color: number, layer: number) => boolean): Bounds {
+  const pts: number[] = [];
+  const segs: number[] = [];
+  const marks: number[] = [];
+  const lp = scene.linePos;
+  for (let i = 0; i < lp.length / 4; i++) {
+    if (!visible(scene.lineColor[i], scene.lineLayer[i])) continue;
+    segs.push(lp[i * 4], lp[i * 4 + 1], lp[i * 4 + 2], lp[i * 4 + 3]);
+    pts.push(lp[i * 4], lp[i * 4 + 1], lp[i * 4 + 2], lp[i * 4 + 3]);
+  }
+  for (const t of scene.texts) {
+    if (!visible(t.color, t.layer)) continue;
+    const a = (t.angle * Math.PI) / 180;
+    const ux = Math.cos(a), uy = Math.sin(a);
+    const corners = [
+      t.x, t.y,
+      t.x + ux * t.width, t.y + uy * t.width,
+      t.x + ux * t.width - uy * t.height, t.y + uy * t.width + ux * t.height,
+      t.x - uy * t.height, t.y + ux * t.height,
+    ];
+    pts.push(...corners);
+    marks.push(...corners);
+  }
+  const sp = scene.snapPoint;
+  for (let i = 0; i < sp.length / 2; i++) {
+    if (!visible(scene.snapPointColor[i], scene.snapPointLayer[i])) continue;
+    pts.push(sp[i * 2], sp[i * 2 + 1]);
+    marks.push(sp[i * 2], sp[i * 2 + 1]);
+  }
+  const tp = scene.triPos;
+  for (let i = 0; i < tp.length / 6; i++) {
+    if (!visible(scene.triColor[i * 3], scene.triLayer[i * 3])) continue;
+    for (let j = 0; j < 6; j++) {
+      pts.push(tp[i * 6 + j]);
+      marks.push(tp[i * 6 + j]);
+    }
+  }
+  return fitRange(
+    { pts: Float32Array.from(pts), segs: Float32Array.from(segs), marks: Float32Array.from(marks) },
+    scene.bounds, scene.paper,
+  );
+}
+
+/**
+ * 「全体」で見せる範囲。
+ *
+ * 図形のほとんど（9 割以上）が用紙の中にある図面は、Jw_cad の用紙全体表示と同じく用紙の枠を基本にする。
+ * 用紙の外に離れて残った点や補助の図形、遠くへ伸びた数本の線に引きずられて、図面本体が小さく映らないようにするため。
+ * ただし用紙の辺ごとに見て、その辺から外へ図形が途切れずに続いている所までは広げる（continuation 参照）。
+ *
+ * 図形の多くが用紙の外にある図面では、図形の主な範囲と用紙を合わせた範囲にする。
+ * 用紙だけが極端に大きい図面（作図済みなのは一部だけ）では、図形の範囲を優先する。
+ */
+export function fitRange(src: FitSource, all: Bounds, paper: Bounds | null): Bounds {
+  const robust = robustBounds(src.pts, all);
+  if (!paper) return robust;
+  const pw = paper.maxX - paper.minX;
+  const ph = paper.maxY - paper.minY;
+  const mx = pw * 0.02;
+  const my = ph * 0.02;
+
+  const count = src.pts.length / 2;
+  let inside = 0;
+  for (let i = 0; i < count; i++) {
+    const x = src.pts[i * 2];
+    const y = src.pts[i * 2 + 1];
+    if (x >= paper.minX - mx && x <= paper.maxX + mx && y >= paper.minY - my && y <= paper.maxY + my) inside++;
+  }
+  if (count < 20 || inside < count * 0.9) return unite(robust, paper);
+
+  const shape = Math.hypot(robust.maxX - robust.minX, robust.maxY - robust.minY);
+  const sheet = Math.hypot(pw, ph);
+  if (sheet > shape * 1.6) return robust;
+
+  return {
+    minX: paper.minX - continuation(src, paper, 0),
+    maxX: paper.maxX + continuation(src, paper, 1),
+    minY: paper.minY - continuation(src, paper, 2),
+    maxY: paper.maxY + continuation(src, paper, 3),
+  };
+}
+
+/** 外へ続いているとみなすのに、刻みごとに要る図形の数 */
+const CONTINUE_SUPPORT = 8;
+
+/**
+ * 用紙の辺（0 左、1 右、2 下、3 上）から外へ、図形が途切れずに続いている距離。
+ *
+ * 辺の外側を、辺からの距離で細かく刻み（用紙の 1.5% ずつ）、それぞれの刻みを通る図形の数を数える。
+ * 線分は外に出ている部分が通るすべての刻みに 1 本として数えるので、分割された壁や、細かい線分の並びで描いた
+ * 円弧も、途切れずに続いていれば最後まで追える。辺に近い刻みから外へ順に見て、図形が
+ * CONTINUE_SUPPORT 以上ある刻みが続く所まで（1 刻みの隙間までは続いているとみなす）を返す。
+ * 数本の線が遠くへ伸びているだけ、離れた所に図形がまとまってあるだけ、では広げない。
+ * 用紙の辺ちょうどに描いた図枠が丸め誤差で「外」と数えられないよう、わずかな余裕をみる。
+ */
+function continuation(src: FitSource, paper: Bounds, side: number): number {
+  const horizontal = side < 2;
+  const span = horizontal ? paper.maxX - paper.minX : paper.maxY - paper.minY;
+  const across0 = horizontal ? paper.minY : paper.minX;
+  const across1 = horizontal ? paper.maxY : paper.maxX;
+  // 辺に沿った向きは、用紙の幅に少し余裕を持たせた帯の中だけを見る（用紙の角の先にある図形は数えない）
+  const pad = (across1 - across0) * 0.02;
+  const lo = across0 - pad;
+  const hi = across1 + pad;
+  const tol = Math.max(0.05, Math.max(paper.maxX - paper.minX, paper.maxY - paper.minY) * 1e-5);
+  const step = span * 0.015;
+  const bins = 400; // 用紙の 6 倍先まで
+  const support = new Uint32Array(bins);
+  /** その刻みの中で終わる図形の、いちばん外の端（通り過ぎるだけの線は数えない） */
+  const ends = new Float64Array(bins);
+
+  /** 辺から外への距離（外なら正） */
+  const out = (x: number, y: number): number => {
+    switch (side) {
+      case 0: return paper.minX - x;
+      case 1: return x - paper.maxX;
+      case 2: return paper.minY - y;
+      default: return y - paper.maxY;
+    }
+  };
+  const along = (x: number, y: number): number => (horizontal ? y : x);
+
+  /** 外への距離が d0〜d1 の範囲にある 1 つの図形を数える */
+  const count = (d0: number, d1: number): void => {
+    if (d1 <= tol) return;
+    const a = Math.max(d0, tol);
+    if (!Number.isFinite(d1)) return;
+    const first = Math.floor(a / step);
+    const end = Math.floor(d1 / step);
+    const last = Math.min(bins - 1, end);
+    for (let b = first; b <= last; b++) support[b]++;
+    if (end < bins && d1 > ends[end]) ends[end] = d1;
+  };
+
+  const segs = src.segs;
+  for (let i = 0; i < segs.length; i += 4) {
+    let x1 = segs[i], y1 = segs[i + 1], x2 = segs[i + 2], y2 = segs[i + 3];
+    let d1 = out(x1, y1), d2 = out(x2, y2);
+    if (d1 <= tol && d2 <= tol) continue;
+    // 辺に沿った帯からはみ出す部分は切り落とす
+    let t0 = 0, t1 = 1;
+    const a1 = along(x1, y1), a2 = along(x2, y2);
+    if (a1 === a2) {
+      if (a1 < lo || a1 > hi) continue;
+    } else {
+      const ta = (lo - a1) / (a2 - a1);
+      const tb = (hi - a1) / (a2 - a1);
+      t0 = Math.max(t0, Math.min(ta, tb));
+      t1 = Math.min(t1, Math.max(ta, tb));
+      if (t0 > t1) continue;
+    }
+    const nx1 = x1 + (x2 - x1) * t0, ny1 = y1 + (y2 - y1) * t0;
+    const nx2 = x1 + (x2 - x1) * t1, ny2 = y1 + (y2 - y1) * t1;
+    x1 = nx1; y1 = ny1; x2 = nx2; y2 = ny2;
+    d1 = out(x1, y1);
+    d2 = out(x2, y2);
+    count(Math.max(0, Math.min(d1, d2)), Math.max(d1, d2));
+  }
+  const marks = src.marks;
+  for (let i = 0; i < marks.length; i += 2) {
+    const a = along(marks[i], marks[i + 1]);
+    if (a < lo || a > hi) continue;
+    const d = out(marks[i], marks[i + 1]);
+    count(d, d);
+  }
+
+  // 続いている刻みの中で終わる図形の端まで。刻みを通り過ぎる線しかなければ、少なくともその刻みの手前まで
+  let extent = 0;
+  let gap = 0;
+  for (let b = 0; b < bins; b++) {
+    if (support[b] >= CONTINUE_SUPPORT) {
+      extent = Math.max(extent, b * step, ends[b]);
+      gap = 0;
+    } else if (++gap > 1) {
+      break;
+    }
+  }
+  return extent;
 }
 
 /**

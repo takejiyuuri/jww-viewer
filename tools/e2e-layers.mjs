@@ -104,6 +104,16 @@ let initialHidden = '';
   }));
   check('計測パネルが最初から出ている', s.readout && !s.inspect, s);
   check('点がないときは戻す・消去が押せない', s.undo && s.clear, s);
+  const idle = await page.evaluate(() => {
+    const box = document.getElementById('readout');
+    const shown = (id) => document.getElementById(id).getClientRects().length > 0;
+    return {
+      idle: box.classList.contains('idle'),
+      height: box.getBoundingClientRect().height,
+      value: shown('readout-value'), undo: shown('btn-undo'), clear: shown('btn-clear'),
+    };
+  });
+  check('点がないときの計測パネルは操作の 1 段で、長さ・戻す・消去を出さない', idle.idle && idle.height < 70 && !idle.value && !idle.undo && !idle.clear, idle);
 }
 
 // 線が詰まっている場所まで寄せておく
@@ -153,6 +163,9 @@ await page.waitForTimeout(250);
   }));
   check('属性に切り替えるとパネルが入れ替わる', s.tool === 'inspect' && s.readout && !s.inspect && s.pressed === 'true', s);
   check('何も選んでいないときは使い方を出す', s.body.includes('図形をタップすると'), { body: s.body });
+  const btns = await page.evaluate(() => ['btn-layer-only', 'btn-layer-hide', 'btn-layer-invert', 'btn-layer-back']
+    .map((id) => !document.getElementById(id).classList.contains('hidden')));
+  check('何も選んでいなくても「表示を反転」だけは押せる', JSON.stringify(btns) === JSON.stringify([false, false, true, false]), { btns });
 }
 
 /** 画面の見えている範囲（上のバーと下のパネルの間） */
@@ -177,9 +190,12 @@ const findLine = () => page.evaluate((areaSrc) => {
     const [x1, y1] = scr(sc.linePos[i * 4], sc.linePos[i * 4 + 1]);
     const [x2, y2] = scr(sc.linePos[i * 4 + 2], sc.linePos[i * 4 + 3]);
     if (Math.hypot(x2 - x1, y2 - y1) < 40) continue;
-    const x = (x1 + x2) / 2, y = (y1 + y2) / 2;
+    const x = Math.round((x1 + x2) / 2), y = Math.round((y1 + y2) / 2);
     if (x < 30 || x > a.cssW - 30 || y < area.top || y > area.bottom) continue;
-    if (a.pickAt(x, y) !== e) continue;
+    // 交点などで別の線と取り合いになる所は避ける（周り ±2px のどこを押しても同じ線が拾われる所だけ）
+    let stable = true;
+    for (let dx = -2; dx <= 2 && stable; dx++) for (let dy = -2; dy <= 2 && stable; dy++) if (a.pickAt(x + dx, y + dy) !== e) stable = false;
+    if (!stable) continue;
     return {
       x, y, entity: e, layer: sc.entities.layer[e],
       wx: (sc.linePos[i * 4] + sc.linePos[i * 4 + 2]) / 2,
@@ -334,6 +350,56 @@ if (line) {
   check('隠したあとも元に戻せる', JSON.stringify(state0) === JSON.stringify(state2), { state0, state2 });
 }
 
+// ---------- 9b. 表示を反転 ----------
+{
+  /** 図形のあるレイヤごとの見え方 */
+  const seen = () => page.evaluate(() => {
+    const a = window.__jww;
+    const out = [];
+    for (let k = 0; k < 256; k++) if (a.scene.layerCounts[k] > 0) out.push(a.layers.visible(k) ? 1 : 0);
+    return out.join('');
+  });
+  const stored = () => page.evaluate(() => JSON.parse(localStorage.getItem('jww-viewer:hidden') ?? 'null'));
+  const v0 = await seen();
+  const ink0 = await inkPixels();
+  await page.click('#btn-layer-invert');
+  await page.waitForTimeout(250);
+  const v1 = await seen();
+  const ink1 = await inkPixels();
+  const flipped = [...v0].every((c, i) => c !== v1[i]);
+  const p1 = await panel();
+  check('「表示を反転」で見えていたレイヤと隠れていたレイヤが入れ替わる', flipped && ink1 !== ink0 && p1.back, { v0, v1, ink0, ink1, back: p1.back });
+  const st1 = await stored();
+  check('反転は一時的なので保存しない（反転前の状態のまま）', !st1 || (st1.layers === null && st1.groups === null), { st1 });
+  await page.click('#btn-layer-invert');
+  await page.waitForTimeout(250);
+  const v2 = await seen();
+  const p2 = await panel();
+  check('もう一度反転すると元の見え方に戻り、「元に戻す」は消える', v2 === v0 && !p2.back, { v0, v2, back: p2.back });
+
+  if (line) {
+    // このレイヤだけ → 反転で「このレイヤ以外」→ 元に戻す
+    const at = await screenOf(line.wx, line.wy);
+    await page.touchscreen.tap(at.x, at.y);
+    await page.waitForTimeout(250);
+    await page.click('#btn-layer-only');
+    await page.waitForTimeout(200);
+    await page.click('#btn-layer-invert');
+    await page.waitForTimeout(250);
+    const other = await page.evaluate((k) => {
+      const a = window.__jww;
+      let wrong = 0;
+      for (let i = 0; i < 256; i++) if (a.layers.visible(i) !== (i !== k)) wrong++;
+      return { wrong };
+    }, lineLayer);
+    check('「レイヤだけ表示」のあと反転すると、そのレイヤ以外が見える', other.wrong === 0, other);
+    await page.click('#btn-layer-back');
+    await page.waitForTimeout(250);
+    const v3 = await seen();
+    check('元に戻すで、反転する前の最初の見え方に戻る', v3 === v0, { v0, v3 });
+  }
+}
+
 // ---------- 10. 長押しで拡大鏡を出して選ぶ ----------
 if (line) {
   const s = await page.evaluate(async ([x, y]) => {
@@ -378,6 +444,9 @@ await page.waitForTimeout(300);
 }
 
 if (lineLayer >= 0) {
+  // 対象のグループが閉じていたら開いておく
+  const opened = await page.evaluate((k) => !!document.querySelector(`#layer-list .l-row[data-k="${k}"]`)?.offsetParent, lineLayer);
+  if (!opened) await page.click(`#layer-list .lg-head[data-toggle="${lineLayer >> 4}"]`);
   const ink0 = await inkPixels();
   // レイヤのスイッチ
   await page.click(`#layer-list .sw[data-layer="${lineLayer}"]`);
@@ -428,6 +497,27 @@ if (lineLayer >= 0) {
   check('「Jw_cad の状態」で読み込み直後の表示に戻る', jwNow === initialHidden, { jwNow, initialHidden });
   const storedJw = await page.evaluate(() => JSON.parse(localStorage.getItem('jww-viewer:hidden') ?? 'null'));
   check('Jw_cad の状態のままなら、レイヤの記録は残さない', storedJw && storedJw.layers === null && storedJw.groups === null, { storedJw });
+
+  // 一覧の「反転」は保存される。もう一度反転すれば Jw_cad の状態に戻って記録も消える
+  const before = await page.evaluate(() => {
+    const a = window.__jww;
+    return [...a.layers.mask()].join('');
+  });
+  await page.click('#btn-layer-invert-all');
+  await page.waitForTimeout(250);
+  const inv = await page.evaluate(() => ({
+    mask: [...window.__jww.layers.mask()].join(''),
+    stored: JSON.parse(localStorage.getItem('jww-viewer:hidden') ?? 'null'),
+  }));
+  const allFlipped = [...before].every((c, i) => c !== inv.mask[i]);
+  check('一覧の「反転」で全レイヤの見え方が入れ替わり、保存される', allFlipped && inv.stored && Array.isArray(inv.stored.layers), { stored: inv.stored && inv.stored.layers && inv.stored.layers.length });
+  await page.click('#btn-layer-invert-all');
+  await page.waitForTimeout(250);
+  const back2 = await page.evaluate(() => ({
+    mask: [...window.__jww.layers.mask()].join(''),
+    stored: JSON.parse(localStorage.getItem('jww-viewer:hidden') ?? 'null'),
+  }));
+  check('一覧でもう一度反転すると元に戻り、Jw_cad の状態なら記録を残さない', back2.mask === before && back2.stored && back2.stored.layers === null, { stored: back2.stored });
 
   // すべて表示
   await page.click('#btn-layer-all');
@@ -526,6 +616,16 @@ await page.waitForTimeout(200);
     detail: document.getElementById('readout-detail').textContent,
   }));
   check('計測に戻すとタップで点が置け、戻すが押せる', s.points === 1 && !s.undo, s);
+  const gap = await page.evaluate(() => {
+    const r = (id) => document.getElementById(id).getBoundingClientRect();
+    const a = r('btn-scale');
+    const b = r('btn-clear');
+    // 2 つの矩形のあいだの距離（重なっていれば 0）
+    const dx = Math.max(0, Math.max(a.left, b.left) - Math.min(a.right, b.right));
+    const dy = Math.max(0, Math.max(a.top, b.top) - Math.min(a.bottom, b.bottom));
+    return { dist: Math.hypot(dx, dy), dx, dy, idle: document.getElementById('readout').classList.contains('idle') };
+  });
+  check('点を置くと 2 段になり、縮尺ボタンは消去ボタンから離れている', !gap.idle && gap.dx > 60, gap);
   check('計測中は属性のハイライトを描かない', s.highlight === null, s);
   // 縮尺を選ぶと全区間をその縮尺で測り、「自動」で戻る
   await page.click('#btn-scale');
@@ -550,6 +650,136 @@ await page.waitForTimeout(200);
   await page.waitForTimeout(100);
   const c = await page.evaluate(() => ({ points: window.__jww.points.length, clear: document.getElementById('btn-clear').disabled }));
   check('消去で点がなくなり、消去が押せなくなる', c.points === 0 && c.clear, c);
+}
+
+// ---------- 15. 1 点目で計測パネルが伸びても、点は隠れず、ボタンも押されない ----------
+{
+  // 直前に押した「消去」の直後のタップとみなされないよう、少し間を置く
+  await page.waitForTimeout(600);
+  const p0 = await page.evaluate(() => {
+    const a = window.__jww;
+    a.points = [];
+    a.updateReadout();
+    const r = document.getElementById('readout').getBoundingClientRect();
+    return { top: r.top, x: a.cssW - 40 };
+  });
+  // 1 段のパネルのすぐ上、2 段になると消去ボタンが来る所を押す
+  await page.touchscreen.tap(p0.x, p0.top - 10);
+  await page.waitForTimeout(300);
+  const s = await page.evaluate(() => {
+    const a = window.__jww;
+    const p = a.points[0];
+    const top = document.getElementById('readout').getBoundingClientRect().top;
+    const sy = p ? a.cssH / 2 - ((p.y - a.view.cy) * a.view.zoom) / a.dpr : null;
+    return { n: a.points.length, ortho: a.ortho, sy, top };
+  });
+  check('1 点目をパネルのすぐ上に置いても、点が伸びたパネルに隠れない', s.n === 1 && s.sy !== null && s.sy < s.top, s);
+  check('そのときパネルのボタンが押されない（直交のまま・点も消えない）', s.n === 1 && s.ortho === true, s);
+
+  // 「戻す」を続けて押す：点がなくなってパネルが縮んでも、2 回目のタップは図面に点を置かない
+  const undo = await page.evaluate(() => {
+    const r = document.getElementById('btn-undo').getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  });
+  await page.touchscreen.tap(undo.x, undo.y);
+  await page.waitForTimeout(80);
+  await page.touchscreen.tap(undo.x, undo.y);
+  await page.waitForTimeout(300);
+  const n2 = await page.evaluate(([x, y]) => ({
+    n: window.__jww.points.length,
+    onPanel: !!document.elementFromPoint(x, y)?.closest('#readout'),
+  }), [undo.x, undo.y]);
+  check('「戻す」を続けて押しても、図面に点を置かない（戻すの場所はパネルのまま）', n2.n === 0 && n2.onPanel, n2);
+
+  // 点を置いても消しても、操作の段（縮尺・直交）は同じ位置のまま
+  const barAt = () => page.evaluate(() => {
+    const r = (id) => { const b = document.getElementById(id).getBoundingClientRect(); return [Math.round(b.left), Math.round(b.top)]; };
+    return { ortho: r('btn-ortho'), scale: r('btn-scale') };
+  });
+  const idleBar = await barAt();
+  const mid = await page.evaluate(() => ({ x: window.__jww.cssW / 2, y: 300 }));
+  await page.touchscreen.tap(mid.x, mid.y);
+  await page.waitForTimeout(250);
+  const grownBar = await barAt();
+  check('点を置いても操作の段（縮尺・直交）は動かない', JSON.stringify(idleBar) === JSON.stringify(grownBar), { idleBar, grownBar });
+  await page.click('#btn-clear');
+  await page.waitForTimeout(150);
+}
+
+// ---------- 16. 横向きの狭い画面でも、属性の操作ボタンの文字がはみ出さない ----------
+{
+  const ctx2 = await browser.newContext({ viewport: { width: 667, height: 375 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+  const p2 = await ctx2.newPage();
+  p2.on('pageerror', (e) => errors.push(`pageerror(横): ${e.message}`));
+  await p2.goto(srv.url, { waitUntil: 'networkidle' });
+  await p2.setInputFiles('#file', sample);
+  await p2.waitForFunction(() => document.getElementById('title')?.textContent?.endsWith('.jww'), null, { timeout: 60000 });
+  await p2.waitForTimeout(500);
+  await p2.click('#btn-tool-inspect');
+  const s = await p2.evaluate(() => {
+    const a = window.__jww;
+    for (let i = 0; i < a.scene.entities.count; i++) {
+      if (a.layerMask[a.scene.entities.layer[i]] && a.colorVisible[a.scene.entities.color[i]]) { a.select(i); break; }
+    }
+    a.layerSnapshot = a.layers.snapshot();
+    a.updateInspect();
+    const pills = [...document.querySelectorAll('#inspect-actions .pill')].filter((b) => !b.classList.contains('hidden'));
+    const panel = document.getElementById('inspect-panel').getBoundingClientRect();
+    return {
+      count: pills.length,
+      overflow: pills.filter((b) => b.scrollWidth > b.clientWidth + 1).map((b) => b.textContent),
+      inside: pills.every((b) => { const r = b.getBoundingClientRect(); return r.left >= panel.left - 0.5 && r.right <= panel.right + 0.5; }),
+    };
+  });
+  check('横向きの狭い画面でも属性の操作ボタンの文字がはみ出さない', s.count === 4 && s.overflow.length === 0 && s.inside, s);
+
+  // 横向きで、右に寄せたパネルのすぐ上に 1 点目を置いても、伸びたパネルに隠れない
+  await p2.click('#btn-tool-measure');
+  await p2.waitForTimeout(1000);
+  const r0 = await p2.evaluate(() => {
+    const a = window.__jww;
+    a.points = [];
+    a.updateReadout();
+    const r = document.getElementById('readout').getBoundingClientRect();
+    return { x: r.left + 60, y: r.top - 8 };
+  });
+  await p2.touchscreen.tap(r0.x, r0.y);
+  await p2.waitForTimeout(300);
+  const land = await p2.evaluate(() => {
+    const a = window.__jww;
+    const p = a.points[0];
+    if (!p) return { n: 0 };
+    const sx = ((p.x - a.view.cx) * a.view.zoom) / a.dpr + a.cssW / 2;
+    const sy = a.cssH / 2 - ((p.y - a.view.cy) * a.view.zoom) / a.dpr;
+    const r = document.getElementById('readout').getBoundingClientRect();
+    return { n: a.points.length, covered: sx >= r.left && sx <= r.right && sy >= r.top && sy <= r.bottom, sx, sy };
+  });
+  check('横向きでも 1 点目が伸びたパネルに隠れない', land.n === 1 && !land.covered, land);
+  await ctx2.close();
+
+  // 高さ 320px の横画面で、属性の行が多い図形（文字）を選んでも、操作ボタンは全部見えている
+  const ctx3 = await browser.newContext({ viewport: { width: 568, height: 320 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+  const p3 = await ctx3.newPage();
+  await p3.goto(srv.url, { waitUntil: 'networkidle' });
+  await p3.setInputFiles('#file', sample);
+  await p3.waitForFunction(() => document.getElementById('title')?.textContent?.endsWith('.jww'), null, { timeout: 60000 });
+  await p3.waitForTimeout(500);
+  await p3.click('#btn-tool-inspect');
+  const low = await p3.evaluate(() => {
+    const a = window.__jww;
+    const t = a.scene.texts.find((x) => a.layerMask[x.layer] && a.colorVisible[x.color]);
+    if (t) a.select(t.entity);
+    a.layerSnapshot = a.layers.snapshot();
+    a.updateInspect();
+    const panel = document.getElementById('inspect-panel').getBoundingClientRect();
+    const pills = [...document.querySelectorAll('#inspect-actions .pill')].filter((b) => !b.classList.contains('hidden'));
+    return {
+      count: pills.length,
+      hidden: pills.filter((b) => { const r = b.getBoundingClientRect(); return r.top < panel.top - 0.5 || r.bottom > panel.bottom + 0.5; }).map((b) => b.textContent),
+    };
+  });
+  check('高さの低い横画面でも、属性の操作ボタンがパネルの下に隠れない', low.count === 4 && low.hidden.length === 0, low);
+  await ctx3.close();
 }
 
 check('コンソールにエラーがない', errors.length === 0, { errors: errors.slice(0, 5) });

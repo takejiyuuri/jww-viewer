@@ -90,9 +90,23 @@ export interface ViewState {
    * 図面の側が変わっていたら（同じ名前の別の図面など）、レイヤの記録は当てない
    */
   jw: string | null;
+  /** 反転で覚えておいた、グループの中の設定（グループ番号と、その中で隠していたレイヤ 0〜15） */
+  stash: Array<[number, number[]]> | null;
 }
 
-const EMPTY_VIEW: ViewState = { pens: [], groups: null, layers: null, jw: null };
+const EMPTY_VIEW: ViewState = { pens: [], groups: null, layers: null, jw: null, stash: null };
+
+function stashList(v: unknown): Array<[number, number[]]> | null {
+  if (!Array.isArray(v)) return null;
+  const out: Array<[number, number[]]> = [];
+  for (const e of v) {
+    if (!Array.isArray(e) || e.length !== 2) continue;
+    const [g, off] = e as unknown[];
+    const list = intList(off, 16);
+    if (Number.isInteger(g) && (g as number) >= 0 && (g as number) < 16 && list) out.push([g as number, list]);
+  }
+  return out;
+}
 
 function intList(v: unknown, max: number): number[] | null {
   if (!Array.isArray(v)) return null;
@@ -113,6 +127,7 @@ export function loadViewState(name: string): ViewState {
       groups: intList(v.groups, 16),
       layers: intList(v.layers, 256),
       jw: typeof v.jw === 'string' ? v.jw : null,
+      stash: stashList(v.stash),
     };
   } catch {
     return { ...EMPTY_VIEW };

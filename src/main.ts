@@ -16,7 +16,7 @@ import {
 } from './render/theme.ts';
 import { LayerVisibility, renderLayerList, type LayerSnapshot } from './ui/layers.ts';
 import { describeEntity, entityShape, pickEntity } from './ui/inspect.ts';
-import { KIND } from './render/geometry.ts';
+import { KIND, fitScene } from './render/geometry.ts';
 import { hex1, layerTag } from './jww/names.ts';
 
 /** 吸着先を探す半径（CSS ピクセル） */
@@ -82,6 +82,8 @@ class App {
   private layers = new LayerVisibility();
   /** 属性から「このレイヤだけ表示」「隠す」をする前の状態。「元に戻す」で戻す */
   private layerSnapshot: LayerSnapshot | null = null;
+  /** 反転を続けて押す前の状態。反転で同じ見え方に戻ったら、グループの持ち方まで元どおりにするのに使う */
+  private invertOrigin: LayerSnapshot | null = null;
   /** レイヤ一覧で開いているグループ */
   private expandedGroups = new Set<number>();
   /** いま見えている色番号とレイヤ（1 なら表示）。図形を拾うときに見えないものを除く */
@@ -231,6 +233,8 @@ class App {
     this.previewEntity = -1;
     this.shapeCache = null;
     this.layerSnapshot = null;
+    this.invertOrigin = null;
+    this.layers.useCounts(scene.layerCounts);
 
     // 同じ図面を開き直したときは、前に隠していた色とレイヤをそのまま隠す。
     // 記録がなければ、レイヤは Jw_cad で保存したときの表示状態から始める
@@ -242,7 +246,7 @@ class App {
     });
     // 図面の側でレイヤの状態が変わっていたら（別の図面・保存し直した図面）、記録は使わない
     if (saved.groups && saved.layers && saved.jw === jwFingerprint(info)) {
-      this.layers.applyHidden({ groups: saved.groups, layers: saved.layers });
+      this.layers.applyHidden({ groups: saved.groups, layers: saved.layers, stash: saved.stash });
     } else {
       this.layers.resetToJw(info.groups, info.writeGroup);
     }
@@ -286,7 +290,8 @@ class App {
 
   private fit(): void {
     if (!this.scene) return;
-    const b = this.scene.fitBounds;
+    // 見えている図形（色・レイヤ）だけで範囲を決める。隠したレイヤに残った図形で図面が小さくならないように
+    const b = fitScene(this.scene, (color, layer) => this.colorVisible[color] === 1 && this.layerMask[layer] === 1);
     // 上のバーと下（横向きでは右）のパネルに隠れない範囲に収める。狭すぎるときは画面全体に
     const ins = this.measureInsets();
     let top = ins.top;
@@ -432,6 +437,9 @@ class App {
     // iOS Safari のダブルタップズーム・ピンチによるページ拡大を抑止
     stage.addEventListener('dblclick', (e) => e.preventDefault());
     stage.addEventListener('contextmenu', (e) => e.preventDefault());
+    // 図面へのタップのあとに互換の click が出ると、その間に大きさの変わったパネルのボタンに当たることがある。
+    // 図面は pointer イベントだけで扱っているので、図面で始まったタッチの click は出さない
+    stage.addEventListener('touchend', (e) => { if (e.cancelable) e.preventDefault(); }, { passive: false });
     for (const type of ['gesturestart', 'gesturechange', 'gestureend']) {
       document.addEventListener(type, (e) => e.preventDefault(), { passive: false });
     }
@@ -773,7 +781,33 @@ class App {
     }
     this.points.push(p);
     this.updateReadout();
+    // 1 点目を置くと計測パネルが 2 段に伸びる。置いた点がその下に隠れたら、図面をずらす
+    if (this.points.length === 1) this.keepClearOfPanel(p.x, p.y);
     if (navigator.vibrate) navigator.vibrate(4);
+  }
+
+  /**
+   * 図面座標の点が計測パネルに隠れていたら、見える所まで図面をずらす。
+   * 下に広がるパネルなら上へ、横向きで右に寄せたパネルなら左へ。隠れていなければ動かさない。
+   */
+  private keepClearOfPanel(x: number, y: number): void {
+    const r = el('readout').getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return;
+    const k = this.dpr / this.view.zoom;
+    const sx = (x - this.view.cx) / k + this.cssW / 2;
+    const sy = this.cssH / 2 - (y - this.view.cy) / k;
+    const m = 16;
+    if (sx < r.left - m || sx > r.right + m || sy < r.top - m || sy > r.bottom + m) return;
+    const up = sy - (r.top - m);
+    const left = sx - (r.left - m);
+    // 下に広がるパネル、またはパネルより下（ツールバーの上）の点は上へ。右に寄せたパネルなら上と左の近いほうへ
+    const sideDocked = r.width < this.cssW * 0.6;
+    if (!sideDocked || sy > r.bottom || up <= left) {
+      this.view.cy -= up * k;
+    } else {
+      this.view.cx += left * k;
+    }
+    this.requestDraw(true);
   }
 
   private updateReadout(): void {
@@ -783,13 +817,14 @@ class App {
     const n = this.points.length;
     el<HTMLButtonElement>('btn-undo').disabled = n === 0;
     el<HTMLButtonElement>('btn-clear').disabled = n === 0;
+    // 点がないときは操作の段だけにして、図面を広く見せる。
+    // 操作の段は動かないので、「戻す」を続けて押してもボタンが指の下から逃げない
+    el('readout').classList.toggle('idle', n === 0);
 
     if (n < 2) {
       value.textContent = '—';
       scale.textContent = `1/${formatScale(this.measureScale)}`;
-      detail.textContent = n === 0
-        ? 'タップで計測点を置きます。長押しで拡大鏡'
-        : `1 点目は${SNAP_LABEL[this.points[0].kind]}。2 点目をタップしてください`;
+      detail.textContent = n === 0 ? '' : `1 点目は${SNAP_LABEL[this.points[0].kind]}。2 点目をタップしてください`;
       return;
     }
 
@@ -912,8 +947,8 @@ class App {
     const scene = this.scene;
     const info = this.info;
     const i = this.selected;
-    const canUndo = this.layerSnapshot !== null;
-    el('btn-layer-back').classList.toggle('hidden', !canUndo);
+    // 「表示を反転」は図形を選んでいなくても使える。「レイヤだけ表示」「隠す」は選んだ図形のレイヤに対して
+    el('btn-layer-back').classList.toggle('hidden', this.layerSnapshot === null);
 
     if (!scene || !info || i < 0) {
       kind.textContent = '属性';
@@ -921,7 +956,6 @@ class App {
       body.innerHTML = '<div class="inspect-empty">図形をタップすると、レイヤ・線色・線種・長さを表示します。長押しすると拡大鏡で選べます</div>';
       el('btn-layer-only').classList.add('hidden');
       el('btn-layer-hide').classList.add('hidden');
-      el('inspect-actions').classList.toggle('hidden', !canUndo);
       return;
     }
 
@@ -934,7 +968,16 @@ class App {
       .join('');
     el('btn-layer-only').classList.remove('hidden');
     el('btn-layer-hide').classList.remove('hidden');
-    el('inspect-actions').classList.remove('hidden');
+  }
+
+  /** 反転したあと、いくつのレイヤが見えるようになったかを知らせる */
+  private hintInverted(): void {
+    const counts = this.scene?.layerCounts;
+    if (!counts) return;
+    let used = 0;
+    for (let k = 0; k < 256; k++) if (counts[k] > 0) used++;
+    const shown = used - this.layers.hiddenCount(counts);
+    this.hint(`表示と非表示を入れ替えました（${used} レイヤ中 ${shown} を表示）`);
   }
 
   private setTool(tool: Tool): void {
@@ -1049,10 +1092,12 @@ class App {
       if (!this.scene || this.selected < 0) return;
       const k = this.scene.entities.layer[this.selected];
       if (!this.layerSnapshot) this.layerSnapshot = this.layers.snapshot();
+      this.layers.forget();
       this.layers.layer[k] = false;
       this.afterLayerChange(false);
       this.hint(`レイヤ ${layerTag(k)} を隠しました`);
     });
+    el('btn-layer-invert').addEventListener('click', () => this.invertLayers(true));
     el('btn-layer-back').addEventListener('click', () => {
       if (!this.layerSnapshot) return;
       this.layers.restore(this.layerSnapshot);
@@ -1079,6 +1124,7 @@ class App {
       this.layers.showAll();
       this.afterLayerChange(true);
     });
+    el('btn-layer-invert-all').addEventListener('click', () => this.invertLayers(false));
     el('layer-list').addEventListener('click', (e) => {
       const target = e.target as HTMLElement;
       const sw = target.closest<HTMLElement>('.sw');
@@ -1086,6 +1132,7 @@ class App {
       const row = target.closest<HTMLElement>('.l-row');
       if (sw?.dataset.group !== undefined) {
         const g = Number(sw.dataset.group);
+        this.layers.forget();
         this.layers.group[g] = !this.layers.group[g];
         this.afterLayerChange(true);
       } else if (head) {
@@ -1163,19 +1210,18 @@ class App {
     const info = this.info;
     const scene = this.scene;
     if (!info || !scene) return;
-    let layers = this.layers;
-    if (this.layerSnapshot) {
-      layers = new LayerVisibility();
-      layers.restore(this.layerSnapshot);
-    }
-    const jw = new LayerVisibility();
+    const layers = this.layerSnapshot ? this.layersFrom(this.layerSnapshot) : this.layers;
+    const jw = new LayerVisibility().useCounts(scene.layerCounts);
     jw.resetToJw(info.groups, info.writeGroup);
     const hidden = layers.hidden();
-    const same = JSON.stringify(hidden) === JSON.stringify(jw.hidden());
+    // 図形のあるグループのスイッチとレイヤの設定が Jw_cad の状態と同じで、反転の覚え書きもなければ記録しない。
+    // グループごと隠れていて見え方が同じでも、中の設定を変えていれば残す
+    const same = layers.stash.size === 0 && layers.sameSettings(jw);
     saveViewState(info.name, {
       pens: [...this.hiddenGroups].map((i) => scene.groups[i].penColor),
       groups: same ? null : hidden.groups,
       layers: same ? null : hidden.layers,
+      stash: same || hidden.stash.length === 0 ? null : hidden.stash,
       jw: jwFingerprint(info),
     });
   }
@@ -1192,10 +1238,44 @@ class App {
    */
   private afterLayerChange(fromList: boolean): void {
     if (fromList) this.layerSnapshot = null;
+    // 反転以外で表示を変えたら、反転を続けて押す前の状態は忘れる（反転からは invertLayers が戻し直す）
+    this.invertOrigin = null;
     this.saveViewState();
     this.applyDisplay();
     this.buildLayerPanel();
     this.updateInspect();
+  }
+
+  /** 図形の数を覚えさせた LayerVisibility を、覚えておいた状態から作る */
+  private layersFrom(s: LayerSnapshot): LayerVisibility {
+    const v = new LayerVisibility().useCounts(this.scene?.layerCounts ?? null);
+    v.restore(s);
+    return v;
+  }
+
+  /**
+   * 表示を反転する。temporary は属性パネルからの一時的な操作（「元に戻す」で戻せ、保存しない）。
+   * 反転を続けて押して同じ見え方に戻ったら、グループの持ち方まで元どおりにする
+   * （反転だけでは、グループごと隠していたときの中の設定までは戻せないため）。
+   */
+  private invertLayers(temporary: boolean): void {
+    if (!this.scene) return;
+    if (temporary && !this.layerSnapshot) this.layerSnapshot = this.layers.snapshot();
+    const origin = this.invertOrigin ?? this.layers.snapshot();
+    this.layers.invert();
+    let keep: LayerSnapshot | null = origin;
+    if (this.layers.sameAs(this.layersFrom(origin))) {
+      this.layers.restore(origin);
+      keep = null;
+    }
+    // 属性からの操作の前と同じ見え方に戻ったなら、その状態に戻して「元に戻す」をしまう
+    if (this.layerSnapshot && this.layers.sameAs(this.layersFrom(this.layerSnapshot))) {
+      this.layers.restore(this.layerSnapshot);
+      this.layerSnapshot = null;
+    }
+    this.afterLayerChange(!temporary);
+    this.invertOrigin = keep;
+    this.hintInverted();
   }
 
   /**
@@ -1204,6 +1284,7 @@ class App {
    * （グループ内のほかのレイヤまで一度に現れると、何を出したのか分からなくなる）。
    */
   private toggleLayer(k: number): void {
+    this.layers.forget();
     const g = k >> 4;
     if (!this.layers.group[g]) {
       this.layers.group[g] = true;

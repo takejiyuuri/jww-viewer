@@ -6,7 +6,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { parseJww } from '../src/jww/parser.ts';
-import { buildScene, KIND } from '../src/render/geometry.ts';
+import { buildScene, fitRange, KIND, paperRect } from '../src/render/geometry.ts';
 import type { Scene } from '../src/render/geometry.ts';
 import { buildInfo } from '../src/jww/info.ts';
 import { SnapIndex } from '../src/measure/snap.ts';
@@ -299,6 +299,76 @@ for (const file of files) {
     console.log(`  ${st.name}: ${agree}/${checked} 一致`, Object.fromEntries(branches));
   }
 
+  // ---------- 3b. 「全体」の範囲：用紙をはみ出して続く図面は切らず、離れた点だけなら用紙に合わせる ----------
+  {
+    const paper = paperRect(doc.header.paperSize);
+    const fb = scene.fitBounds;
+    if (paper) {
+      const inP = (x: number, y: number): boolean => x >= paper.minX && x <= paper.maxX && y >= paper.minY && y <= paper.maxY;
+      const cross = { left: 0, right: 0, top: 0, bottom: 0 };
+      // 辺ごとの、またいだ線分の外側の端
+      const outer: Record<string, number[]> = { left: [], right: [], top: [], bottom: [] };
+      let insideSeg = 0;
+      let touching = 0;
+      const pos = scene.linePos;
+      const segs = pos.length / 4;
+      for (let i = 0; i < segs; i++) {
+        const a = inP(pos[i * 4], pos[i * 4 + 1]);
+        const b = inP(pos[i * 4 + 2], pos[i * 4 + 3]);
+        if (a && b) insideSeg++;
+        if (a === b) continue;
+        touching++;
+        const ox = a ? pos[i * 4 + 2] : pos[i * 4];
+        const oy = a ? pos[i * 4 + 3] : pos[i * 4 + 1];
+        if (ox > paper.maxX) { cross.right++; outer.right.push(ox); }
+        else if (ox < paper.minX) { cross.left++; outer.left.push(ox); }
+        else if (oy > paper.maxY) { cross.top++; outer.top.push(oy); }
+        else { cross.bottom++; outer.bottom.push(oy); }
+      }
+      // 用紙をはみ出して続く線分の外側の端は、9 割 5 分以上が「全体」に入る
+      const covered = (list: number[], ok: (v: number) => boolean): number =>
+        list.length ? list.filter(ok).length / list.length : 1;
+      const cover = {
+        right: covered(outer.right, (v) => v <= fb.maxX + 1e-6),
+        left: covered(outer.left, (v) => v >= fb.minX - 1e-6),
+        top: covered(outer.top, (v) => v <= fb.maxY + 1e-6),
+        bottom: covered(outer.bottom, (v) => v >= fb.minY - 1e-6),
+      };
+      const short = Object.entries(cover).filter(([k, v]) => (cross as Record<string, number>)[k] >= 10 && v < 0.95);
+      if (short.length) fail('用紙をはみ出して続く図形の外側が「全体」に入りきらない', { cover, cross });
+      // 用紙の辺をまたいで続く図形が 10 本以上ある辺は、用紙の外まで見せる
+      const cut: string[] = [];
+      if (cross.right >= 10 && !(fb.maxX > paper.maxX)) cut.push('右');
+      if (cross.left >= 10 && !(fb.minX < paper.minX)) cut.push('左');
+      if (cross.top >= 10 && !(fb.maxY > paper.maxY)) cut.push('上');
+      if (cross.bottom >= 10 && !(fb.minY < paper.minY)) cut.push('下');
+      if (cut.length) fail('用紙をはみ出して続く図面が「全体」で切れる', { cut, cross, fb });
+      // 用紙の辺をまたぐ図形がなく、線分の 9 割以上が用紙の中なら、用紙の枠そのものに合わせる。
+      // ただし用紙が図形よりずっと大きい（対角が 1.6 倍を超える）図面は、豆粒にならないよう図形の範囲を優先する
+      // 図面本体の大きさは、用紙内の線分の端点の上下 1% を除いた範囲で測る（散らばった点に引きずられないように）
+      const xs: number[] = [];
+      const ys: number[] = [];
+      for (let i = 0; i < segs; i++) {
+        for (const j of [0, 2]) {
+          const x = pos[i * 4 + j], y = pos[i * 4 + j + 1];
+          if (inP(x, y)) { xs.push(x); ys.push(y); }
+        }
+      }
+      xs.sort((a, b) => a - b);
+      ys.sort((a, b) => a - b);
+      const q = (arr: number[], t: number): number => arr[Math.min(arr.length - 1, Math.max(0, Math.floor(arr.length * t)))] ?? 0;
+      const contentDiag = Math.hypot(q(xs, 0.99) - q(xs, 0.01), q(ys, 0.99) - q(ys, 0.01));
+      const paperDiag = Math.hypot(paper.maxX - paper.minX, paper.maxY - paper.minY);
+      const tight = touching === 0 && insideSeg >= segs * 0.9 && paperDiag <= contentDiag * 1.6;
+      const isPaper = Math.abs(fb.minX - paper.minX) < 1e-6 && Math.abs(fb.maxX - paper.maxX) < 1e-6
+        && Math.abs(fb.minY - paper.minY) < 1e-6 && Math.abs(fb.maxY - paper.maxY) < 1e-6;
+      if (tight && !isPaper) fail('用紙に収まる図面なのに「全体」が用紙の枠に合っていない', { fb, paper });
+      console.log(`  全体の範囲: 用紙をまたぐ線分 ${JSON.stringify(cross)} ／ ${isPaper ? '用紙に合わせる' : '図形の範囲に合わせる'}`);
+    } else {
+      console.log('  全体の範囲: 用紙の大きさが分からないので図形の範囲に合わせる');
+    }
+  }
+
   // ---------- 4. レイヤの表示状態 ----------
   layers.resetToJw(info.groups, info.writeGroup);
   let jwHidden = 0;
@@ -369,7 +439,194 @@ for (const file of files) {
   let shown2 = 0;
   for (let l = 0; l < 16; l++) if (lv.visible(0x20 | l)) shown2++;
   if (shown2 !== 15) fail('このレイヤだけ表示のあと、別のグループを戻しても中身が戻らない', { shown2 });
-  console.log(`\n合成データ（Jw_cad の状態・このレイヤだけ）: ${failures === before ? 'OK' : 'NG'}`);
+  // 図形のあるレイヤだけで数える反転：グループの図形のあるレイヤが全部見えていれば、図形のないレイヤが
+  // 隠れていてもグループごと隠す（グループのスイッチで戻せるように）。2 回で持ち方まで元どおりでなくても、見え方は戻る
+  {
+    const counts = new Uint32Array(256);
+    counts[0x16] = 5;
+    counts[0x18] = 3;
+    const v = new LayerVisibility().useCounts(counts);
+    for (let l = 0; l < 16; l++) v.layer[0x10 | l] = false;
+    v.layer[0x16] = true;
+    v.layer[0x18] = true;
+    const start = v.snapshot();
+    v.invert();
+    if (v.group[1] || !v.layer[0x16] || !v.layer[0x18]) fail('図形のあるレイヤが全部見えているグループが、反転でグループごと隠れない', { group: v.group[1] });
+    v.group[1] = true;
+    if (!v.visible(0x16) || !v.visible(0x18)) fail('反転で隠したグループを、グループのスイッチで戻せない');
+    v.group[1] = false;
+    v.invert();
+    const back = new LayerVisibility().useCounts(counts);
+    back.restore(start);
+    if (!v.sameAs(back)) fail('図形のあるレイヤで数える反転を 2 回しても見え方が戻らない');
+  }
+
+  // 「全体」の範囲を、作った点と線で確かめる（A3 横の用紙）
+  {
+    const paper = paperRect(3)!;
+    const rand = rng(11);
+    const all = { minX: -10000, minY: -10000, maxX: 10000, maxY: 10000 };
+    type B = { minX: number; maxX: number; minY: number; maxY: number };
+    const same = (a: B, b: B): boolean =>
+      Math.abs(a.minX - b.minX) < 1e-6 && Math.abs(a.maxX - b.maxX) < 1e-6 && Math.abs(a.minY - b.minY) < 1e-6 && Math.abs(a.maxY - b.maxY) < 1e-6;
+    // 用紙の中に図面本体（短い線 3000 本）
+    const body: number[] = [];
+    for (let i = 0; i < 3000; i++) {
+      const x = paper.minX + 5 + rand() * (paper.maxX - paper.minX - 10);
+      const y = paper.minY + 5 + rand() * (paper.maxY - paper.minY - 10);
+      body.push(x, y, x + rand() * 4, y + rand() * 4);
+    }
+    const F = (segs: number[], marks: number[] = []) => {
+      const pts = [...segs, ...marks];
+      return fitRange({ pts: Float32Array.from(pts), segs: Float32Array.from(segs), marks: Float32Array.from(marks) }, all, paper);
+    };
+    const others = (b: B, but: keyof B): boolean =>
+      (['minX', 'maxX', 'minY', 'maxY'] as const).every((k) => k === but || Math.abs(b[k] - paper[k]) < 1e-6);
+
+    // 1. 用紙の外に離れた点が少しあるだけ → 用紙
+    const strayMarks: number[] = [];
+    for (let i = 0; i < 20; i++) strayMarks.push(paper.maxX + 100 + i, 0);
+    if (!same(F(body, strayMarks), paper)) fail('全体：離れた点だけで用紙から広がる', F(body, strayMarks));
+
+    // 2. 図枠が用紙の辺ちょうど（float32 の丸めでわずかに外）→ 用紙
+    const edgeX = Math.fround(paper.maxX + 1e-5);
+    const frame = [...body, paper.minX, paper.maxY, edgeX, paper.maxY, edgeX, paper.maxY, edgeX, paper.minY, edgeX, paper.minY, paper.minX, paper.minY];
+    if (!same(F(frame), paper)) fail('全体：用紙の辺ちょうどの図枠で用紙から広がる', F(frame));
+
+    // 3. 右の辺をまたいで 60mm 先まで続く線 12 本 → 右だけ 60mm 先まで
+    const cont: number[] = [];
+    for (let i = 0; i < 12; i++) cont.push(paper.maxX - 40, -50 + i * 8, paper.maxX + 60, -50 + i * 8);
+    const f3 = F([...body, ...cont]);
+    if (!(f3.maxX >= paper.maxX + 59.9 && f3.maxX <= paper.maxX + 60.1) || !others(f3, 'maxX')) fail('全体：辺をまたいで続く線の先まで右だけ広がらない', f3);
+
+    // 4. 遠くまで伸びた線が 3 本だけ → 用紙
+    const longs: number[] = [];
+    for (let i = 0; i < 3; i++) longs.push(0, i * 10, 5000, i * 10);
+    if (!same(F([...body, ...longs]), paper)) fail('全体：遠くへ伸びた数本の線に引きずられる', F([...body, ...longs]));
+
+    // 5. 本物の続き 12 本と、遠くへ伸びた 1 本 → 続きの先（60mm）まで
+    const f5 = F([...body, ...cont, 0, 0, 5000, 0]);
+    if (!(f5.maxX <= paper.maxX + 60.1 && f5.maxX >= paper.maxX + 59.9)) fail('全体：1 本の遠い線に引きずられる', f5);
+
+    // 6. 辺のすぐ外で分割された壁 12 本（外側の部分は 140mm 先まで）→ 140mm 先まで
+    const split: number[] = [];
+    for (let i = 0; i < 12; i++) {
+      const y = -60 + i * 10;
+      split.push(paper.maxX - 30, y, paper.maxX + 5, y, paper.maxX + 5, y, paper.maxX + 140, y);
+    }
+    const f6 = F([...body, ...split]);
+    if (!(f6.maxX >= paper.maxX + 139.9) || !others(f6, 'maxX')) fail('全体：分割された壁の先が切れる', f6);
+
+    // 7. 細かい線分でできた円弧 12 本が左の辺をまたいで 70mm 先まで → 左に 70mm 先まで
+    const arcs: number[] = [];
+    for (let i = 0; i < 12; i++) {
+      const y0 = -60 + i * 10;
+      let px = paper.minX + 30, py = y0;
+      for (let t = 1; t <= 40; t++) {
+        const x = paper.minX + 30 - t * 2.5;
+        const y = y0 + Math.sin(t / 8) * 3;
+        arcs.push(px, py, x, y);
+        px = x; py = y;
+      }
+    }
+    const f7 = F([...body, ...arcs]);
+    if (!(f7.minX <= paper.minX - 69.9) || !others(f7, 'minX')) fail('全体：細かい線分でできた円弧の先が切れる', f7);
+
+    // 8. 用紙から離れた所（80〜90mm 先）にまとまった図形 → 用紙
+    const detached: number[] = [];
+    for (let i = 0; i < 60; i++) detached.push(paper.maxX + 80, -30 + i, paper.maxX + 90, -30 + i);
+    if (!same(F([...body, ...detached]), paper)) fail('全体：離れた所の図形まで広がる', F([...body, ...detached]));
+
+    // 9. 図形の多くが用紙の外 → 図形と用紙を合わせた範囲（用紙より広い）
+    const outside: number[] = [];
+    for (let i = 0; i < 4000; i++) {
+      const x = paper.maxX + 50 + rand() * 300;
+      const y = rand() * 100;
+      outside.push(x, y, x + 1, y + 1);
+    }
+    const f9 = F([...body.slice(0, 4000), ...outside]);
+    if (!(f9.maxX > paper.maxX + 50)) fail('全体：図形の多くが用紙の外なのに入らない', f9);
+
+    // 10. 用紙がずっと大きい（図形は隅の小さな範囲だけ）→ 図形の範囲（用紙より狭い）
+    const tiny: number[] = [];
+    for (let i = 0; i < 2000; i++) {
+      const x = rand() * 30, y = rand() * 20;
+      tiny.push(x, y, x + 0.5, y + 0.5);
+    }
+    const f10 = F(tiny);
+    if (!(f10.maxX - f10.minX < (paper.maxX - paper.minX) / 2)) fail('全体：小さな図形が用紙いっぱいに縮んで映る', f10);
+
+    // 11. 用紙のすぐ下（5mm）の注記 13 個（文字の四隅）→ 下だけ注記の分まで
+    const notes: number[] = [];
+    for (let i = 0; i < 13; i++) {
+      const x = -100 + i * 15, y = paper.minY - 5 - 3;
+      notes.push(x, y, x + 10, y, x + 10, y + 3, x, y + 3);
+    }
+    const f11 = F(body, notes);
+    if (!(f11.minY <= paper.minY - 7.9 && f11.minY >= paper.minY - 20) || !others(f11, 'minY')) fail('全体：用紙のすぐ外の注記の扱いがおかしい', f11);
+  }
+
+  // 反転で表示にした隠れグループは、もう一度反転すると中の設定まで戻る。
+  // 間にほかのグループを切り替えても、保存して読み直しても同じ
+  {
+    const counts = new Uint32Array(256);
+    for (const k of [0x10, 0x11, 0x12, 0x20, 0x21]) counts[k] = 3;
+    const v = new LayerVisibility().useCounts(counts);
+    v.layer[0x12] = false; // グループ 1 の中で 1-2 を隠している
+    v.group[1] = false;    // さらにグループ 1 ごと隠す
+    const before = [...v.layer.slice(0x10, 0x20)];
+    v.invert();
+    // 間にグループ 2 の中を反転の外で触ったとしても（覚え書きはグループごと）
+    const saved = v.hidden();
+    const w = new LayerVisibility().useCounts(counts);
+    w.applyHidden(JSON.parse(JSON.stringify(saved)));
+    w.invert();
+    const after = [...w.layer.slice(0x10, 0x20)];
+    if (w.group[1] || JSON.stringify(after) !== JSON.stringify(before)) {
+      fail('反転で表示にした隠れグループを、読み直してから反転しても中の設定が戻らない', { before, after, group1: w.group[1] });
+    }
+    // 直接切り替えたら覚え書きは捨てる
+    v.forget();
+    if (v.stash.size !== 0) fail('直接切り替えたのに反転の覚え書きが残る');
+  }
+
+  // 反転は、無作為な状態でも見え方がちょうど入れ替わり、
+  // 「スイッチは表示なのに中のレイヤが全部隠れている」グループを作らない（グループのスイッチで戻せなくなるため）
+  {
+    const rand = rng(7);
+    let wrongFlip = 0;
+    let deadGroup = 0;
+    for (let n = 0; n < 5000; n++) {
+      const v = new LayerVisibility();
+      for (let g = 0; g < 16; g++) v.group[g] = rand() > 0.3;
+      const allOn = rand() < 0.3;
+      for (let k = 0; k < 256; k++) v.layer[k] = allOn ? true : rand() > 0.4;
+      const was = v.mask();
+      v.invert();
+      for (let k = 0; k < 256; k++) if (v.visible(k) === (was[k] === 1)) { wrongFlip++; break; }
+      for (let g = 0; g < 16; g++) {
+        if (!v.group[g]) continue;
+        let any = false;
+        for (let l = 0; l < 16; l++) if (v.layer[(g << 4) | l]) any = true;
+        if (!any) deadGroup++;
+      }
+    }
+    if (wrongFlip) fail('反転で見え方がちょうど入れ替わらない状態がある', { wrongFlip });
+    if (deadGroup) fail('反転で、スイッチは表示なのに中が全部隠れたグループができる', { deadGroup });
+  }
+  // 反転：見えていたものと隠れていたものが入れ替わり、2 回で元の見え方に戻る（グループごと隠したものも含めて）
+  const inv = new LayerVisibility();
+  inv.resetToJw(groups, 0);
+  const was = inv.mask();
+  inv.invert();
+  let notFlipped = 0;
+  for (let k = 0; k < 256; k++) if (inv.visible(k) === (was[k] === 1)) notFlipped++;
+  if (notFlipped) fail('反転で入れ替わらないレイヤがある', { notFlipped });
+  inv.invert();
+  const again = new LayerVisibility();
+  again.resetToJw(groups, 0);
+  if (!inv.sameAs(again)) fail('2 回反転しても元の見え方に戻らない');
+  console.log(`\n合成データ（Jw_cad の状態・このレイヤだけ・反転）: ${failures === before ? 'OK' : 'NG'}`);
 }
 
 console.log(failures ? `\n失敗 ${failures} 件` : '\nすべて合格');

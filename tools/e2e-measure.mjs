@@ -137,7 +137,23 @@ const tapAt = async (x, y) => {
 {
   const before = await points();
   const scr = await toScreen(before[0].x, before[0].y);
-  await holdDrag(scr, { x: scr.x + 55, y: scr.y - 20 });
+  // 動かした先に吸着先がある場所を選ぶ（1 点目を動かすときは 2 点目との間で直交が効く）
+  const dest = await page.evaluate(([sx, sy, px, py]) => {
+    const a = window.__jww;
+    const bottom = document.getElementById('readout').getBoundingClientRect().top - 20;
+    for (let r = 40; r < 200; r += 12) {
+      for (let t = 0; t < 16; t++) {
+        const x = sx + r * Math.cos((t / 16) * Math.PI * 2);
+        const y = sy + r * Math.sin((t / 16) * Math.PI * 2);
+        if (x < 20 || x > a.cssW - 20 || y < 120 || y > bottom) continue;
+        const hit = a.snapFor(x, y, 0);
+        // 拘束線に沿って元の点に吸着し直す所では動いたことにならないので除く
+        if (hit && hit.kind !== 'free' && Math.hypot(hit.x - px, hit.y - py) > 1e-6) return { x, y };
+      }
+    }
+    return { x: sx + 55, y: sy - 20 };
+  }, [scr.x, scr.y, before[0].x, before[0].y]);
+  await holdDrag(scr, dest);
   const after = await points();
   const moved = Math.hypot(after[0].x - before[0].x, after[0].y - before[0].y);
   check('点の数は変わらない', after.length === before.length, { 前: before.length, 後: after.length });
@@ -197,7 +213,8 @@ const tapAt = async (x, y) => {
     const limit = document.getElementById('readout').getBoundingClientRect().top - 30 - ayScreen;
     for (let d = 30; d < Math.min(260, limit); d += 8) {
       const hit = a.snapIndex.queryOnAxis(ax, ay, 'vertical', ax, ay - d * unit, r);
-      if (hit.kind !== 'free') return { x: hit.x, y: hit.y, kind: hit.kind };
+      // 1 点目のすぐ近く（つまむ範囲 24px）を押すと、1 点目の置き直しになってしまうので離れた所だけ
+      if (hit.kind !== 'free' && (ay - hit.y) / unit > 40) return { x: hit.x, y: hit.y, kind: hit.kind };
     }
     return null;
   }, [anchor.x, anchor.y]);

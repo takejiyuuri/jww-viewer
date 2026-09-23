@@ -40,19 +40,22 @@
 </div>
 
 <!-- 計測中の結果と操作 -->
-<!-- 図面を広く見せたいので 2 段に収める -->
-<section id="readout" class="panel hidden" aria-label="計測">
-  <div class="panel-top">
+<!--
+  図面を広く見せたいので、点がないときは操作の 1 段だけ、測っているときはその上に長さの段を足す。
+  操作の段は常に同じ位置にあり、点を置いたり消したりしてもボタンが指の下へ動いてこない。
+  縮尺のボタンは左端、消去は右端に置いて、押し間違えないように離す
+-->
+<section id="readout" class="panel readout idle hidden" aria-label="計測">
+  <div class="readout-top">
     <span id="readout-value" class="readout-value">—</span>
-    <div class="icon-actions">
-      <button id="btn-ortho" class="pill on" aria-pressed="true" aria-label="水平・垂直に拘束"><svg class="ico"><use href="#i-ortho"/></svg><span class="label">直交</span></button>
-      <button id="btn-undo" class="icon-btn" aria-label="1 点戻す"><svg class="ico"><use href="#i-undo"/></svg></button>
-      <button id="btn-clear" class="icon-btn" aria-label="すべて消去"><svg class="ico"><use href="#i-clear"/></svg></button>
-    </div>
-  </div>
-  <div class="readout-sub">
     <div id="readout-detail" class="detail"></div>
+  </div>
+  <div class="readout-bar">
     <button id="btn-scale" class="chip small" aria-label="計測に使う縮尺">1/—</button>
+    <button id="btn-ortho" class="pill on" aria-pressed="true" aria-label="水平・垂直に拘束"><svg class="ico"><use href="#i-ortho"/></svg><span class="label">直交</span></button>
+    <div id="readout-hint" class="detail readout-hint">タップで計測、長押しで拡大鏡</div>
+    <button id="btn-undo" class="icon-btn" aria-label="1 点戻す"><svg class="ico"><use href="#i-undo"/></svg></button>
+    <button id="btn-clear" class="icon-btn" aria-label="すべて消去"><svg class="ico"><use href="#i-clear"/></svg></button>
   </div>
 </section>
 
@@ -63,9 +66,10 @@
     <span id="inspect-tag" class="tag hidden"></span>
   </div>
   <div id="inspect-body" class="inspect-body"></div>
-  <div id="inspect-actions" class="panel-actions hidden">
-    <button id="btn-layer-only" class="pill">レイヤだけ表示</button>
-    <button id="btn-layer-hide" class="pill">レイヤを隠す</button>
+  <div id="inspect-actions" class="panel-actions">
+    <button id="btn-layer-only" class="pill hidden">レイヤだけ表示</button>
+    <button id="btn-layer-hide" class="pill hidden">レイヤを隠す</button>
+    <button id="btn-layer-invert" class="pill">表示を反転</button>
     <button id="btn-layer-back" class="pill hidden">元に戻す</button>
   </div>
 </section>
@@ -104,6 +108,7 @@
       <div class="section-actions">
         <button id="btn-layer-jw" class="chip small">Jw_cad の状態</button>
         <button id="btn-layer-all" class="chip small">すべて表示</button>
+        <button id="btn-layer-invert-all" class="chip small">反転</button>
       </div>
     </div>
     <div id="layer-list" class="layer-list"></div>
