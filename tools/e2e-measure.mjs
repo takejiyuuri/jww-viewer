@@ -175,7 +175,9 @@ const tapAt = async (x, y) => {
 // ---------- 4. 何もない場所をつまんでも点は増えない ----------
 {
   const before = await points();
-  await holdDrag({ x: 200, y: 640 }, { x: 210, y: 650 }, 60);
+  // 図面の見えている所（パネルやツールバーの下ではない所）で短くドラッグする
+  const spot = await page.evaluate(() => ({ x: 200, y: document.getElementById('readout').getBoundingClientRect().top - 60 }));
+  await holdDrag(spot, { x: spot.x + 10, y: spot.y + 10 }, 60);
   const after = await points();
   check('短いドラッグでは点が増えない', after.length === before.length + 0 || after.length === before.length + 1, {
     前: before.length, 後: after.length,

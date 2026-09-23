@@ -60,17 +60,23 @@
 </section>
 
 <!-- タップした図形の属性 -->
+<!--
+  操作ボタンは常に同じ 3 つを同じ位置に置く（図形を選んでいないときは押せないだけ）。
+  「元に戻す」は見出しの行に出して、押したボタンの下へ別のボタンが来ないようにする
+-->
 <section id="inspect-panel" class="panel hidden" aria-label="属性">
   <div class="panel-top">
     <span id="inspect-kind" class="inspect-kind">属性</span>
-    <span id="inspect-tag" class="tag hidden"></span>
+    <span class="panel-top-end">
+      <span id="inspect-tag" class="tag hidden"></span>
+      <button id="btn-layer-back" class="chip small hidden"><svg class="ico small-ico"><use href="#i-undo"/></svg>元に戻す</button>
+    </span>
   </div>
   <div id="inspect-body" class="inspect-body"></div>
   <div id="inspect-actions" class="panel-actions">
-    <button id="btn-layer-only" class="pill hidden">レイヤだけ表示</button>
-    <button id="btn-layer-hide" class="pill hidden">レイヤを隠す</button>
+    <button id="btn-layer-only" class="pill" disabled>レイヤだけ表示</button>
+    <button id="btn-layer-hide" class="pill" disabled>レイヤを隠す</button>
     <button id="btn-layer-invert" class="pill">表示を反転</button>
-    <button id="btn-layer-back" class="pill hidden">元に戻す</button>
   </div>
 </section>
 

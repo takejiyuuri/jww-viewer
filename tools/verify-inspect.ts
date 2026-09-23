@@ -6,7 +6,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { parseJww } from '../src/jww/parser.ts';
-import { buildScene, fitRange, KIND, paperRect } from '../src/render/geometry.ts';
+import { buildScene, fitRange, fitScene, KIND, paperRect } from '../src/render/geometry.ts';
 import type { Scene } from '../src/render/geometry.ts';
 import { buildInfo } from '../src/jww/info.ts';
 import { SnapIndex } from '../src/measure/snap.ts';
@@ -343,8 +343,8 @@ for (const file of files) {
       if (cross.top >= 10 && !(fb.maxY > paper.maxY)) cut.push('上');
       if (cross.bottom >= 10 && !(fb.minY < paper.minY)) cut.push('下');
       if (cut.length) fail('用紙をはみ出して続く図面が「全体」で切れる', { cut, cross, fb });
-      // 用紙の辺をまたぐ図形がなく、線分の 9 割以上が用紙の中なら、用紙の枠そのものに合わせる。
-      // ただし用紙が図形よりずっと大きい（対角が 1.6 倍を超える）図面は、豆粒にならないよう図形の範囲を優先する
+      // 用紙の辺をまたぐ図形がなく、線分の 9 割以上が用紙の中で、図面本体が用紙のほぼ全体（幅も高さも 85% 以上）に
+      // 広がっているなら、用紙の枠そのものに合わせる
       // 図面本体の大きさは、用紙内の線分の端点の上下 1% を除いた範囲で測る（散らばった点に引きずられないように）
       const xs: number[] = [];
       const ys: number[] = [];
@@ -357,9 +357,9 @@ for (const file of files) {
       xs.sort((a, b) => a - b);
       ys.sort((a, b) => a - b);
       const q = (arr: number[], t: number): number => arr[Math.min(arr.length - 1, Math.max(0, Math.floor(arr.length * t)))] ?? 0;
-      const contentDiag = Math.hypot(q(xs, 0.99) - q(xs, 0.01), q(ys, 0.99) - q(ys, 0.01));
-      const paperDiag = Math.hypot(paper.maxX - paper.minX, paper.maxY - paper.minY);
-      const tight = touching === 0 && insideSeg >= segs * 0.9 && paperDiag <= contentDiag * 1.6;
+      const fillW = (q(xs, 0.99) - q(xs, 0.01)) / (paper.maxX - paper.minX);
+      const fillH = (q(ys, 0.99) - q(ys, 0.01)) / (paper.maxY - paper.minY);
+      const tight = touching === 0 && insideSeg >= segs * 0.9 && Math.min(fillW, fillH) >= 0.85;
       const isPaper = Math.abs(fb.minX - paper.minX) < 1e-6 && Math.abs(fb.maxX - paper.maxX) < 1e-6
         && Math.abs(fb.minY - paper.minY) < 1e-6 && Math.abs(fb.maxY - paper.maxY) < 1e-6;
       if (tight && !isPaper) fail('用紙に収まる図面なのに「全体」が用紙の枠に合っていない', { fb, paper });
@@ -367,6 +367,66 @@ for (const file of files) {
     } else {
       console.log('  全体の範囲: 用紙の大きさが分からないので図形の範囲に合わせる');
     }
+  }
+
+  // ---------- 3c. 1 つのレイヤだけ見せたときの「全体」は、そのレイヤの図形に合い、隠した図形に引きずられない ----------
+  {
+    const paper = paperRect(doc.header.paperSize);
+    const layersWithContent = [...scene.layerCounts.keys()].filter((k) => scene.layerCounts[k] > 0);
+    let checked = 0;
+    let bad = 0;
+    for (const k of layersWithContent) {
+      const fb = fitScene(scene, (_c, l) => l === k);
+      // そのレイヤの図形ごとの代表点（線・円弧は始点、文字は基点、点はその位置）
+      const pointAt = new Map<number, [number, number]>();
+      for (let i = 0; i < scene.snapPoint.length / 2; i++) pointAt.set(scene.snapPointEntity[i], [scene.snapPoint[i * 2], scene.snapPoint[i * 2 + 1]]);
+      const xs: number[] = [];
+      const ys: number[] = [];
+      for (let i = 0; i < e.count; i++) {
+        if (e.layer[i] !== k) continue;
+        if (e.lineCount[i] > 0) { xs.push(scene.linePos[e.lineStart[i] * 4]); ys.push(scene.linePos[e.lineStart[i] * 4 + 1]); }
+        else if (e.text[i] >= 0) { xs.push(scene.texts[e.text[i]].x); ys.push(scene.texts[e.text[i]].y); }
+        else if (e.triCount[i] > 0) { xs.push(scene.triPos[e.triStart[i] * 6]); ys.push(scene.triPos[e.triStart[i] * 6 + 1]); }
+        else if (pointAt.has(i)) { const [px, py] = pointAt.get(i)!; xs.push(px); ys.push(py); }
+      }
+      if (xs.length < 2) continue;
+      checked++;
+      let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+      for (let j = 0; j < xs.length; j++) {
+        x0 = Math.min(x0, xs[j]); x1 = Math.max(x1, xs[j]);
+        y0 = Math.min(y0, ys[j]); y1 = Math.max(y1, ys[j]);
+      }
+      // 図形そのものの広がり（線分の両端、文字の四隅）も含める。幅の広い文字は基点から遠くまで伸びる
+      for (let i = 0; i < scene.lineLayer.length; i++) {
+        if (scene.lineLayer[i] !== k) continue;
+        for (const j of [0, 2]) {
+          x0 = Math.min(x0, scene.linePos[i * 4 + j]); x1 = Math.max(x1, scene.linePos[i * 4 + j]);
+          y0 = Math.min(y0, scene.linePos[i * 4 + j + 1]); y1 = Math.max(y1, scene.linePos[i * 4 + j + 1]);
+        }
+      }
+      for (const t of scene.texts) {
+        if (t.layer !== k) continue;
+        const a = (t.angle * Math.PI) / 180, ux = Math.cos(a), uy = Math.sin(a);
+        for (const [cx, cy] of [[t.x, t.y], [t.x + ux * t.width, t.y + uy * t.width],
+          [t.x + ux * t.width - uy * t.height, t.y + uy * t.width + ux * t.height], [t.x - uy * t.height, t.y + ux * t.height]]) {
+          x0 = Math.min(x0, cx); x1 = Math.max(x1, cx);
+          y0 = Math.min(y0, cy); y1 = Math.max(y1, cy);
+        }
+      }
+      // 隠した図形に引きずられない：そのレイヤの図形と用紙を合わせた範囲（少し余裕を見る）の外へは広がらない
+      const ux0 = Math.min(x0, paper?.minX ?? x0), ux1 = Math.max(x1, paper?.maxX ?? x1);
+      const uy0 = Math.min(y0, paper?.minY ?? y0), uy1 = Math.max(y1, paper?.maxY ?? y1);
+      const slack = Math.max(ux1 - ux0, uy1 - uy0) * 0.05 + 1;
+      const within = fb.minX >= ux0 - slack && fb.maxX <= ux1 + slack && fb.minY >= uy0 - slack && fb.maxY <= uy1 + slack;
+      // そのレイヤの図形の大部分（8 割以上）は入る。用紙の外に離れて残った小さなまとまりは外れてよい
+      let covered = 0;
+      for (let j = 0; j < xs.length; j++) if (xs[j] >= fb.minX - 1e-6 && xs[j] <= fb.maxX + 1e-6 && ys[j] >= fb.minY - 1e-6 && ys[j] <= fb.maxY + 1e-6) covered++;
+      if (!within || covered < xs.length * 0.8) {
+        bad++;
+        if (bad <= 3) fail('1 つのレイヤだけの「全体」がそのレイヤの図形に合わない', { layer: k.toString(16), fb, content: { x0, x1, y0, y1 }, covered: `${covered}/${xs.length}` });
+      }
+    }
+    console.log(`  1 つのレイヤだけの「全体」: ${checked - bad}/${checked} レイヤで図形に合う`);
   }
 
   // ---------- 4. レイヤの表示状態 ----------
@@ -476,9 +536,12 @@ for (const file of files) {
       const y = paper.minY + 5 + rand() * (paper.maxY - paper.minY - 10);
       body.push(x, y, x + rand() * 4, y + rand() * 4);
     }
-    const F = (segs: number[], marks: number[] = []) => {
+    const F = (segs: number[], marks: number[] = [], segEnt?: number[]) => {
       const pts = [...segs, ...marks];
-      return fitRange({ pts: Float32Array.from(pts), segs: Float32Array.from(segs), marks: Float32Array.from(marks) }, all, paper);
+      return fitRange({
+        pts: Float32Array.from(pts), segs: Float32Array.from(segs), marks: Float32Array.from(marks),
+        segEnt: segEnt ? Int32Array.from(segEnt) : undefined,
+      }, all, paper);
     };
     const others = (b: B, but: keyof B): boolean =>
       (['minX', 'maxX', 'minY', 'maxY'] as const).every((k) => k === but || Math.abs(b[k] - paper[k]) < 1e-6);
@@ -564,6 +627,32 @@ for (const file of files) {
     }
     const f11 = F(body, notes);
     if (!(f11.minY <= paper.minY - 7.9 && f11.minY >= paper.minY - 20) || !others(f11, 'minY')) fail('全体：用紙のすぐ外の注記の扱いがおかしい', f11);
+
+    // 12. 長い補助線が 8 本、用紙から遠くまで伸びているだけ → 用紙
+    const eight: number[] = [];
+    for (let i = 0; i < 8; i++) eight.push(0, -100 + i * 25, 3000, -100 + i * 25);
+    if (!same(F([...body, ...eight]), paper)) fail('全体：長い線 8 本の先まで広がる', F([...body, ...eight]));
+
+    // 13. 用紙から離れた所の円 10 個（細かい線分でできた 1 つずつの図形）→ 用紙
+    const circles: number[] = [];
+    const circleEnt: number[] = [];
+    for (let c = 0; c < 10; c++) {
+      const cx = paper.maxX + 300, cy = -100 + c * 20, r = 50;
+      for (let t = 0; t < 64; t++) {
+        const a0 = (t / 64) * Math.PI * 2, a1 = ((t + 1) / 64) * Math.PI * 2;
+        circles.push(cx + r * Math.cos(a0), cy + r * Math.sin(a0), cx + r * Math.cos(a1), cy + r * Math.sin(a1));
+        circleEnt.push(100000 + c);
+      }
+    }
+    const bodyEnt = Array.from({ length: body.length / 4 }, (_, i) => i);
+    // 代表点は円 1 つにつき 5 点（fitScene と同じ数え方）
+    const circlePts: number[] = [];
+    for (let c = 0; c < 10; c++) for (let q = 0; q < 5; q++) circlePts.push(paper.maxX + 300 + 50 * Math.cos(q), -100 + c * 20 + 50 * Math.sin(q));
+    const f13 = fitRange({
+      pts: Float32Array.from([...body, ...circlePts]), segs: Float32Array.from([...body, ...circles]), marks: new Float32Array(0),
+      segEnt: Int32Array.from([...bodyEnt, ...circleEnt]),
+    }, all, paper);
+    if (!same(f13, paper)) fail('全体：用紙から離れた円に引きずられる', f13);
   }
 
   // 反転で表示にした隠れグループは、もう一度反転すると中の設定まで戻る。
@@ -585,9 +674,23 @@ for (const file of files) {
     if (w.group[1] || JSON.stringify(after) !== JSON.stringify(before)) {
       fail('反転で表示にした隠れグループを、読み直してから反転しても中の設定が戻らない', { before, after, group1: w.group[1] });
     }
-    // 直接切り替えたら覚え書きは捨てる
-    v.forget();
-    if (v.stash.size !== 0) fail('直接切り替えたのに反転の覚え書きが残る');
+    // 別のグループを直接切り替えても、このグループの覚え書きは残る。このグループを切り替えたら捨てる
+    v.forget(0);
+    if (!v.stash.has(1)) fail('別のグループを切り替えただけで、反転の覚え書きが消える');
+    v.forget(1);
+    if (v.stash.has(1)) fail('そのグループを直接切り替えたのに反転の覚え書きが残る');
+
+    // スイッチは入っていて、図形のあるレイヤが全部隠れていたグループも、反転 → 読み直し → 反転で元の設定に戻る
+    const x = new LayerVisibility().useCounts(counts);
+    x.layer[0x20] = false;
+    x.layer[0x21] = false;
+    const start = { group: x.group[2], flags: [...x.layer.slice(0x20, 0x30)] };
+    x.invert();
+    const y = new LayerVisibility().useCounts(counts);
+    y.applyHidden(JSON.parse(JSON.stringify(x.hidden())));
+    y.invert();
+    const end = { group: y.group[2], flags: [...y.layer.slice(0x20, 0x30)] };
+    if (JSON.stringify(start) !== JSON.stringify(end)) fail('中が全部隠れていたグループが、反転・読み直し・反転で元に戻らない', { start, end });
   }
 
   // 反転は、無作為な状態でも見え方がちょうど入れ替わり、

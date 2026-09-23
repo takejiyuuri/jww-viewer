@@ -90,20 +90,21 @@ export interface ViewState {
    * 図面の側が変わっていたら（同じ名前の別の図面など）、レイヤの記録は当てない
    */
   jw: string | null;
-  /** 反転で覚えておいた、グループの中の設定（グループ番号と、その中で隠していたレイヤ 0〜15） */
-  stash: Array<[number, number[]]> | null;
+  /** 反転で覚えておいた設定（グループ番号、その中で隠していたレイヤ 0〜15、グループのスイッチが入っていたら 1） */
+  stash: Array<[number, number[], number?]> | null;
 }
 
 const EMPTY_VIEW: ViewState = { pens: [], groups: null, layers: null, jw: null, stash: null };
 
-function stashList(v: unknown): Array<[number, number[]]> | null {
+function stashList(v: unknown): Array<[number, number[], number?]> | null {
   if (!Array.isArray(v)) return null;
-  const out: Array<[number, number[]]> = [];
+  const out: Array<[number, number[], number?]> = [];
   for (const e of v) {
-    if (!Array.isArray(e) || e.length !== 2) continue;
-    const [g, off] = e as unknown[];
+    if (!Array.isArray(e) || e.length < 2 || e.length > 3) continue;
+    const [g, off, on] = e as unknown[];
     const list = intList(off, 16);
-    if (Number.isInteger(g) && (g as number) >= 0 && (g as number) < 16 && list) out.push([g as number, list]);
+    if (!(Number.isInteger(g) && (g as number) >= 0 && (g as number) < 16 && list)) continue;
+    out.push(on === 1 ? [g as number, list, 1] : [g as number, list]);
   }
   return out;
 }

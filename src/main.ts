@@ -16,7 +16,7 @@ import {
 } from './render/theme.ts';
 import { LayerVisibility, renderLayerList, type LayerSnapshot } from './ui/layers.ts';
 import { describeEntity, entityShape, pickEntity } from './ui/inspect.ts';
-import { KIND, fitScene } from './render/geometry.ts';
+import { KIND, fitScene, type Bounds } from './render/geometry.ts';
 import { hex1, layerTag } from './jww/names.ts';
 
 /** 吸着先を探す半径（CSS ピクセル） */
@@ -97,6 +97,8 @@ class App {
   /** 属性で長押ししている間、指の下にある図形 */
   private previewEntity = -1;
   private shapeCache: { index: number; shape: Highlight } | null = null;
+  /** 見えている図形での「全体」の範囲。色・レイヤの見え方が同じなら求め直さない */
+  private fitCache: { key: string; bounds: Bounds } | null = null;
   /** 長押しを始めたときの、上下のバー・パネルの幅。拡大鏡をそこに重ねないために使う */
   private insets: Insets = { top: 52, bottom: 104, right: 0 };
   /** 読み込み時に決めた既定の縮尺。「自動」に戻したときに使う */
@@ -234,6 +236,7 @@ class App {
     this.shapeCache = null;
     this.layerSnapshot = null;
     this.invertOrigin = null;
+    this.fitCache = null;
     this.layers.useCounts(scene.layerCounts);
 
     // 同じ図面を開き直したときは、前に隠していた色とレイヤをそのまま隠す。
@@ -288,10 +291,21 @@ class App {
 
   // ---------- ビュー ----------
 
+  /** 見えている図形での「全体」の範囲（色・レイヤの見え方ごとに覚えておく） */
+  private visibleFit(): Bounds {
+    const scene = this.scene!;
+    const key = `${this.layerMask.join('')}|${this.colorVisible.join('')}`;
+    if (this.fitCache?.key !== key) {
+      const bounds = fitScene(scene, (color, layer) => this.colorVisible[color] === 1 && this.layerMask[layer] === 1);
+      this.fitCache = { key, bounds };
+    }
+    return this.fitCache.bounds;
+  }
+
   private fit(): void {
     if (!this.scene) return;
     // 見えている図形（色・レイヤ）だけで範囲を決める。隠したレイヤに残った図形で図面が小さくならないように
-    const b = fitScene(this.scene, (color, layer) => this.colorVisible[color] === 1 && this.layerMask[layer] === 1);
+    const b = this.visibleFit();
     // 上のバーと下（横向きでは右）のパネルに隠れない範囲に収める。狭すぎるときは画面全体に
     const ins = this.measureInsets();
     let top = ins.top;
@@ -671,27 +685,28 @@ class App {
     const maxX = this.cssW - rightLimit - size - margin;
 
     const clampX = (v: number): number => Math.max(margin, Math.min(maxX, v));
-    const clampY = (v: number): number =>
-      Math.max(topLimit, Math.min(this.cssH - bottomLimit - size, v));
 
     const roomAbove = cssY - gap - topLimit;
     const roomBelow = this.cssH - bottomLimit - (cssY + gap);
 
     if (roomAbove >= size) {
-      return { x: clampX(cssX - size / 2), y: cssY - gap - size, size };
+      // パネルの横（パネルと同じ高さ）で押したときも、拡大鏡はパネルの上端より上に収める
+      return { x: clampX(cssX - size / 2), y: Math.min(cssY - gap - size, this.cssH - bottomLimit - size), size };
     }
     if (roomBelow >= size) {
       return { x: clampX(cssX - size / 2), y: cssY + gap, size };
     }
 
-    // 縦に逃がせないので左右へ。指から遠い側に置く
-    const y = clampY(cssY - size / 2);
+    // 縦に逃がせないので左右へ。指から遠い側に置き、そこに入りきらなければ入る大きさまで小さくする
+    // （指の上に重ねると、指で隠れた所を見せるという役目を果たせないため）
     const mid = (this.cssW - rightLimit) / 2;
-    const left = cssX - gap - size;
-    const right = cssX + gap;
-    let x = cssX > mid ? left : right;
-    if (x < margin || x > maxX) x = cssX > mid ? margin : maxX;
-    return { x, y, size };
+    const leftRoom = cssX - gap - margin;
+    const rightRoom = this.cssW - rightLimit - margin - (cssX + gap);
+    const useLeft = cssX > mid ? leftRoom >= 64 || leftRoom >= rightRoom : !(rightRoom >= 64 || rightRoom >= leftRoom);
+    const s2 = Math.round(Math.max(48, Math.min(size, useLeft ? leftRoom : rightRoom)));
+    const y = Math.max(topLimit, Math.min(this.cssH - bottomLimit - s2, cssY - s2 / 2));
+    const x = useLeft ? Math.max(margin, cssX - gap - s2) : Math.min(this.cssW - rightLimit - margin - s2, cssX + gap);
+    return { x, y, size: s2 };
   }
 
   private cancelHold(): void {
@@ -797,15 +812,21 @@ class App {
     const sx = (x - this.view.cx) / k + this.cssW / 2;
     const sy = this.cssH / 2 - (y - this.view.cy) / k;
     const m = 16;
-    if (sx < r.left - m || sx > r.right + m || sy < r.top - m || sy > r.bottom + m) return;
-    const up = sy - (r.top - m);
-    const left = sx - (r.left - m);
-    // 下に広がるパネル、またはパネルより下（ツールバーの上）の点は上へ。右に寄せたパネルなら上と左の近いほうへ
-    const sideDocked = r.width < this.cssW * 0.6;
-    if (!sideDocked || sy > r.bottom || up <= left) {
-      this.view.cy -= up * k;
+    // 計測パネルかツールバーに隠れた（またはその縁にかかった）ら、その上端より上へずらす。
+    // 横向きで右に寄せたパネルでも上へずらすのは、直交で続けて測る行がパネルの下に入らないようにするため
+    let target = Infinity;
+    for (const box of [r, el('toolbar').getBoundingClientRect()]) {
+      if (box.width <= 0 || box.height <= 0) continue;
+      if (sx < box.left - m || sx > box.right + m || sy < box.top - m || sy > box.bottom + m) continue;
+      target = Math.min(target, box.top - m);
+    }
+    if (!Number.isFinite(target) || sy <= target) return;
+    const topLimit = this.measureInsets().top + m;
+    if (target >= topLimit) {
+      this.view.cy -= (sy - target) * k;
     } else {
-      this.view.cx += left * k;
+      // 上へずらすと上のバーに入ってしまう（とても低い横画面）ときだけ、左へ
+      this.view.cx += (sx - (r.left - m)) * k;
     }
     this.requestDraw(true);
   }
@@ -831,7 +852,8 @@ class App {
     const m = measureLengths(this.points, this.measureScale, this.manualScale);
     const segs = m.segments;
     const total = m.total;
-    const warn = m.mixed ? '　※縮尺の違う図をまたいでいます' : '';
+    // 縮尺違いの注意は、2 行に切り詰めても消えないように先頭に置く
+    const warn = m.mixed ? '※縮尺の違う図をまたいでいます　' : '';
 
     value.textContent = formatLength(segs[segs.length - 1]);
     // 表示している長さ（最後の区間）に使った縮尺
@@ -851,7 +873,7 @@ class App {
         ? `水平 ${formatLength(dx)} ／ 垂直 ${formatLength(dy)}`
         : `${SNAP_LABEL[a.kind]} → ${SNAP_LABEL[b.kind]}`;
     }
-    detail.textContent = text + warn;
+    detail.textContent = warn + text;
   }
 
   // ---------- 属性 ----------
@@ -872,6 +894,8 @@ class App {
   }
 
   private select(i: number): void {
+    // 別の図形を選んだら、属性パネルは先頭（種類とレイヤ）から見せる
+    if (i !== this.selected) el('inspect-panel').scrollTop = 0;
     this.selected = i;
     this.updateInspect();
     // レイヤ一覧を開いたままなら、印と開いているグループも新しい図形に合わせる
@@ -954,8 +978,8 @@ class App {
       kind.textContent = '属性';
       tag.classList.add('hidden');
       body.innerHTML = '<div class="inspect-empty">図形をタップすると、レイヤ・線色・線種・長さを表示します。長押しすると拡大鏡で選べます</div>';
-      el('btn-layer-only').classList.add('hidden');
-      el('btn-layer-hide').classList.add('hidden');
+      el<HTMLButtonElement>('btn-layer-only').disabled = true;
+      el<HTMLButtonElement>('btn-layer-hide').disabled = true;
       return;
     }
 
@@ -966,8 +990,8 @@ class App {
     body.innerHTML = d.rows
       .map((r) => `<span class="k">${escapeHtml(r.label)}</span><span class="v">${r.html}</span>`)
       .join('');
-    el('btn-layer-only').classList.remove('hidden');
-    el('btn-layer-hide').classList.remove('hidden');
+    el<HTMLButtonElement>('btn-layer-only').disabled = false;
+    el<HTMLButtonElement>('btn-layer-hide').disabled = false;
   }
 
   /** 反転したあと、いくつのレイヤが見えるようになったかを知らせる */
@@ -1092,7 +1116,7 @@ class App {
       if (!this.scene || this.selected < 0) return;
       const k = this.scene.entities.layer[this.selected];
       if (!this.layerSnapshot) this.layerSnapshot = this.layers.snapshot();
-      this.layers.forget();
+      this.layers.forget(k >> 4);
       this.layers.layer[k] = false;
       this.afterLayerChange(false);
       this.hint(`レイヤ ${layerTag(k)} を隠しました`);
@@ -1132,7 +1156,7 @@ class App {
       const row = target.closest<HTMLElement>('.l-row');
       if (sw?.dataset.group !== undefined) {
         const g = Number(sw.dataset.group);
-        this.layers.forget();
+        this.layers.forget(g);
         this.layers.group[g] = !this.layers.group[g];
         this.afterLayerChange(true);
       } else if (head) {
@@ -1284,8 +1308,8 @@ class App {
    * （グループ内のほかのレイヤまで一度に現れると、何を出したのか分からなくなる）。
    */
   private toggleLayer(k: number): void {
-    this.layers.forget();
     const g = k >> 4;
+    this.layers.forget(g);
     if (!this.layers.group[g]) {
       this.layers.group[g] = true;
       for (let l = 0; l < 16; l++) this.layers.layer[(g << 4) | l] = false;

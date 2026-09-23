@@ -4,16 +4,16 @@ import { hex1 } from '../jww/names.ts';
 export interface LayerSnapshot {
   group: boolean[];
   layer: boolean[];
-  /** 反転でグループごと表示にしたとき覚えておいた、中のレイヤの設定（グループ番号と 16 個の表示） */
-  stash?: Array<[number, boolean[]]>;
+  /** 反転で上書きする前のグループの設定（グループ番号、中の 16 個の表示、グループのスイッチ） */
+  stash?: Array<[number, boolean[], boolean?]>;
 }
 
 /** 保存用の形。隠しているものだけを並べる */
 export interface HiddenLayers {
   groups: number[];
   layers: number[];
-  /** 反転で覚えておいた中の設定（グループ番号と、その中で隠していたレイヤ 0〜15） */
-  stash: Array<[number, number[]]>;
+  /** 反転で覚えておいた設定（グループ番号、その中で隠していたレイヤ 0〜15、グループのスイッチが入っていたら 1） */
+  stash: Array<[number, number[], number?]>;
 }
 
 /**
@@ -30,11 +30,12 @@ export class LayerVisibility {
    */
   private counts: Uint32Array | null = null;
   /**
-   * 反転で隠れていたグループを表示にするとき、中のレイヤの設定は全部表示で上書きするしかない。
-   * その前の設定をここに覚えておき、もう一度反転してそのグループを隠すときに戻す。
-   * グループやレイヤを直接切り替えたら（forget）、覚えておいた設定は使えなくなるので捨てる。
+   * 反転で、グループの中身が何も見えていなかったグループを見せるときは、設定を上書きするしかない
+   * （グループごと隠していた → 中を全部表示に、スイッチは入っていて中が全部隠れていた → 中を入れ替え）。
+   * その前の設定（スイッチと中の 16 個）をここに覚えておき、もう一度反転してそのグループを隠すときに戻す。
+   * そのグループを直接切り替えたら（forget）、覚えておいた設定は使えなくなるので捨てる。
    */
-  readonly stash = new Map<number, boolean[]>();
+  readonly stash = new Map<number, { group: boolean; flags: boolean[] }>();
 
   /** 図形の数を覚えさせる。snapshot() / restore() では持ち回らない */
   useCounts(counts: Uint32Array | null): this {
@@ -70,9 +71,9 @@ export class LayerVisibility {
     this.layer.fill(true);
   }
 
-  /** グループやレイヤを直接切り替えたとき。反転で覚えておいた中の設定を捨てる */
-  forget(): void {
-    this.stash.clear();
+  /** グループ g（または中のレイヤ）を直接切り替えたとき。そのグループについて反転で覚えておいた設定を捨てる */
+  forget(g: number): void {
+    this.stash.delete(g);
   }
 
   /** 実際に描かれるか */
@@ -110,24 +111,37 @@ export class LayerVisibility {
   invert(): void {
     for (let g = 0; g < 16; g++) {
       const base = g << 4;
+      const flags = this.layer.slice(base, base + 16);
       if (!this.group[g]) {
         // 中の設定は全部表示で上書きするので、その前の設定を覚えておく
-        this.stash.set(g, this.layer.slice(base, base + 16));
+        this.stash.set(g, { group: false, flags });
         this.group[g] = true;
         for (let l = 0; l < 16; l++) this.layer[base | l] = true;
         continue;
       }
       let all = true;
-      for (let l = 0; l < 16; l++) if (this.used(base | l) && !this.layer[base | l]) { all = false; break; }
+      let none = true;
+      for (let l = 0; l < 16; l++) {
+        if (!this.used(base | l)) continue;
+        if (this.layer[base | l]) none = false;
+        else all = false;
+      }
       if (all) {
-        this.group[g] = false;
-        // 反転で表示にしたグループをまた隠すなら、表示にする前の中の設定に戻す
         const saved = this.stash.get(g);
-        if (saved) for (let l = 0; l < 16; l++) this.layer[base | l] = saved[l];
+        if (saved) {
+          // 反転で見せたグループをまた隠す：見せる前の設定にそのまま戻す（どちらも中身は見えない）
+          this.group[g] = saved.group;
+          for (let l = 0; l < 16; l++) this.layer[base | l] = saved.flags[l];
+        } else {
+          this.group[g] = false;
+        }
+        this.stash.delete(g);
       } else {
+        // スイッチは入っていて中身が全部隠れていたグループは、入れ替えると設定が変わるので覚えておく
+        if (none) this.stash.set(g, { group: true, flags });
+        else this.stash.delete(g);
         for (let l = 0; l < 16; l++) this.layer[base | l] = !this.layer[base | l];
       }
-      this.stash.delete(g);
     }
   }
 
@@ -155,7 +169,7 @@ export class LayerVisibility {
     return {
       group: [...this.group],
       layer: [...this.layer],
-      stash: [...this.stash].map(([g, f]) => [g, [...f]] as [number, boolean[]]),
+      stash: [...this.stash].map(([g, v]) => [g, [...v.flags], v.group] as [number, boolean[], boolean]),
     };
   }
 
@@ -163,7 +177,7 @@ export class LayerVisibility {
     for (let g = 0; g < 16; g++) this.group[g] = s.group[g] ?? true;
     for (let k = 0; k < 256; k++) this.layer[k] = s.layer[k] ?? true;
     this.stash.clear();
-    for (const [g, f] of s.stash ?? []) this.stash.set(g, [...f]);
+    for (const [g, f, on] of s.stash ?? []) this.stash.set(g, { group: on ?? false, flags: [...f] });
   }
 
   /** 保存用。隠しているものだけを並べる */
@@ -172,25 +186,28 @@ export class LayerVisibility {
     const layers: number[] = [];
     for (let g = 0; g < 16; g++) if (!this.group[g]) groups.push(g);
     for (let k = 0; k < 256; k++) if (!this.layer[k]) layers.push(k);
-    const stash: Array<[number, number[]]> = [];
-    for (const [g, f] of this.stash) {
+    const stash: Array<[number, number[], number?]> = [];
+    for (const [g, v] of this.stash) {
       const off: number[] = [];
-      for (let l = 0; l < 16; l++) if (!f[l]) off.push(l);
-      stash.push([g, off]);
+      for (let l = 0; l < 16; l++) if (!v.flags[l]) off.push(l);
+      stash.push(v.group ? [g, off, 1] : [g, off]);
     }
     return { groups, layers, stash };
   }
 
   /** 保存しておいた「隠しているもの」を戻す */
-  applyHidden(h: { groups: readonly number[]; layers: readonly number[]; stash?: ReadonlyArray<readonly [number, readonly number[]]> | null }): void {
+  applyHidden(h: {
+    groups: readonly number[]; layers: readonly number[];
+    stash?: ReadonlyArray<readonly [number, readonly number[], number?]> | null;
+  }): void {
     this.showAll();
     for (const g of h.groups) if (g >= 0 && g < 16) this.group[g] = false;
     for (const k of h.layers) if (k >= 0 && k < 256) this.layer[k] = false;
-    for (const [g, off] of h.stash ?? []) {
+    for (const [g, off, on] of h.stash ?? []) {
       if (!(g >= 0 && g < 16)) continue;
-      const f = new Array<boolean>(16).fill(true);
-      for (const l of off) if (l >= 0 && l < 16) f[l] = false;
-      this.stash.set(g, f);
+      const flags = new Array<boolean>(16).fill(true);
+      for (const l of off) if (l >= 0 && l < 16) flags[l] = false;
+      this.stash.set(g, { group: on === 1, flags });
     }
   }
 

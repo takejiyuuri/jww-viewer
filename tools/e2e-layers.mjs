@@ -163,9 +163,16 @@ await page.waitForTimeout(250);
   }));
   check('属性に切り替えるとパネルが入れ替わる', s.tool === 'inspect' && s.readout && !s.inspect && s.pressed === 'true', s);
   check('何も選んでいないときは使い方を出す', s.body.includes('図形をタップすると'), { body: s.body });
-  const btns = await page.evaluate(() => ['btn-layer-only', 'btn-layer-hide', 'btn-layer-invert', 'btn-layer-back']
-    .map((id) => !document.getElementById(id).classList.contains('hidden')));
-  check('何も選んでいなくても「表示を反転」だけは押せる', JSON.stringify(btns) === JSON.stringify([false, false, true, false]), { btns });
+  const btns = await page.evaluate(() => {
+    const b = (id) => document.getElementById(id);
+    return {
+      shown: ['btn-layer-only', 'btn-layer-hide', 'btn-layer-invert'].map((id) => !b(id).classList.contains('hidden')),
+      enabled: ['btn-layer-only', 'btn-layer-hide', 'btn-layer-invert'].map((id) => !b(id).disabled),
+      back: !b('btn-layer-back').classList.contains('hidden'),
+    };
+  });
+  check('何も選んでいなくても操作ボタンは同じ 3 つが並び、「表示を反転」だけが押せる',
+    JSON.stringify(btns.shown) === '[true,true,true]' && JSON.stringify(btns.enabled) === '[false,false,true]' && !btns.back, btns);
 }
 
 /** 画面の見えている範囲（上のバーと下のパネルの間） */
@@ -249,7 +256,7 @@ const panel = () => page.evaluate(() => ({
   kind: document.getElementById('inspect-kind').textContent,
   tag: document.getElementById('inspect-tag').textContent,
   body: document.getElementById('inspect-body').innerText,
-  only: !document.getElementById('btn-layer-only').classList.contains('hidden'),
+  only: !document.getElementById('btn-layer-only').disabled,
   back: !document.getElementById('btn-layer-back').classList.contains('hidden'),
 }));
 
@@ -315,8 +322,42 @@ if (line) {
   await page.waitForTimeout(250);
   const state0 = await layerState();
   const ink0 = await inkPixels();
+  const rectsOf = () => page.evaluate(() => ['btn-layer-only', 'btn-layer-hide', 'btn-layer-invert'].map((id) => {
+    const r = document.getElementById(id).getBoundingClientRect();
+    return [Math.round(r.left), Math.round(r.top), Math.round(r.width)];
+  }));
+  const before = await rectsOf();
   await page.click('#btn-layer-only');
   await page.waitForTimeout(300);
+  const after = await rectsOf();
+  check('「レイヤだけ表示」を押しても操作ボタンは動かない', JSON.stringify(before) === JSON.stringify(after), { before, after });
+  const backAt = await page.evaluate(() => {
+    const b = document.getElementById('btn-layer-back').getBoundingClientRect();
+    const top = document.querySelector('#inspect-panel .panel-top').getBoundingClientRect();
+    return { inHeader: b.top >= top.top - 1 && b.bottom <= top.bottom + 1, shown: b.width > 0 };
+  });
+  check('「元に戻す」は見出しの行に出る', backAt.inHeader && backAt.shown, backAt);
+  // 「全体」はそのレイヤの図形に合う（隠した図形に引きずられて豆粒にならない）
+  const fitOnly = await page.evaluate((k) => {
+    const a = window.__jww;
+    const saved = { ...a.view };
+    a.fit();
+    const sc = a.scene;
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (let i = 0; i < sc.lineLayer.length; i++) {
+      if (sc.lineLayer[i] !== k) continue;
+      for (const j of [0, 2]) {
+        x0 = Math.min(x0, sc.linePos[i * 4 + j]); x1 = Math.max(x1, sc.linePos[i * 4 + j]);
+        y0 = Math.min(y0, sc.linePos[i * 4 + j + 1]); y1 = Math.max(y1, sc.linePos[i * 4 + j + 1]);
+      }
+    }
+    const w = ((x1 - x0) * a.view.zoom) / a.dpr;
+    const h = ((y1 - y0) * a.view.zoom) / a.dpr;
+    Object.assign(a.view, saved);
+    a.requestDraw(true);
+    return { w: Math.round(w), h: Math.round(h), cssW: a.cssW };
+  }, lineLayer);
+  check('「レイヤだけ表示」のあとの「全体」は、そのレイヤの図形が画面の 3 割以上に映る', fitOnly.w >= fitOnly.cssW * 0.3 || fitOnly.h >= fitOnly.cssW * 0.3, fitOnly);
   const only = await page.evaluate((k) => {
     const a = window.__jww;
     let wrong = 0;
@@ -697,12 +738,48 @@ await page.waitForTimeout(200);
     return { ortho: r('btn-ortho'), scale: r('btn-scale') };
   });
   const idleBar = await barAt();
+  // 点がないとき、これから「戻す」「消去」が出る場所を押しても、図面に点は置かれない（使い方の文字がある）
+  const future = await page.evaluate(() => {
+    const r = document.getElementById('readout').getBoundingClientRect();
+    return { x: r.right - 40, y: r.bottom - 22 };
+  });
+  await page.touchscreen.tap(future.x, future.y);
+  await page.waitForTimeout(200);
+  const f = await page.evaluate(([x, y]) => ({
+    n: window.__jww.points.length,
+    hint: document.elementFromPoint(x, y)?.id,
+  }), [future.x, future.y]);
+  check('点がないとき、戻す・消去が出る場所は使い方の文字で、押しても点は置かれない', f.n === 0 && f.hint === 'readout-hint', f);
+
   const mid = await page.evaluate(() => ({ x: window.__jww.cssW / 2, y: 300 }));
   await page.touchscreen.tap(mid.x, mid.y);
   await page.waitForTimeout(250);
   const grownBar = await barAt();
   check('点を置いても操作の段（縮尺・直交）は動かない', JSON.stringify(idleBar) === JSON.stringify(grownBar), { idleBar, grownBar });
-  await page.click('#btn-clear');
+  // 縮尺の桁が変わっても（1/50 → 1/1000）直交は動かない
+  const wideBar = await page.evaluate(() => {
+    const a = window.__jww;
+    a.measureScale = 1000;
+    a.manualScale = true;
+    a.updateReadout();
+    const b = document.getElementById('btn-ortho').getBoundingClientRect();
+    return { ortho: [Math.round(b.left), Math.round(b.top)], chip: document.getElementById('btn-scale').textContent };
+  });
+  check('縮尺の桁が変わっても直交は動かない', JSON.stringify(wideBar.ortho) === JSON.stringify(grownBar.ortho), { wideBar, grownBar });
+  // 点を足して内訳が 2 行になっても、計測パネルの高さは変わらない
+  const h1 = await page.evaluate(() => document.getElementById('readout').getBoundingClientRect().height);
+  await page.evaluate(() => {
+    const a = window.__jww;
+    const p = a.points[0];
+    for (let i = 1; i <= 4; i++) a.points.push({ ...p, x: p.x + i * 5000 / a.measureScale, y: p.y + (i % 2) * 3000 / a.measureScale });
+    a.updateReadout();
+  });
+  const h4 = await page.evaluate(() => ({
+    h: document.getElementById('readout').getBoundingClientRect().height,
+    lines: Math.round(document.getElementById('readout-detail').getBoundingClientRect().height / 16.8),
+  }));
+  check('点を足して内訳が長くなっても計測パネルの高さは変わらない', Math.abs(h4.h - h1) < 0.5, { h1, h4 });
+  await page.evaluate(() => { const a = window.__jww; a.manualScale = false; a.points = []; a.updateReadout(); a.requestDraw(true); });
   await page.waitForTimeout(150);
 }
 
@@ -731,7 +808,7 @@ await page.waitForTimeout(200);
       inside: pills.every((b) => { const r = b.getBoundingClientRect(); return r.left >= panel.left - 0.5 && r.right <= panel.right + 0.5; }),
     };
   });
-  check('横向きの狭い画面でも属性の操作ボタンの文字がはみ出さない', s.count === 4 && s.overflow.length === 0 && s.inside, s);
+  check('横向きの狭い画面でも属性の操作ボタンの文字がはみ出さない', s.count === 3 && s.overflow.length === 0 && s.inside, s);
 
   // 横向きで、右に寄せたパネルのすぐ上に 1 点目を置いても、伸びたパネルに隠れない
   await p2.click('#btn-tool-measure');
@@ -778,7 +855,7 @@ await page.waitForTimeout(200);
       hidden: pills.filter((b) => { const r = b.getBoundingClientRect(); return r.top < panel.top - 0.5 || r.bottom > panel.bottom + 0.5; }).map((b) => b.textContent),
     };
   });
-  check('高さの低い横画面でも、属性の操作ボタンがパネルの下に隠れない', low.count === 4 && low.hidden.length === 0, low);
+  check('高さの低い横画面でも、属性の操作ボタンがパネルの下に隠れない', low.count === 3 && low.hidden.length === 0, low);
   await ctx3.close();
 }
 
