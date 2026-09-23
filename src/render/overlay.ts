@@ -2,6 +2,26 @@ import type { View } from './renderer.ts';
 import type { MeasurePoint } from '../measure/measure.ts';
 import type { Axis, SnapResult } from '../measure/snap.ts';
 import { SNAP_LABEL, formatLength } from '../measure/measure.ts';
+import type { Background } from './theme.ts';
+
+/**
+ * 背景の明暗によって見え方が変わる補助線の色。
+ * 白背景に白い点線を引いても見えないので、背景ごとに用意する。
+ */
+const INK: Record<Background, { guide: string; frame: string; halo: string; mark: string }> = {
+  dark: {
+    guide: 'rgba(255,255,255,0.35)',
+    frame: 'rgba(255,255,255,0.5)',
+    halo: 'rgba(0,0,0,0.55)',
+    mark: 'rgba(255,255,255,0.72)',
+  },
+  light: {
+    guide: 'rgba(0,0,0,0.32)',
+    frame: 'rgba(0,0,0,0.42)',
+    halo: 'rgba(255,255,255,0.8)',
+    mark: 'rgba(0,0,0,0.72)',
+  },
+};
 
 export interface MagnifierBox {
   /** CSS ピクセル、左上原点 */
@@ -35,6 +55,8 @@ export class Overlay {
   private w = 0;
   private h = 0;
   private dpr = 1;
+  /** いまの背景。補助線の色を決めるのに使う */
+  background: Background = 'dark';
 
   readonly canvas: HTMLCanvasElement;
 
@@ -135,7 +157,7 @@ export class Overlay {
     // 長押し中のプレビュー
     if (s.preview) {
       const [px, py] = this.toScreen(view, s.preview.x, s.preview.y);
-      ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+      ctx.strokeStyle = INK[this.background].guide;
       ctx.lineWidth = 1 * k;
       ctx.setLineDash([5 * k, 5 * k]);
       ctx.beginPath();
@@ -160,7 +182,7 @@ export class Overlay {
       const x = m.x * k;
       const y = m.y * k;
       const size = m.size * k;
-      ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+      ctx.strokeStyle = INK[this.background].frame;
       ctx.lineWidth = 2 * k;
       this.roundRect(x, y, size, size, 14 * k);
       ctx.stroke();
@@ -169,7 +191,7 @@ export class Overlay {
       const cy = y + size / 2;
 
       // 中心は指が触れている場所。吸着先の印より控えめに、けれど見える程度に
-      ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+      ctx.strokeStyle = INK[this.background].halo;
       ctx.lineWidth = 3.2 * k;
       const center = () => {
         ctx.beginPath();
@@ -180,7 +202,7 @@ export class Overlay {
         ctx.stroke();
       };
       center();
-      ctx.strokeStyle = 'rgba(255,255,255,0.72)';
+      ctx.strokeStyle = INK[this.background].mark;
       ctx.lineWidth = 1.2 * k;
       center();
 

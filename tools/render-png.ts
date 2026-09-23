@@ -3,17 +3,32 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { deflateSync } from 'node:zlib';
 import { parseJww } from '../src/jww/parser.ts';
 import { buildScene } from '../src/render/geometry.ts';
+import { BACKGROUND_RGB, buildPalette, type DisplaySettings } from '../src/render/theme.ts';
 
 const W = 1400;
 const H = 1000;
 
-const file = process.argv[2];
-const out = process.argv[3] ?? 'preview.png';
+const args = process.argv.slice(2).filter((a) => !a.startsWith('--'));
+const file = args[0];
+const out = args[1] ?? 'preview.png';
+// --light で白背景、--mono で単色、--hide=1,2 で指定した線色を隠す
+const display: DisplaySettings = {
+  background: process.argv.includes('--light') ? 'light' : 'dark',
+  mono: process.argv.includes('--mono'),
+};
+const hidePens = new Set(
+  (process.argv.find((a) => a.startsWith('--hide='))?.slice(7) ?? '')
+    .split(',').filter(Boolean).map(Number),
+);
 
 const raw = readFileSync(file);
 const ab = raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength) as ArrayBuffer;
 const doc = parseJww(ab);
 const scene = buildScene(doc);
+const hidden = new Set<number>();
+scene.groups.forEach((g, i) => { if (hidePens.has(g.penColor)) hidden.add(i); });
+const palette = buildPalette(scene.colors, scene.colorGroup, hidden, display);
+const bg = BACKGROUND_RGB[display.background];
 
 const b = scene.fitBounds;
 const zoom = Math.min(W / Math.max(b.maxX - b.minX, 1e-6), H / Math.max(b.maxY - b.minY, 1e-6)) * 0.96;
@@ -22,7 +37,7 @@ const cy = (b.minY + b.maxY) / 2;
 
 const px = new Uint8Array(W * H * 3);
 for (let i = 0; i < px.length; i += 3) {
-  px[i] = 11; px[i + 1] = 12; px[i + 2] = 16;
+  px[i] = bg[0]; px[i + 1] = bg[1]; px[i + 2] = bg[2];
 }
 
 const sx = (x: number): number => Math.round((x - cx) * zoom + W / 2);
@@ -55,8 +70,9 @@ const tri = scene.triPos;
 for (let i = 0; i < tri.length; i += 6) {
   const xs = [sx(tri[i]), sx(tri[i + 2]), sx(tri[i + 4])];
   const ys = [sy(tri[i + 1]), sy(tri[i + 3]), sy(tri[i + 5])];
-  const c = (i / 6) * 9;
-  const r = scene.triCol[c], g = scene.triCol[c + 1], bl = scene.triCol[c + 2];
+  const e = scene.triColor[(i / 6) * 3] * 4;
+  if (palette[e + 3] === 0) continue;
+  const r = palette[e], g = palette[e + 1], bl = palette[e + 2];
   const y0 = Math.max(0, Math.min(...ys));
   const y1 = Math.min(H - 1, Math.max(...ys));
   for (let y = y0; y <= y1; y++) {
@@ -77,10 +93,12 @@ for (let i = 0; i < tri.length; i += 6) {
 
 const pos = scene.linePos;
 for (let i = 0; i < pos.length / 4; i++) {
+  const e = scene.lineColor[i] * 4;
+  if (palette[e + 3] === 0) continue;
   line(
     sx(pos[i * 4]), sy(pos[i * 4 + 1]),
     sx(pos[i * 4 + 2]), sy(pos[i * 4 + 3]),
-    scene.lineCol[i * 3], scene.lineCol[i * 3 + 1], scene.lineCol[i * 3 + 2],
+    palette[e], palette[e + 1], palette[e + 2],
   );
 }
 

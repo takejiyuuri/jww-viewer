@@ -8,7 +8,12 @@ import {
   SNAP_LABEL, formatLength, measureLengths,
   type MeasurePoint,
 } from './measure/measure.ts';
-import { loadLast, saveLast } from './storage.ts';
+import {
+  loadDisplay, loadHiddenPens, loadLast, saveDisplay, saveHiddenPens, saveLast,
+} from './storage.ts';
+import {
+  BACKGROUND_RGB, buildPalette, displayColor, type DisplaySettings,
+} from './render/theme.ts';
 
 /** 吸着先を探す半径（CSS ピクセル） */
 const SNAP_RADIUS = 22;
@@ -53,6 +58,11 @@ class App {
   private measureScale = 1;
   private manualScale = false;
 
+  /** 背景の白黒と単色表示。端末ごとの好みとして次回も使う */
+  private display: DisplaySettings = loadDisplay();
+  /** 隠している色グループ（scene.groups の添字） */
+  private hiddenGroups = new Set<number>();
+
   // ジェスチャ
   private pointers = new Map<number, { x: number; y: number }>();
   private pinch: { dist: number; midX: number; midY: number } | null = null;
@@ -84,6 +94,7 @@ class App {
     window.addEventListener('resize', () => this.resize());
     window.visualViewport?.addEventListener('resize', () => this.resize());
 
+    this.applyDisplay();
     void this.restoreLast();
   }
 
@@ -177,6 +188,15 @@ class App {
     this.points = [];
     this.manualScale = false;
 
+    // 同じ図面を開き直したときは、前に隠していた色をそのまま隠す
+    const hiddenPens = new Set(loadHiddenPens(info.name));
+    this.hiddenGroups = new Set();
+    scene.groups.forEach((g, i) => {
+      if (hiddenPens.has(g.penColor)) this.hiddenGroups.add(i);
+    });
+    this.applyDisplay(false);
+    this.buildDisplayPanel();
+
     // 図形が最も多いレイヤグループの縮尺を既定にする
     const tally = new Map<number, number>();
     for (let i = 0; i < scene.lineGroup.length; i++) {
@@ -232,7 +252,7 @@ class App {
       clearTimeout(this.textTimer);
       this.textTimer = window.setTimeout(() => {
         if (this.scene && this.textLayer.needsRedraw(this.view)) {
-          this.textLayer.render(this.view, null);
+          this.textLayer.render(this.view);
         }
       }, 110);
     }
@@ -476,7 +496,7 @@ class App {
     this.holding = true;
     if (navigator.vibrate) navigator.vibrate(8);
     // 切り抜き位置と文字の位置を合わせるため、ここで transform を畳んでおく
-    this.textLayer.render(this.view, null);
+    this.textLayer.render(this.view);
     this.updateHold(cssX, cssY);
     this.requestDraw();
   }
@@ -711,15 +731,54 @@ class App {
     el('btn-fit').addEventListener('click', () => this.fit());
 
     el('btn-scale').addEventListener('click', () => {
+      el('display-panel').classList.add('hidden');
       el('info-panel').classList.remove('hidden');
       this.buildInfoPanel();
     });
 
     el('btn-info').addEventListener('click', () => {
+      el('display-panel').classList.add('hidden');
       el('info-panel').classList.toggle('hidden');
       this.buildInfoPanel();
     });
     el('btn-info-close').addEventListener('click', () => el('info-panel').classList.add('hidden'));
+
+    // ---- 表示 ----
+    el('btn-display').addEventListener('click', () => {
+      el('info-panel').classList.add('hidden');
+      el('display-panel').classList.toggle('hidden');
+      this.buildDisplayPanel();
+    });
+    el('btn-display-close').addEventListener('click', () => el('display-panel').classList.add('hidden'));
+
+    el('seg-bg').addEventListener('click', (e) => {
+      const b = (e.target as HTMLElement).closest<HTMLButtonElement>('button');
+      if (!b) return;
+      this.setDisplay({ ...this.display, background: b.dataset.value === 'light' ? 'light' : 'dark' });
+    });
+    el('seg-mono').addEventListener('click', (e) => {
+      const b = (e.target as HTMLElement).closest<HTMLButtonElement>('button');
+      if (!b) return;
+      this.setDisplay({ ...this.display, mono: b.dataset.value === 'mono' });
+    });
+
+    el('color-list').addEventListener('click', (e) => {
+      const row = (e.target as HTMLElement).closest<HTMLElement>('.color-row');
+      if (!row) return;
+      const g = Number(row.dataset.group);
+      if (this.hiddenGroups.has(g)) this.hiddenGroups.delete(g);
+      else this.hiddenGroups.add(g);
+      this.afterVisibilityChange();
+    });
+    el('btn-color-all').addEventListener('click', () => {
+      this.hiddenGroups.clear();
+      this.afterVisibilityChange();
+    });
+    el('btn-color-none').addEventListener('click', () => {
+      if (!this.scene) return;
+      this.scene.groups.forEach((_, i) => this.hiddenGroups.add(i));
+      this.afterVisibilityChange();
+    });
 
     // デスクトップでの動作確認用
     document.addEventListener('dragover', (e) => e.preventDefault());
@@ -728,6 +787,94 @@ class App {
       const f = e.dataTransfer?.files?.[0];
       if (f) f.arrayBuffer().then((buf) => this.load(buf, f.name)).catch(() => this.fail('ファイルを読み取れませんでした'));
     });
+  }
+
+  // ---------- 表示 ----------
+
+  private setDisplay(next: DisplaySettings): void {
+    this.display = next;
+    saveDisplay(next);
+    this.applyDisplay();
+    this.buildDisplayPanel();
+  }
+
+  private afterVisibilityChange(): void {
+    if (this.info && this.scene) {
+      const scene = this.scene;
+      saveHiddenPens(this.info.name, [...this.hiddenGroups].map((i) => scene.groups[i].penColor));
+    }
+    this.applyDisplay();
+    this.buildDisplayPanel();
+  }
+
+  /**
+   * いまの表示設定を描画に反映する。
+   * 線のバッファは作り直さず、色番号ごとの表示色（パレット）だけを差し替える。
+   * textNow が true なら文字もその場で描き直す（読み込み直後はこのあと全体表示で描くので不要）。
+   */
+  private applyDisplay(textNow = true): void {
+    const s = this.display;
+    this.renderer.setBackground(BACKGROUND_RGB[s.background]);
+    this.overlay.background = s.background;
+    document.body.dataset.bg = s.background;
+
+    const scene = this.scene;
+    if (scene) {
+      const palette = buildPalette(scene.colors, scene.colorGroup, this.hiddenGroups, s);
+      this.renderer.setPalette(palette);
+      this.textLayer.setPalette(palette);
+      // 隠した色の線には吸着させない
+      const n = scene.colorGroup.length;
+      const visible = new Uint8Array(n);
+      for (let i = 0; i < n; i++) visible[i] = palette[i * 4 + 3] > 127 ? 1 : 0;
+      this.snapIndex?.setVisibleColors(visible);
+      if (textNow) this.textLayer.render(this.view);
+    }
+    this.requestDraw();
+  }
+
+  private buildDisplayPanel(): void {
+    for (const b of el('seg-bg').querySelectorAll<HTMLButtonElement>('button')) {
+      const on = b.dataset.value === this.display.background;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-pressed', String(on));
+    }
+    for (const b of el('seg-mono').querySelectorAll<HTMLButtonElement>('button')) {
+      const on = (b.dataset.value === 'mono') === this.display.mono;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-pressed', String(on));
+    }
+
+    const list = el('color-list');
+    const scene = this.scene;
+    if (!scene) {
+      list.innerHTML = '<p class="sub">図面が読み込まれていません。</p>';
+      return;
+    }
+
+    // 見本はいまの背景の上に、色分けしたときの線色で描く（単色表示中でもどの色か分かるように）
+    const paper = BACKGROUND_RGB[this.display.background];
+    const sample: DisplaySettings = { background: this.display.background, mono: false };
+    const order = scene.groups
+      .map((_, i) => i)
+      .sort((a, b) => scene.groups[a].penColor - scene.groups[b].penColor);
+
+    list.innerHTML = order.map((i) => {
+      const g = scene.groups[i];
+      const [r, gg, b] = displayColor(g.rgb[0], g.rgb[1], g.rgb[2], sample);
+      const shown = !this.hiddenGroups.has(i);
+      return `<button class="color-row${shown ? '' : ' off'}" data-group="${i}" aria-pressed="${shown}">` +
+        `<span class="swatch" style="--paper: rgb(${paper.join(',')}); --ink: rgb(${r},${gg},${b})"></span>` +
+        `<span class="color-name">${escapeHtml(g.label)}</span>` +
+        `<span class="color-count">${g.count.toLocaleString()}</span>` +
+        `<span class="switch" aria-hidden="true"></span>` +
+        `</button>`;
+    }).join('');
+
+    const hidden = this.hiddenGroups.size;
+    el('color-summary').textContent = hidden === 0
+      ? `${scene.groups.length} 色`
+      : `${scene.groups.length} 色中 ${hidden} 色を隠しています`;
   }
 
   private buildInfoPanel(): void {

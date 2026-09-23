@@ -15,6 +15,10 @@ export class TextLayer {
   private w = 0;
   private h = 0;
   private dpr = 1;
+  /** 色番号ごとの塗り色（CSS の色文字列） */
+  private styles: string[] = [];
+  /** 色番号ごとに表示するかどうか */
+  private visible: Uint8Array = new Uint8Array(0);
 
   /** 画面上でこの高さ未満の文字は描かない（デバイスピクセル） */
   minHeight = 6;
@@ -30,6 +34,19 @@ export class TextLayer {
 
   setTexts(texts: SceneText[]): void {
     this.texts = texts;
+    this.drawnAt = null;
+  }
+
+  /** 描画用のパレット（RGBA、A が 0 の色は隠す）を差し替える */
+  setPalette(rgba: Uint8Array): void {
+    const n = Math.floor(rgba.length / 4);
+    this.styles = new Array<string>(n);
+    this.visible = new Uint8Array(n);
+    for (let i = 0; i < n; i++) {
+      this.styles[i] = `rgb(${rgba[i * 4]},${rgba[i * 4 + 1]},${rgba[i * 4 + 2]})`;
+      this.visible[i] = rgba[i * 4 + 3] > 127 ? 1 : 0;
+    }
+    // 色が変わったので、ずれていなくても描き直させる
     this.drawnAt = null;
   }
 
@@ -72,7 +89,7 @@ export class TextLayer {
     return Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5;
   }
 
-  render(view: View, visibleGroups: boolean[] | null): void {
+  render(view: View): void {
     const ctx = this.ctx;
     const { w, h } = this;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -82,9 +99,10 @@ export class TextLayer {
     const halfW = w / 2;
     const halfH = h / 2;
     let font = '';
+    let style = '';
 
     for (const t of this.texts) {
-      if (visibleGroups && !visibleGroups[t.glayer]) continue;
+      if (!this.visible[t.color]) continue;
       const hpx = t.height * z;
       if (hpx < this.minHeight) continue;
 
@@ -101,7 +119,11 @@ export class TextLayer {
         ctx.font = next;
         font = next;
       }
-      ctx.fillStyle = `rgb(${t.r},${t.g},${t.b})`;
+      const next2 = this.styles[t.color];
+      if (next2 !== style) {
+        ctx.fillStyle = next2;
+        style = next2;
+      }
 
       ctx.save();
       ctx.translate(sx, sy);

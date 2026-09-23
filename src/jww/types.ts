@@ -137,6 +137,8 @@ export interface JwwHeader {
   penColors: { rgb: number; width: number }[];
   /** SXF 拡張色 (色番号 100-356) */
   sxfColors: { rgb: number; width: number }[];
+  /** SXF 拡張色の名前（色番号 100 から順）。空文字のこともある */
+  sxfColorNames: string[];
   /** 保存時の画面倍率・原点 */
   zoom: number;
   originX: number;

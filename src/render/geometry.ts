@@ -4,8 +4,11 @@ import type {
 
 /**
  * 描画・計測用に平坦化したシーン。
- * 線分は「1 線分 = 4 float + 3 byte」のインスタンス配列として持ち、
+ * 線分は「1 線分 = 4 float + 色番号」のインスタンス配列として持ち、
  * GPU 側では単位クアッドのインスタンス描画で一括して描く。
+ *
+ * 色は RGB を直接持たず、パレットの添字（色番号）で持つ。
+ * 背景の白黒や色ごとの表示・非表示は、パレットを差し替えるだけで済む。
  */
 export interface Scene {
   /** 全図形を含む範囲 */
@@ -14,23 +17,41 @@ export interface Scene {
   fitBounds: Bounds;
   /** 線分 [x1,y1,x2,y2, ...] */
   linePos: Float32Array;
-  /** 線分ごとの色 RGB */
-  lineCol: Uint8Array;
+  /** 線分ごとの色番号（colors の添字） */
+  lineColor: Uint16Array;
   /** 線分ごとのレイヤグループ番号（縮尺の判定に使う） */
   lineGroup: Uint8Array;
   /** 線分ごとのスナップ可否（寸法の補助線などは対象外） */
   lineSnap: Uint8Array;
   /** 塗り三角形の頂点 */
   triPos: Float32Array;
-  /** 三角形の頂点ごとの色 */
-  triCol: Uint8Array;
+  /** 三角形の頂点ごとの色番号 */
+  triColor: Uint16Array;
   /** 文字（Canvas2D で描画） */
   texts: SceneText[];
   /** 円・円弧の中心、実点などの単独スナップ点 [x,y,...] */
   snapPoint: Float32Array;
   snapPointGroup: Uint8Array;
+  /** 単独スナップ点の色番号。隠した色の点には吸着させない */
+  snapPointColor: Uint16Array;
   /** レイヤグループごとの縮尺分母 */
   scales: Float64Array;
+  /** 色番号ごとの元の色（図面に保存されている画面色）RGB */
+  colors: Uint8Array;
+  /** 色番号ごとの所属する色グループ（groups の添字） */
+  colorGroup: Uint16Array;
+  /** 表示・非表示を切り替える単位。Jw_cad の線色ごとにひとつ */
+  groups: ColorGroup[];
+}
+
+export interface ColorGroup {
+  /** Jw_cad の線色番号。任意色は 10、SXF 拡張色は 100 以上 */
+  penColor: number;
+  label: string;
+  /** 見本に使う元の色 */
+  rgb: [number, number, number];
+  /** この色で描かれている図形の数 */
+  count: number;
 }
 
 export interface Bounds {
@@ -45,7 +66,8 @@ export interface SceneText {
   /** 度 */
   angle: number;
   text: string;
-  r: number; g: number; b: number;
+  /** 色番号 */
+  color: number;
   glayer: number;
 }
 
@@ -102,29 +124,76 @@ function colorref(v: number): [number, number, number] {
   return [v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff];
 }
 
+/** 色番号は Uint16 で持つので、これを超える種類の色は最後の番号にまとめる */
+const MAX_COLORS = 65535;
+
+/**
+ * 線色番号（と任意色の RGB）ごとに色番号を払い出す。
+ * 色番号は描画色の単位、グループは表示・非表示の単位。
+ * ソリッドの任意色は RGB ごとに別の色番号を持つが、グループは「任意色」ひとつにまとめる。
+ */
 class Palette {
-  private cache = new Map<number, [number, number, number]>();
   private header: JwwHeader;
+  private byKey = new Map<string, number>();
+  private groupByPen = new Map<number, number>();
+  readonly rgb: number[] = [];
+  readonly entryGroup: number[] = [];
+  readonly groups: ColorGroup[] = [];
 
   constructor(header: JwwHeader) {
     this.header = header;
   }
 
-  get(penColor: number): [number, number, number] {
-    const hit = this.cache.get(penColor);
-    if (hit) return hit;
-    let rgb: [number, number, number];
+  /** 図面に保存されている、その線色の画面色 */
+  private baseColor(penColor: number): [number, number, number] {
     if (penColor >= 100) {
       const e = this.header.sxfColors[penColor - 100];
-      rgb = e ? colorref(e.rgb) : [255, 255, 255];
-    } else {
-      const e = this.header.penColors[penColor];
-      rgb = e ? colorref(e.rgb) : [255, 255, 255];
+      return e ? colorref(e.rgb) : [255, 255, 255];
     }
-    // 黒背景に溶ける色は視認できないので持ち上げる
-    if (rgb[0] + rgb[1] + rgb[2] < 24) rgb = [190, 190, 190];
-    this.cache.set(penColor, rgb);
-    return rgb;
+    const e = this.header.penColors[penColor];
+    return e ? colorref(e.rgb) : [255, 255, 255];
+  }
+
+  private label(penColor: number): string {
+    if (penColor >= 1 && penColor <= 8) return `線色${penColor}`;
+    if (penColor === 9) return '補助線色';
+    if (penColor === 10) return '任意色';
+    if (penColor >= 100) {
+      const name = (this.header.sxfColorNames[penColor - 100] ?? '').trim();
+      return name ? `SXF ${name}` : `SXF色 ${penColor - 100}`;
+    }
+    return `色番号 ${penColor}`;
+  }
+
+  private groupOf(penColor: number, rgb: [number, number, number]): number {
+    const hit = this.groupByPen.get(penColor);
+    if (hit !== undefined) return hit;
+    const g = this.groups.length;
+    this.groups.push({ penColor, label: this.label(penColor), rgb, count: 0 });
+    this.groupByPen.set(penColor, g);
+    return g;
+  }
+
+  /**
+   * 色番号を返す。custom は任意色（COLORREF）。
+   * 呼ぶたびにその色のグループの図形数を 1 増やすかどうかを tally で選ぶ。
+   */
+  entry(penColor: number, custom?: number, tally = true): number {
+    const rgb = penColor === 10 && custom !== undefined ? colorref(custom) : this.baseColor(penColor);
+    const key = penColor === 10 && custom !== undefined ? `10:${custom}` : String(penColor);
+    let e = this.byKey.get(key);
+    if (e === undefined) {
+      if (this.entryGroup.length >= MAX_COLORS) {
+        e = MAX_COLORS - 1;
+      } else {
+        e = this.entryGroup.length;
+        this.rgb.push(rgb[0], rgb[1], rgb[2]);
+        this.entryGroup.push(this.groupOf(penColor, rgb));
+      }
+      this.byKey.set(key, e);
+    }
+    if (tally) this.groups[this.entryGroup[e]].count++;
+    return e;
   }
 }
 
@@ -172,16 +241,39 @@ class U8Buf {
   }
 }
 
+class U16Buf {
+  data = new Uint16Array(1 << 14);
+  len = 0;
+
+  push(...vals: number[]): void {
+    if (this.len + vals.length > this.data.length) this.grow(vals.length);
+    for (let i = 0; i < vals.length; i++) this.data[this.len++] = vals[i];
+  }
+
+  private grow(need: number): void {
+    let size = this.data.length * 2;
+    while (size < this.len + need) size *= 2;
+    const next = new Uint16Array(size);
+    next.set(this.data);
+    this.data = next;
+  }
+
+  trim(): Uint16Array {
+    return this.data.slice(0, this.len);
+  }
+}
+
 class Builder {
   linePos = new F32Buf();
-  lineCol = new U8Buf();
+  lineColor = new U16Buf();
   lineGroup = new U8Buf();
   lineSnap = new U8Buf();
   triPos = new F32Buf();
-  triCol = new U8Buf();
+  triColor = new U16Buf();
   texts: SceneText[] = [];
   snapPoint = new F32Buf();
   snapPointGroup = new U8Buf();
+  snapPointColor = new U16Buf();
   /**
    * 初期表示の範囲を決めるための代表点。
    * 線分ごとに取ると円弧の分割数で点の数が変わり、
@@ -214,14 +306,14 @@ class Builder {
 
   addSegment(
     x1: number, y1: number, x2: number, y2: number,
-    rgb: [number, number, number], glayer: number, snap: boolean,
+    color: number, glayer: number, snap: boolean,
   ): void {
     // 壊れたファイルでは座標が NaN や Infinity になりうる。
     // そのまま入れると範囲計算も索引も総崩れになるので、ここで落とす。
     if (!finite4(x1, y1, x2, y2)) return;
     if (this.linePos.len >= MAX_LINE_FLOATS) { this.truncated = true; return; }
     this.linePos.push(x1, y1, x2, y2);
-    this.lineCol.push(rgb[0], rgb[1], rgb[2]);
+    this.lineColor.push(color);
     this.lineGroup.push(glayer);
     this.lineSnap.push(snap ? 1 : 0);
     this.track(x1, y1);
@@ -230,21 +322,22 @@ class Builder {
 
   addTriangle(
     x1: number, y1: number, x2: number, y2: number, x3: number, y3: number,
-    rgb: [number, number, number],
+    color: number,
   ): void {
     if (!finite4(x1, y1, x2, y2) || !finite4(x3, y3, 0, 0)) return;
     if (this.triPos.len >= MAX_TRI_FLOATS) { this.truncated = true; return; }
     this.triPos.push(x1, y1, x2, y2, x3, y3);
-    this.triCol.push(rgb[0], rgb[1], rgb[2], rgb[0], rgb[1], rgb[2], rgb[0], rgb[1], rgb[2]);
+    this.triColor.push(color, color, color);
     this.track(x1, y1);
     this.track(x2, y2);
     this.track(x3, y3);
   }
 
-  addPoint(x: number, y: number, glayer: number): void {
+  addPoint(x: number, y: number, glayer: number, color: number): void {
     if (!finite4(x, y, 0, 0)) return;
     this.snapPoint.push(x, y);
     this.snapPointGroup.push(glayer);
+    this.snapPointColor.push(color);
   }
 }
 
@@ -256,7 +349,7 @@ class Builder {
 function emitLine(b: Builder, l: JwwLine, t: Xform, snap: boolean, group: number | null): void {
   const [x1, y1] = apply(t, l.x1, l.y1);
   const [x2, y2] = apply(t, l.x2, l.y2);
-  b.addSegment(x1, y1, x2, y2, b.palette.get(l.penColor), group ?? l.glayer, snap);
+  b.addSegment(x1, y1, x2, y2, b.palette.entry(l.penColor), group ?? l.glayer, snap);
   b.sample(x1, y1);
   b.sample(x2, y2);
 }
@@ -265,7 +358,7 @@ function emitLine(b: Builder, l: JwwLine, t: Xform, snap: boolean, group: number
 function emitArc(b: Builder, a: JwwArc, t: Xform, snap: boolean, group: number | null): void {
   const sweep = a.isCircle ? Math.PI * 2 : a.arcAngle;
   const n = arcSegments(a.radius, sweep);
-  const rgb = b.palette.get(a.penColor);
+  const color = b.palette.entry(a.penColor);
   const cos = Math.cos(a.tilt);
   const sin = Math.sin(a.tilt);
   const ry = a.radius * (a.flatness || 1);
@@ -278,19 +371,19 @@ function emitArc(b: Builder, a: JwwArc, t: Xform, snap: boolean, group: number |
     const lx = a.radius * Math.cos(th);
     const ly = ry * Math.sin(th);
     const [x, y] = apply(t, a.cx + lx * cos - ly * sin, a.cy + lx * sin + ly * cos);
-    if (i > 0) b.addSegment(px, py, x, y, rgb, group ?? a.glayer, snap);
+    if (i > 0) b.addSegment(px, py, x, y, color, group ?? a.glayer, snap);
     if (i === 0 || i === n || i * 2 === n) b.sample(x, y);
     px = x;
     py = y;
   }
   if (snap) {
     const [cx, cy] = apply(t, a.cx, a.cy);
-    b.addPoint(cx, cy, group ?? a.glayer);
+    b.addPoint(cx, cy, group ?? a.glayer, color);
   }
 }
 
 function emitSolid(b: Builder, s: JwwSolid, t: Xform, group: number | null): void {
-  const rgb = s.penColor === 10 && s.rgb !== undefined ? colorref(s.rgb) : b.palette.get(s.penColor);
+  const color = b.palette.entry(s.penColor, s.penColor === 10 ? s.rgb : undefined);
 
   if (s.penStyle >= 101) {
     // 円系ソリッド。CDataSolid を流用しており各点の意味が異なる。
@@ -320,8 +413,8 @@ function emitSolid(b: Builder, s: JwwSolid, t: Xform, group: number | null): voi
         const th = start + (sweep * i) / n;
         const [cx2, cy2] = pt(th, radius);
         const [dx2, dy2] = pt(th, inner);
-        b.addTriangle(ax, ay, bx, by, cx2, cy2, rgb);
-        b.addTriangle(bx, by, dx2, dy2, cx2, cy2, rgb);
+        b.addTriangle(ax, ay, bx, by, cx2, cy2, color);
+        b.addTriangle(bx, by, dx2, dy2, cx2, cy2, color);
         ax = cx2; ay = cy2; bx = dx2; by = dy2;
       }
     } else {
@@ -330,12 +423,12 @@ function emitSolid(b: Builder, s: JwwSolid, t: Xform, group: number | null): voi
       for (let i = 1; i <= n; i++) {
         const th = start + (sweep * i) / n;
         const [qx, qy] = pt(th, radius);
-        b.addTriangle(ox, oy, px, py, qx, qy, rgb);
+        b.addTriangle(ox, oy, px, py, qx, qy, color);
         px = qx; py = qy;
       }
     }
     const [ox, oy] = apply(t, cx, cy);
-    b.addPoint(ox, oy, group ?? s.glayer);
+    b.addPoint(ox, oy, group ?? s.glayer, color);
     b.sample(ox - radius, oy - radius);
     b.sample(ox + radius, oy + radius);
     return;
@@ -345,8 +438,8 @@ function emitSolid(b: Builder, s: JwwSolid, t: Xform, group: number | null): voi
   const [x2, y2] = apply(t, s.x2, s.y2);
   const [x3, y3] = apply(t, s.x3, s.y3);
   const [x4, y4] = apply(t, s.x4, s.y4);
-  b.addTriangle(x1, y1, x2, y2, x3, y3, rgb);
-  b.addTriangle(x1, y1, x3, y3, x4, y4, rgb);
+  b.addTriangle(x1, y1, x2, y2, x3, y3, color);
+  b.addTriangle(x1, y1, x3, y3, x4, y4, color);
   b.sample(x1, y1);
   b.sample(x2, y2);
   b.sample(x3, y3);
@@ -358,7 +451,7 @@ function emitText(b: Builder, m: JwwText, t: Xform, group: number | null): void 
   const [x1, y1] = apply(t, m.x1, m.y1);
   const [x2, y2] = apply(t, m.x2, m.y2);
   if (!finite4(x1, y1, x2, y2) || !Number.isFinite(m.sizeY)) return;
-  const rgb = b.palette.get(m.penColor);
+  const color = b.palette.entry(m.penColor);
   const dx = x2 - x1;
   const dy = y2 - y1;
   const width = Math.hypot(dx, dy);
@@ -371,7 +464,7 @@ function emitText(b: Builder, m: JwwText, t: Xform, group: number | null): void 
     height: m.sizeY * sy,
     angle,
     text: m.text,
-    r: rgb[0], g: rgb[1], b: rgb[2],
+    color,
     glayer: group ?? m.glayer,
   });
   b.track(x1, y1);
@@ -392,7 +485,8 @@ function emitEntities(
   for (const p of e.points) {
     if (p.temporary) continue;
     const [x, y] = apply(t, p.x, p.y);
-    b.addPoint(x, y, group ?? p.glayer);
+    // 実点は線として描かないので、図形数には数えない
+    b.addPoint(x, y, group ?? p.glayer, b.palette.entry(p.penColor, undefined, false));
     b.track(x, y);
     b.sample(x, y);
   }
@@ -447,15 +541,20 @@ export function buildScene(doc: JwwDocument): Scene {
     bounds,
     fitBounds: unite(robustBounds(b.boundsPts.trim(), bounds), paper),
     linePos,
-    lineCol: b.lineCol.trim(),
+    lineColor: b.lineColor.trim(),
     lineGroup: b.lineGroup.trim(),
     lineSnap: b.lineSnap.trim(),
     triPos: b.triPos.trim(),
-    triCol: b.triCol.trim(),
+    triColor: b.triColor.trim(),
     texts: b.texts,
     snapPoint: b.snapPoint.trim(),
     snapPointGroup: b.snapPointGroup.trim(),
+    snapPointColor: b.snapPointColor.trim(),
     scales,
+    colors: Uint8Array.from(b.palette.rgb),
+    colorGroup: Uint16Array.from(b.palette.entryGroup),
+    // 並び替えると colorGroup の添字とずれるので、払い出し順のまま渡す（並べるのは表示側）
+    groups: b.palette.groups,
   };
 }
 

@@ -63,6 +63,11 @@ export class SnapIndex {
   private pOffsets: Int32Array;
   private pItems: Int32Array;
   private scene: Scene;
+  /**
+   * 色番号ごとに吸着させるかどうか。null なら全部。
+   * 画面で隠している色の線に吸着すると、見えない所に点が乗って混乱するため。
+   */
+  private visibleColor: Uint8Array | null = null;
 
   constructor(scene: Scene) {
     this.scene = scene;
@@ -135,6 +140,16 @@ export class SnapIndex {
     }
   }
 
+  /** 色番号ごとの表示状態（1 なら表示）を渡す。隠した色には吸着しなくなる */
+  setVisibleColors(visible: Uint8Array | null): void {
+    this.visibleColor = visible;
+  }
+
+  private pointVisible(i: number): boolean {
+    const v = this.visibleColor;
+    return !v || v[this.scene.snapPointColor[i]] === 1;
+  }
+
   private clampGx(v: number): number {
     return v < 0 ? 0 : v >= this.gw ? this.gw - 1 : v;
   }
@@ -171,6 +186,8 @@ export class SnapIndex {
     const gy1 = this.clampGy(Math.floor((y + r - this.minY) / this.cell));
     const seen = new Set<number>();
     const pos = this.scene.linePos;
+    const lineColor = this.scene.lineColor;
+    const vis = this.visibleColor;
     const r2 = r * r;
     const dist: number[] = [];
 
@@ -181,6 +198,7 @@ export class SnapIndex {
           const i = this.items[k];
           if (seen.has(i)) continue;
           seen.add(i);
+          if (vis && !vis[lineColor[i]]) continue;
           const d2 = segDist2(pos, i, x, y);
           if (d2 > r2) continue;
           out.push(i);
@@ -194,6 +212,7 @@ export class SnapIndex {
       const i = this.big[k];
       if (seen.has(i)) continue;
       seen.add(i);
+      if (vis && !vis[lineColor[i]]) continue;
       const d2 = segDist2(pos, i, x, y);
       if (d2 > r2) continue;
       out.push(i);
@@ -249,6 +268,7 @@ export class SnapIndex {
         const c = gy * this.gw + gx;
         for (let k = this.pOffsets[c]; k < this.pOffsets[c + 1]; k++) {
           const i = this.pItems[k];
+          if (!this.pointVisible(i)) continue;
           consider(pts[i * 2], pts[i * 2 + 1], 'center', pg[i]);
         }
       }
@@ -383,6 +403,7 @@ export class SnapIndex {
         const c = gy * this.gw + gx;
         for (let k = this.pOffsets[c]; k < this.pOffsets[c + 1]; k++) {
           const i = this.pItems[k];
+          if (!this.pointVisible(i)) continue;
           const x = pts[i * 2];
           const y = pts[i * 2 + 1];
           const off = horizontal ? Math.abs(y - originY) : Math.abs(x - originX);

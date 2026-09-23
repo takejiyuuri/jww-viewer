@@ -101,12 +101,13 @@ export function parseHeader(r: Reader): JwwHeader {
   r.skip(4);      // ソリッド任意色
 
   const sxfColors: { rgb: number; width: number }[] = [];
+  const sxfColorNames: string[] = [];
   if (version >= 420) {
     for (let n = 0; n <= 256; n++) {
       sxfColors.push({ rgb: r.u32(), width: r.u32() });
     }
     for (let n = 0; n <= 256; n++) {
-      r.str();          // 線色名
+      sxfColorNames.push(r.str()); // 線色名
       r.skip(4 + 4 + 8); // プリンタ出力色・線幅・点半径
     }
     for (let n = 0; n <= 32; n++) r.skip(4 * 4); // SXF 線種パターン
@@ -133,6 +134,7 @@ export function parseHeader(r: Reader): JwwHeader {
     groups,
     penColors,
     sxfColors,
+    sxfColorNames,
     zoom,
     originX,
     originY,

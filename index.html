@@ -38,6 +38,7 @@
   <button id="btn-undo" class="tool">戻す</button>
   <button id="btn-clear" class="tool">消去</button>
   <button id="btn-fit" class="tool">全体</button>
+  <button id="btn-display" class="tool">表示</button>
   <button id="btn-scale" class="tool">1/—</button>
 </div>
 
@@ -54,6 +55,41 @@
     <button id="btn-info-close" class="chip">閉じる</button>
   </div>
   <div id="info-body" class="sheet-body"></div>
+</div>
+
+<div id="display-panel" class="overlay-panel sheet hidden">
+  <div class="sheet-head">
+    <strong>表示</strong>
+    <button id="btn-display-close" class="chip">閉じる</button>
+  </div>
+  <div class="sheet-body">
+    <div class="setting-row">
+      <span class="setting-label">背景</span>
+      <div id="seg-bg" class="segmented" role="group" aria-label="背景">
+        <button data-value="dark">黒</button>
+        <button data-value="light">白</button>
+      </div>
+    </div>
+    <div class="setting-row">
+      <span class="setting-label">線の色</span>
+      <div id="seg-mono" class="segmented" role="group" aria-label="線の色">
+        <button data-value="color">色分け</button>
+        <button data-value="mono">単色</button>
+      </div>
+    </div>
+
+    <div class="section-head">
+      <div>
+        <div class="section-title">色ごとの表示</div>
+        <div id="color-summary" class="sub"></div>
+      </div>
+      <div class="section-actions">
+        <button id="btn-color-all" class="chip small">すべて表示</button>
+        <button id="btn-color-none" class="chip small">すべて隠す</button>
+      </div>
+    </div>
+    <div id="color-list" class="color-list"></div>
+  </div>
 </div>
 
 <div id="welcome" class="overlay-panel sheet">

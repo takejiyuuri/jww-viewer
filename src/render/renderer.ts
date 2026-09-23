@@ -1,20 +1,41 @@
 import type { Scene } from './geometry.ts';
 
+/**
+ * 色番号からパレットの色を引く。パレットは 256 色ずつ横に並べたテクスチャで、
+ * A が 0 の色は隠している色として扱う。
+ */
+const PALETTE_LOOKUP = `
+uniform highp sampler2D uPalette;
+vec4 paletteColor(uint index) {
+  return texelFetch(uPalette, ivec2(int(index & 255u), int(index >> 8u)), 0);
+}`;
+
 const LINE_VS = `#version 300 es
 layout(location = 0) in vec2 aCorner;
 layout(location = 1) in vec4 aSeg;
-layout(location = 2) in vec3 aColor;
+layout(location = 2) in uint aColorIndex;
 
 uniform vec2 uCenter;
 uniform vec2 uScale;
 uniform vec2 uPixel;
 uniform float uHalfWidth;
+${PALETTE_LOOKUP}
 
 out vec3 vColor;
 out float vEdge;
 out float vHalfPx;
 
 void main() {
+  vec4 pc = paletteColor(aColorIndex);
+  vColor = pc.rgb;
+  vHalfPx = uHalfWidth;
+  if (pc.a < 0.5) {
+    // 隠している色の線は、描画範囲の外へ追い出して描かない
+    vEdge = 0.0;
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    return;
+  }
+
   vec2 p1 = aSeg.xy;
   vec2 p2 = aSeg.zw;
   vec2 d = p2 - p1;
@@ -32,23 +53,25 @@ void main() {
   vec2 cap = dir * (aCorner.x * 2.0 - 1.0) * halfW * uPixel;
 
   gl_Position = vec4(clip + side + cap, 0.0, 1.0);
-  vColor = aColor;
   vEdge = aCorner.y * halfW;
-  vHalfPx = uHalfWidth;
 }`;
 
 const TRI_VS = `#version 300 es
 layout(location = 0) in vec2 aPos;
-layout(location = 1) in vec3 aColor;
+layout(location = 1) in uint aColorIndex;
 
 uniform vec2 uCenter;
 uniform vec2 uScale;
+${PALETTE_LOOKUP}
 
 out vec3 vColor;
 
 void main() {
-  gl_Position = vec4((aPos - uCenter) * uScale, 0.0, 1.0);
-  vColor = aColor;
+  vec4 pc = paletteColor(aColorIndex);
+  vColor = pc.rgb;
+  gl_Position = pc.a < 0.5
+    ? vec4(2.0, 2.0, 2.0, 1.0)
+    : vec4((aPos - uCenter) * uScale, 0.0, 1.0);
 }`;
 
 /** 塗り用。そのまま出す */
@@ -76,6 +99,9 @@ void main() {
   if (a <= 0.003) discard;
   fragColor = vec4(vColor, a);
 }`;
+
+/** パレットのテクスチャ 1 行に並べる色数 */
+const PALETTE_ROW = 256;
 
 function compile(gl: WebGL2RenderingContext, type: number, src: string): WebGLShader {
   const sh = gl.createShader(type)!;
@@ -106,27 +132,45 @@ export interface View {
   zoom: number;
 }
 
+interface LineUniforms {
+  center: WebGLUniformLocation;
+  scale: WebGLUniformLocation;
+  pixel: WebGLUniformLocation;
+  hw: WebGLUniformLocation;
+  palette: WebGLUniformLocation;
+}
+
+interface TriUniforms {
+  center: WebGLUniformLocation;
+  scale: WebGLUniformLocation;
+  palette: WebGLUniformLocation;
+}
+
 export class Renderer {
   private gl: WebGL2RenderingContext;
-  private lineProg: WebGLProgram;
-  private triProg: WebGLProgram;
+  private lineProg!: WebGLProgram;
+  private triProg!: WebGLProgram;
   private lineVao: WebGLVertexArrayObject | null = null;
   private triVao: WebGLVertexArrayObject | null = null;
   private lineCount = 0;
   private triCount = 0;
   private buffers: WebGLBuffer[] = [];
+  private paletteTex: WebGLTexture | null = null;
 
-  private uLine: { center: WebGLUniformLocation; scale: WebGLUniformLocation; pixel: WebGLUniformLocation; hw: WebGLUniformLocation };
-  private uTri: { center: WebGLUniformLocation; scale: WebGLUniformLocation };
+  private uLine!: LineUniforms;
+  private uTri!: TriUniforms;
 
   /** 線の太さ（CSS ピクセル） */
   lineWidth = 1.15;
-  background: [number, number, number] = [0.043, 0.047, 0.063];
+  /** 背景色（0〜1） */
+  private background: [number, number, number] = [0.043, 0.047, 0.063];
 
   readonly canvas: HTMLCanvasElement;
 
   /** 描画に使っているシーン。コンテキストが失われたときに積み直すために持つ */
   private scene: Scene | null = null;
+  /** いま使っているパレット（RGBA）。同じく積み直し用 */
+  private palette: Uint8Array = new Uint8Array([255, 255, 255, 255]);
   private lost = false;
   /** コンテキストが戻ったときに呼ばれる。再描画のきっかけに使う */
   onRestored: (() => void) | null = null;
@@ -143,22 +187,8 @@ export class Renderer {
     });
     if (!gl) throw new Error('WebGL2 が利用できません');
     this.gl = gl;
-
-    this.lineProg = link(gl, LINE_VS, LINE_FS);
-    this.triProg = link(gl, TRI_VS, FS);
-    gl.enable(gl.BLEND);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-
-    this.uLine = {
-      center: gl.getUniformLocation(this.lineProg, 'uCenter')!,
-      scale: gl.getUniformLocation(this.lineProg, 'uScale')!,
-      pixel: gl.getUniformLocation(this.lineProg, 'uPixel')!,
-      hw: gl.getUniformLocation(this.lineProg, 'uHalfWidth')!,
-    };
-    this.uTri = {
-      center: gl.getUniformLocation(this.triProg, 'uCenter')!,
-      scale: gl.getUniformLocation(this.triProg, 'uScale')!,
-    };
+    this.setupPrograms();
+    this.uploadPalette();
 
     // iOS ではタブを裏に回したり、他のアプリで GPU を使ったりすると
     // コンテキストが取り上げられる。既定では二度と戻らないので、自前で組み直す。
@@ -168,6 +198,7 @@ export class Renderer {
       this.buffers = [];
       this.lineVao = null;
       this.triVao = null;
+      this.paletteTex = null;
       this.lineCount = 0;
       this.triCount = 0;
     });
@@ -176,24 +207,32 @@ export class Renderer {
     });
   }
 
-  /** コンテキストが戻ったあとに、プログラムとバッファを作り直す */
-  private rebuild(): void {
+  private setupPrograms(): void {
     const gl = this.gl;
-    this.lost = false;
     this.lineProg = link(gl, LINE_VS, LINE_FS);
     this.triProg = link(gl, TRI_VS, FS);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
     this.uLine = {
       center: gl.getUniformLocation(this.lineProg, 'uCenter')!,
       scale: gl.getUniformLocation(this.lineProg, 'uScale')!,
       pixel: gl.getUniformLocation(this.lineProg, 'uPixel')!,
       hw: gl.getUniformLocation(this.lineProg, 'uHalfWidth')!,
+      palette: gl.getUniformLocation(this.lineProg, 'uPalette')!,
     };
     this.uTri = {
       center: gl.getUniformLocation(this.triProg, 'uCenter')!,
       scale: gl.getUniformLocation(this.triProg, 'uScale')!,
+      palette: gl.getUniformLocation(this.triProg, 'uPalette')!,
     };
+  }
+
+  /** コンテキストが戻ったあとに、プログラムとバッファを作り直す */
+  private rebuild(): void {
+    this.lost = false;
+    this.setupPrograms();
+    this.uploadPalette();
     if (this.scene) this.setScene(this.scene);
     this.onRestored?.();
   }
@@ -201,6 +240,39 @@ export class Renderer {
   /** 描画できる状態か */
   get isLost(): boolean {
     return this.lost || this.gl.isContextLost();
+  }
+
+  /** 背景色（0〜255） */
+  setBackground(rgb: [number, number, number]): void {
+    this.background = [rgb[0] / 255, rgb[1] / 255, rgb[2] / 255];
+  }
+
+  /**
+   * 色番号ごとの表示色（RGBA、1 色 4 byte）を差し替える。
+   * 背景の白黒や色ごとの表示・非表示はこれだけで反映され、線のバッファは作り直さない。
+   */
+  setPalette(rgba: Uint8Array): void {
+    this.palette = rgba;
+    if (this.isLost) return;
+    this.uploadPalette();
+  }
+
+  private uploadPalette(): void {
+    const gl = this.gl;
+    const count = Math.max(1, Math.ceil(this.palette.length / 4));
+    const rows = Math.ceil(count / PALETTE_ROW);
+    const data = new Uint8Array(PALETTE_ROW * rows * 4);
+    data.set(this.palette.subarray(0, Math.min(this.palette.length, data.length)));
+
+    if (!this.paletteTex) this.paletteTex = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.paletteTex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, PALETTE_ROW, rows, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   }
 
   private newBuffer(target: number, data: ArrayBufferView): WebGLBuffer {
@@ -236,9 +308,10 @@ export class Renderer {
     gl.vertexAttribPointer(1, 4, gl.FLOAT, false, 0, 0);
     gl.vertexAttribDivisor(1, 1);
 
-    this.newBuffer(gl.ARRAY_BUFFER, scene.lineCol);
+    // 色番号は整数のままシェーダへ渡す
+    this.newBuffer(gl.ARRAY_BUFFER, scene.lineColor);
     gl.enableVertexAttribArray(2);
-    gl.vertexAttribPointer(2, 3, gl.UNSIGNED_BYTE, true, 0, 0);
+    gl.vertexAttribIPointer(2, 1, gl.UNSIGNED_SHORT, 0, 0);
     gl.vertexAttribDivisor(2, 1);
 
     // --- 塗り三角形 ---
@@ -250,9 +323,9 @@ export class Renderer {
     gl.enableVertexAttribArray(0);
     gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
 
-    this.newBuffer(gl.ARRAY_BUFFER, scene.triCol);
+    this.newBuffer(gl.ARRAY_BUFFER, scene.triColor);
     gl.enableVertexAttribArray(1);
-    gl.vertexAttribPointer(1, 3, gl.UNSIGNED_BYTE, true, 0, 0);
+    gl.vertexAttribIPointer(1, 1, gl.UNSIGNED_SHORT, 0, 0);
 
     gl.bindVertexArray(null);
   }
@@ -299,8 +372,12 @@ export class Renderer {
     const sx = (2 * view.zoom) / w;
     const sy = (2 * view.zoom) / h;
 
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.paletteTex);
+
     if (this.triCount > 0) {
       gl.useProgram(this.triProg);
+      gl.uniform1i(this.uTri.palette, 0);
       gl.uniform2f(this.uTri.center, view.cx, view.cy);
       gl.uniform2f(this.uTri.scale, sx, sy);
       gl.bindVertexArray(this.triVao);
@@ -309,6 +386,7 @@ export class Renderer {
 
     if (this.lineCount > 0) {
       gl.useProgram(this.lineProg);
+      gl.uniform1i(this.uLine.palette, 0);
       gl.uniform2f(this.uLine.center, view.cx, view.cy);
       gl.uniform2f(this.uLine.scale, sx, sy);
       gl.uniform2f(this.uLine.pixel, 2 / w, 2 / h);

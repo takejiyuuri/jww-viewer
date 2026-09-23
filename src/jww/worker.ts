@@ -64,9 +64,10 @@ self.onmessage = (ev: MessageEvent<LoadRequest>) => {
     };
 
     const transfer: Transferable[] = [
-      scene.linePos.buffer, scene.lineCol.buffer, scene.lineGroup.buffer,
-      scene.lineSnap.buffer, scene.triPos.buffer, scene.triCol.buffer,
-      scene.snapPoint.buffer, scene.snapPointGroup.buffer, scene.scales.buffer,
+      scene.linePos.buffer, scene.lineColor.buffer, scene.lineGroup.buffer,
+      scene.lineSnap.buffer, scene.triPos.buffer, scene.triColor.buffer,
+      scene.snapPoint.buffer, scene.snapPointGroup.buffer, scene.snapPointColor.buffer,
+      scene.scales.buffer, scene.colors.buffer, scene.colorGroup.buffer,
     ];
     const res: LoadResponse = { ok: true, scene, info };
     (self as unknown as Worker).postMessage(res, transfer);
