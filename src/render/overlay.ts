@@ -366,7 +366,7 @@ export class Overlay {
   }
 
   /**
-   * 「全体」を押す前に見えていた範囲を、縁取りした細い実線の四角で囲い、「前の範囲」の札を添える。
+   * 「全体」を押す前に見えていた範囲を、縁取りした実線の四角で囲い、「前の範囲」の札を添える。
    * 寄せていた範囲がとても小さくても見えるよう、画面では最低限の大きさにする
    */
   private drawBackRect(
@@ -397,17 +397,17 @@ export class Overlay {
       y0 = c - min / 2;
       y1 = c + min / 2;
     }
-    // ほかの計測の表示と同じく、道筋を作ってから塗る・引く。線は細めの実線で、図面の線の上でも見えるよう縁取りする
+    // ほかの計測の表示と同じく、道筋を作ってから塗る・引く。線は実線で、図面の線の上でも見えるよう縁取りする
     ctx.beginPath();
     ctx.rect(x0, y0, x1 - x0, y1 - y0);
     ctx.fillStyle = BACK_INK.fill;
     ctx.fill();
     ctx.setLineDash([]);
     ctx.strokeStyle = INK[this.background].halo;
-    ctx.lineWidth = 3 * k;
+    ctx.lineWidth = 3.75 * k;
     ctx.stroke();
     ctx.strokeStyle = BACK;
-    ctx.lineWidth = 1.25 * k;
+    ctx.lineWidth = 1.75 * k;
     ctx.stroke();
 
     // 札は四角の左上の外（上）に置く。上のバーに隠れるなら四角の下の外へ、そこもパネルに隠れるなら四角の内側へ。

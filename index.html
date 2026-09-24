@@ -144,7 +144,12 @@
 <div id="layer-panel" class="overlay-panel sheet hidden">
   <div class="sheet-head">
     <strong>レイヤ</strong>
-    <button id="btn-layer-close" class="chip">閉じる</button>
+    <!-- 戻る・進むは属性の見出しのものと同じ履歴を行き来する -->
+    <span class="sheet-head-end">
+      <button id="btn-layer-list-undo" class="icon-btn head-btn" aria-label="表示を 1 つ前に戻す" disabled><svg class="ico"><use href="#i-back"/></svg></button>
+      <button id="btn-layer-list-redo" class="icon-btn head-btn" aria-label="戻した表示をやり直す" disabled><svg class="ico"><use href="#i-forward"/></svg></button>
+      <button id="btn-layer-close" class="chip">閉じる</button>
+    </span>
   </div>
   <div class="sheet-body">
     <div class="sheet-toolbar">

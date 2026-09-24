@@ -985,6 +985,17 @@ body[data-bg="light"] .panel {
   max-height: 70%;
 }
 
+/* 見出しの右側に、表示を戻る・進むボタンと「閉じる」を並べる（閉じると押し間違えないよう少し離す） */
+.sheet-head-end {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sheet-head-end .chip {
+  margin-left: 8px;
+}
+
 .sheet-toolbar {
   display: flex;
   flex-wrap: wrap;

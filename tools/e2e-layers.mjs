@@ -475,18 +475,73 @@ if (line) {
     await page.waitForTimeout(250);
     const v3 = await seen();
     check('もう 1 回押すと、絞り込む前の見え方に戻る', v3 === v0, { v0, v3 });
-    // 一覧で手を入れると、属性からの変更の履歴は捨てる（そのときの表示がそのまま記録になる）
+    // 一覧で変えた表示も同じ履歴に積む。一覧で変えるとそのときの表示が記録になり、戻ると記録も戻る
+    const storedBase = JSON.stringify(await stored());
     await page.click('#btn-layer-redo');
     await page.waitForTimeout(200);
+    const onlyView = await seen();
     await page.click('#btn-layers');
     await page.click('#btn-layer-all');
     await page.waitForTimeout(200);
-    await page.click('#btn-layer-close');
-    const p5 = await panel();
-    check('レイヤ一覧で変えると、戻る・進むは押せなくなる', !p5.back && !p5.fwd, p5);
-    await page.click('#btn-layers');
+    const arrows = () => page.evaluate(() => {
+      const d = (id) => document.getElementById(id).disabled;
+      return {
+        back: !d('btn-layer-list-undo'),
+        fwd: !d('btn-layer-list-redo'),
+        same: d('btn-layer-list-undo') === d('btn-layer-undo') && d('btn-layer-list-redo') === d('btn-layer-redo'),
+      };
+    });
+    const p5 = await arrows();
+    const storedAll = await stored();
+    check('レイヤ一覧で変えても戻る・進むの履歴に積まれ、一覧の見出しの戻るが押せる（属性の見出しと同じ状態）', p5.back && !p5.fwd && p5.same, p5);
+    check('レイヤ一覧で変えると、そのときの表示（すべて表示）が記録になる',
+      storedAll && Array.isArray(storedAll.layers) && storedAll.layers.length === 0 && storedAll.groups.length === 0, { storedAll });
+    await page.click('#btn-layer-list-undo');
+    await page.waitForTimeout(200);
+    const v6 = await seen();
+    const p6 = await arrows();
+    check('一覧の戻るで「すべて表示」の前（属性からのレイヤだけ表示）に戻り、記録も属性から変える前のものに戻る',
+      v6 === onlyView && JSON.stringify(await stored()) === storedBase && p6.back && p6.fwd && p6.same, { p6 });
+    await page.click('#btn-layer-list-redo');
+    await page.waitForTimeout(200);
+    const p7 = await arrows();
+    check('一覧の進むで「すべて表示」がやり直され、記録もそれに戻る',
+      JSON.stringify(await stored()) === JSON.stringify(storedAll) && p7.back && !p7.fwd, { p7 });
+    // 何も変わらない操作は履歴に積まない
+    const depth = () => page.evaluate(() => window.__jww.layerPast.length);
+    const d0 = await depth();
+    await page.click('#btn-layer-all');
+    await page.waitForTimeout(150);
+    check('もう「すべて表示」なら、押しても戻るの履歴に積まない', (await depth()) === d0, { d0 });
     await page.click('#btn-layer-jw');
     await page.waitForTimeout(200);
+    // 属性から一時的に変えた結果がたまたま Jw_cad の状態と同じでも、一覧で「Jw_cad の状態」を押せばそれが記録になる
+    const x = await page.evaluate(() => {
+      const a = window.__jww;
+      for (let k = 0; k < 256; k++) {
+        if (a.scene.layerCounts[k] > 0 && a.layers.group[k >> 4] && !a.layers.layer[k]) return k;
+      }
+      return -1;
+    });
+    if (x >= 0) {
+      const rec = await page.evaluate((k) => {
+        const a = window.__jww;
+        a.toggleLayer(k);  // 一覧で Jw_cad で隠れていたレイヤを出す（記録になる）
+        a.changeLayers(true, () => { a.layers.forget(k >> 4); a.layers.layer[k] = false; });  // 属性から一時的に隠す
+        return JSON.parse(localStorage.getItem('jww-viewer:hidden') ?? 'null');
+      }, x);
+      await page.click('#btn-layer-jw');
+      await page.waitForTimeout(200);
+      const recJw = await stored();
+      await page.click('#btn-layer-list-undo');
+      await page.waitForTimeout(200);
+      const recBack = await stored();
+      check('属性から一時的に変えて Jw_cad の状態と同じ見え方でも、一覧の「Jw_cad の状態」でそれが記録になり、戻ると前の記録に戻る',
+        rec && Array.isArray(rec.layers) && !rec.layers.includes(x) && recJw && recJw.layers === null
+          && JSON.stringify(recBack) === JSON.stringify(rec), { x, rec: rec?.layers, recJw: recJw?.layers, recBack: recBack?.layers });
+      await page.click('#btn-layer-jw');
+      await page.waitForTimeout(200);
+    }
     await page.click('#btn-layer-close');
   }
 }
@@ -549,6 +604,23 @@ if (lineLayer >= 0) {
   }), lineLayer);
   const ink1 = await inkPixels();
   check('レイヤのスイッチで隠れる', !a1.visible && a1.pressed === 'false' && ink1 < ink0, { ...a1, ink0, ink1 });
+  // シートの見出しの戻る・進むで、切り替えを行き来できる
+  await page.click('#btn-layer-list-undo');
+  await page.waitForTimeout(250);
+  const u1 = await page.evaluate((k) => ({
+    visible: window.__jww.layers.visible(k),
+    pressed: document.querySelector(`#layer-list .sw[data-layer="${k}"]`).getAttribute('aria-pressed'),
+    redo: !document.getElementById('btn-layer-list-redo').disabled,
+  }), lineLayer);
+  const inkU = await inkPixels();
+  check('シートの見出しの戻るで、隠したレイヤがまた見える（スイッチも戻り、進むが押せる）', u1.visible && u1.pressed === 'true' && u1.redo && inkU === ink0, { ...u1, ink0, inkU });
+  await page.click('#btn-layer-list-redo');
+  await page.waitForTimeout(250);
+  const r1 = await page.evaluate((k) => ({
+    visible: window.__jww.layers.visible(k),
+    redo: !document.getElementById('btn-layer-list-redo').disabled,
+  }), lineLayer);
+  check('シートの見出しの進むで、また隠れる', !r1.visible && !r1.redo && (await inkPixels()) === ink1, r1);
   // 行を押しても切り替わる
   await page.click(`#layer-list .l-row[data-k="${lineLayer}"] .lname`);
   await page.waitForTimeout(250);

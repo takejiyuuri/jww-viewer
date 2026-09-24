@@ -47,13 +47,15 @@ interface Insets {
 type Sheet = 'info-panel' | 'display-panel' | 'layer-panel';
 const SHEETS: Sheet[] = ['info-panel', 'display-panel', 'layer-panel'];
 
-/** 属性からの表示の変更の履歴の 1 段。そのときのレイヤの状態と、見ていた図形 */
+/** レイヤの表示の変更の履歴の 1 段。そのときのレイヤの状態と、見ていた図形 */
 interface LayerStep {
   layers: LayerSnapshot;
   selected: number;
+  /** そのとき図面ごとの記録に残していた状態（属性からの一時的な変更の前の状態）。null なら layers をそのまま記録していた */
+  saved: LayerSnapshot | null;
 }
 
-/** 属性からの表示の変更を覚えておく数 */
+/** レイヤの表示の変更を覚えておく数 */
 const LAYER_HISTORY = 50;
 
 const el = <T extends HTMLElement>(id: string): T => {
@@ -106,11 +108,16 @@ class App {
   /** レイヤグループ・レイヤの表示状態 */
   private layers = new LayerVisibility();
   /**
-   * 属性からの表示の変更（レイヤだけ表示・隠す・反転）の履歴。戻る・進むで行き来する。
-   * layerPast[0] は属性から変える前の状態で、図面ごとの記録にはこの状態を残す
+   * レイヤの表示の変更（レイヤ一覧での切り替えと、属性からのレイヤだけ表示・隠す・反転）の履歴。
+   * 属性の見出しとレイヤ一覧の見出しの戻る・進むで行き来する
    */
   private layerPast: LayerStep[] = [];
   private layerFuture: LayerStep[] = [];
+  /**
+   * 属性からの一時的な変更をしているあいだ、その前の状態。図面ごとの記録にはこちらを残す。
+   * null ならいまの表示をそのまま記録する（レイヤ一覧で変えると、そのときの表示が記録になる）
+   */
+  private layerSaved: LayerSnapshot | null = null;
   /** 反転を続けて押す前の状態。反転で同じ見え方に戻ったら、グループの持ち方まで元どおりにするのに使う */
   private invertOrigin: LayerSnapshot | null = null;
   /** レイヤ一覧で開いているグループ */
@@ -302,6 +309,7 @@ class App {
     this.shapeCache = null;
     this.layerPast = [];
     this.layerFuture = [];
+    this.layerSaved = null;
     this.invertOrigin = null;
     this.fitCache.clear();
     this.viewBeforeFit = null;
@@ -1437,8 +1445,7 @@ class App {
     const info = this.info;
     const i = this.selected;
     // 「表示を反転」は図形を選んでいなくても使える。「レイヤだけ表示」「隠す」は選んだ図形のレイヤに対して
-    el<HTMLButtonElement>('btn-layer-undo').disabled = this.layerPast.length === 0;
-    el<HTMLButtonElement>('btn-layer-redo').disabled = this.layerFuture.length === 0;
+    this.updateLayerSteps();
 
     if (!scene || !info || i < 0) {
       kind.textContent = '属性';
@@ -1616,31 +1623,26 @@ class App {
     el('btn-layer-only').addEventListener('click', () => {
       if (!this.scene || this.selected < 0) return;
       const k = this.scene.entities.layer[this.selected];
-      const before = this.layers.snapshot();
-      this.layers.only(k);
       // もうそのレイヤだけの状態なら何も変わらないので、戻るの履歴に積まない
-      if (JSON.stringify(this.layers.snapshot()) === JSON.stringify(before)) {
+      if (!this.changeLayers(true, () => this.layers.only(k))) {
         this.hint(`レイヤ ${layerTag(k)} だけが表示されています`);
         return;
       }
-      this.layers.restore(before);
-      this.pushLayerStep();
-      this.layers.only(k);
-      this.afterLayerChange(false);
       this.hint(`レイヤ ${layerTag(k)} だけを表示しています`);
     });
     el('btn-layer-hide').addEventListener('click', () => {
       if (!this.scene || this.selected < 0) return;
       const k = this.scene.entities.layer[this.selected];
-      this.pushLayerStep();
-      this.layers.forget(k >> 4);
-      this.layers.layer[k] = false;
-      this.afterLayerChange(false);
+      this.changeLayers(true, () => {
+        this.layers.forget(k >> 4);
+        this.layers.layer[k] = false;
+      });
       this.hint(`レイヤ ${layerTag(k)} を隠しました`);
     });
     el('btn-layer-invert').addEventListener('click', () => this.invertLayers(true));
-    el('btn-layer-undo').addEventListener('click', () => this.stepLayers(true));
-    el('btn-layer-redo').addEventListener('click', () => this.stepLayers(false));
+    // 戻る・進むは属性の見出しとレイヤ一覧の見出しの両方にあり、同じ履歴を行き来する
+    for (const id of ['btn-layer-undo', 'btn-layer-list-undo']) el(id).addEventListener('click', () => this.stepLayers(true));
+    for (const id of ['btn-layer-redo', 'btn-layer-list-redo']) el(id).addEventListener('click', () => this.stepLayers(false));
 
     // ---- レイヤ ----
     el('btn-layers').addEventListener('click', () => {
@@ -1652,14 +1654,13 @@ class App {
     });
     el('btn-layer-close').addEventListener('click', () => this.openSheet(null));
     el('btn-layer-jw').addEventListener('click', () => {
-      if (!this.info) return;
-      this.layers.resetToJw(this.info.groups, this.info.writeGroup);
-      this.afterLayerChange(true);
+      const info = this.info;
+      if (!info) return;
+      this.changeLayers(false, () => this.layers.resetToJw(info.groups, info.writeGroup));
       this.hint('Jw_cad で保存したときの表示に戻しました');
     });
     el('btn-layer-all').addEventListener('click', () => {
-      this.layers.showAll();
-      this.afterLayerChange(true);
+      this.changeLayers(false, () => this.layers.showAll());
     });
     el('btn-layer-invert-all').addEventListener('click', () => this.invertLayers(false));
     el('layer-list').addEventListener('click', (e) => {
@@ -1669,9 +1670,10 @@ class App {
       const row = target.closest<HTMLElement>('.l-row');
       if (sw?.dataset.group !== undefined) {
         const g = Number(sw.dataset.group);
-        this.layers.forget(g);
-        this.layers.group[g] = !this.layers.group[g];
-        this.afterLayerChange(true);
+        this.changeLayers(false, () => {
+          this.layers.forget(g);
+          this.layers.group[g] = !this.layers.group[g];
+        });
       } else if (head) {
         const g = Number(head.dataset.toggle);
         if (this.expandedGroups.has(g)) this.expandedGroups.delete(g);
@@ -1747,7 +1749,7 @@ class App {
     const info = this.info;
     const scene = this.scene;
     if (!info || !scene) return;
-    const layers = this.layerPast.length > 0 ? this.layersFrom(this.layerPast[0].layers) : this.layers;
+    const layers = this.layerSaved ? this.layersFrom(this.layerSaved) : this.layers;
     const jw = new LayerVisibility().useCounts(scene.layerCounts);
     jw.resetToJw(info.groups, info.writeGroup);
     const hidden = layers.hidden();
@@ -1769,22 +1771,47 @@ class App {
     this.buildDisplayPanel();
   }
 
-  /**
-   * レイヤの表示を変えたあと。
-   * fromList はレイヤ一覧で変えたとき。一覧で手を入れたら、属性からの変更の履歴は意味が変わるので捨てる
-   * （そのときの表示がそのまま図面ごとの記録になる）。
-   */
-  private afterLayerChange(fromList: boolean): void {
-    if (fromList) {
-      this.layerPast = [];
-      this.layerFuture = [];
-    }
-    // 反転以外で表示を変えたら、反転を続けて押す前の状態は忘れる（反転からは invertLayers が戻し直す）
+  /** レイヤの表示を変えたあと */
+  private afterLayerChange(): void {
+    // 反転以外で表示を変えたら、反転を続けて押す前の状態は忘れる（反転からは invertLayers が覚え直す）
     this.invertOrigin = null;
     this.saveViewState();
     this.applyDisplay();
     this.buildLayerPanel();
     this.updateInspect();
+  }
+
+  /**
+   * レイヤの表示を change で変える。見え方か設定が変わったときだけ、変える前の状態を戻るの履歴に積む（進む側は捨てる）。
+   * temporary は属性からの一時的な変更で、図面ごとの記録には変える前の状態を残す。
+   * レイヤ一覧からの変更は、そのときの表示がそのまま記録になる。履歴に積んだかどうかを返す
+   */
+  private changeLayers(temporary: boolean, change: () => void): boolean {
+    const before = this.layers.snapshot();
+    const selected = this.selected;
+    change();
+    const same = JSON.stringify(this.layers.snapshot()) === JSON.stringify(before);
+    // 一覧からの変更は、見え方が変わらなくても、属性からの一時的な変更の前の記録をいまの表示で置き換える
+    // （戻れば前の記録に戻せるよう、履歴にも積む）
+    if (same && (temporary || this.layerSaved === null)) return false;
+    this.layerPast.push({ layers: before, selected, saved: this.layerSaved });
+    // 古いものから捨てる。どの段も、そのとき記録していた状態を持っているので、どこで切っても戻り先の記録は正しい
+    if (this.layerPast.length > LAYER_HISTORY) this.layerPast.shift();
+    this.layerFuture = [];
+    if (temporary) this.layerSaved ??= before;
+    else this.layerSaved = null;
+    this.afterLayerChange();
+    return true;
+  }
+
+  /** 戻る・進むのボタン（属性の見出しとレイヤ一覧の見出し）を、履歴に合わせて押せるようにする */
+  private updateLayerSteps(): void {
+    for (const id of ['btn-layer-undo', 'btn-layer-list-undo']) {
+      el<HTMLButtonElement>(id).disabled = this.layerPast.length === 0;
+    }
+    for (const id of ['btn-layer-redo', 'btn-layer-list-redo']) {
+      el<HTMLButtonElement>(id).disabled = this.layerFuture.length === 0;
+    }
   }
 
   /** 図形の数を覚えさせた LayerVisibility を、覚えておいた状態から作る */
@@ -1794,16 +1821,8 @@ class App {
     return v;
   }
 
-  /** 属性から表示を変える前に、いまの状態を履歴に積む（進む側は捨てる） */
-  private pushLayerStep(): void {
-    this.layerPast.push({ layers: this.layers.snapshot(), selected: this.selected });
-    // 古いものから捨てるが、最初の状態（図面ごとの記録に残す状態）は残す
-    if (this.layerPast.length > LAYER_HISTORY) this.layerPast.splice(1, 1);
-    this.layerFuture = [];
-  }
-
   /**
-   * 属性からの表示の変更を 1 つ戻す（back）か、戻したものをやり直す。
+   * レイヤの表示の変更を 1 つ戻す（back）か、戻したものをやり直す。図面ごとの記録も、その時点のものに戻す。
    * 図形を選んでいなければ（隠して選択が外れたときなど）、そのとき見ていた図形を選び直す
    */
   private stepLayers(back: boolean): void {
@@ -1811,34 +1830,36 @@ class App {
     const to = back ? this.layerFuture : this.layerPast;
     const step = from.pop();
     if (!step) return;
-    to.push({ layers: this.layers.snapshot(), selected: this.selected });
+    to.push({ layers: this.layers.snapshot(), selected: this.selected, saved: this.layerSaved });
     this.layers.restore(step.layers);
+    this.layerSaved = step.saved;
     if (this.selected < 0 && step.selected >= 0) {
       el('inspect-panel').scrollTop = 0;
       this.selected = step.selected;
     }
     // 見えなくなった図形の選択は applyDisplay が外す
-    this.afterLayerChange(false);
+    this.afterLayerChange();
     this.requestDraw(true);
     this.hint(back ? '表示を 1 つ前に戻しました' : '戻した表示をやり直しました');
   }
 
   /**
-   * 表示を反転する。temporary は属性パネルからの一時的な操作（戻る・進むで行き来でき、保存しない）。
+   * 表示を反転する。temporary は属性パネルからの一時的な操作（図面ごとの記録には反転する前の状態を残す）。
    * 反転を続けて押して同じ見え方に戻ったら、グループの持ち方まで元どおりにする
    * （反転だけでは、グループごと隠していたときの中の設定までは戻せないため）。
    */
   private invertLayers(temporary: boolean): void {
     if (!this.scene) return;
-    if (temporary) this.pushLayerStep();
     const origin = this.invertOrigin ?? this.layers.snapshot();
-    this.layers.invert();
     let keep: LayerSnapshot | null = origin;
-    if (this.layers.sameAs(this.layersFrom(origin))) {
-      this.layers.restore(origin);
-      keep = null;
-    }
-    this.afterLayerChange(!temporary);
+    this.changeLayers(temporary, () => {
+      this.layers.invert();
+      if (this.layers.sameAs(this.layersFrom(origin))) {
+        this.layers.restore(origin);
+        keep = null;
+      }
+    });
+    // 変えたあとに忘れた「反転を続けて押す前の状態」を覚え直す
     this.invertOrigin = keep;
     this.hintInverted();
   }
@@ -1850,15 +1871,16 @@ class App {
    */
   private toggleLayer(k: number): void {
     const g = k >> 4;
-    this.layers.forget(g);
-    if (!this.layers.group[g]) {
-      this.layers.group[g] = true;
-      for (let l = 0; l < 16; l++) this.layers.layer[(g << 4) | l] = false;
-      this.layers.layer[k] = true;
-    } else {
-      this.layers.layer[k] = !this.layers.layer[k];
-    }
-    this.afterLayerChange(true);
+    this.changeLayers(false, () => {
+      this.layers.forget(g);
+      if (!this.layers.group[g]) {
+        this.layers.group[g] = true;
+        for (let l = 0; l < 16; l++) this.layers.layer[(g << 4) | l] = false;
+        this.layers.layer[k] = true;
+      } else {
+        this.layers.layer[k] = !this.layers.layer[k];
+      }
+    });
   }
 
   private buildLayerPanel(): void {
