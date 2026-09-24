@@ -63,6 +63,7 @@ class App {
   private dpr = 1;
   private cssW = 0;
   private cssH = 0;
+  private lastDpr = 0;
 
   private points: MeasurePoint[] = [];
   /** 水平・垂直に拘束して測る */
@@ -134,12 +135,22 @@ class App {
     this.bindUI();
     this.bindGestures();
     this.resize();
-    // 文書は隙間の分だけ高くしてあり、overflow: hidden にもしていないので、ずれたら戻す
-    window.addEventListener('scroll', () => {
-      if (window.scrollX !== 0 || window.scrollY !== 0) window.scrollTo(0, 0);
-    }, { passive: true });
+    // 図面の要素の大きさが変わったら測り直す。ホーム画面から開いたときは resize がほとんど起きず、
+    // 起動直後に高さが決まり直すこともあるので、要素そのものを見張り、少し経ってからも測り直す
+    const stage = el('stage');
+    if (window.ResizeObserver) {
+      let raf = 0;
+      new ResizeObserver(() => {
+        cancelAnimationFrame(raf);
+        raf = requestAnimationFrame(() => this.resize());
+      }).observe(stage);
+    }
     window.addEventListener('resize', () => this.resize());
     window.visualViewport?.addEventListener('resize', () => this.resize());
+    window.addEventListener('orientationchange', () => window.setTimeout(() => this.resize(), 300));
+    window.addEventListener('pageshow', () => this.resize());
+    window.setTimeout(() => this.resize(), 400);
+    window.setTimeout(() => this.resize(), 1200);
 
     this.applyDisplay();
     void this.restoreLast();
@@ -337,30 +348,18 @@ class App {
     this.requestDraw(true);
   }
 
-  /**
-   * iOS 26 の WebKit の不具合への手当て。ホーム画面から開いてステータスバーを透過させていると、
-   * 画面の高さ（innerHeight など）が上のセーフエリアの分だけ短く報告され、画面の下に隙間が残る。
-   * 本当の高さとの差がちょうど上のセーフエリアと同じときだけ、その差を返す（不具合が直れば 0 になる）。
-   */
-  private bottomGap(): number {
-    const nav = navigator as Navigator & { standalone?: boolean };
-    const standalone = nav.standalone === true || window.matchMedia?.('(display-mode: standalone)').matches;
-    if (!standalone) return 0;
-    const safeTop = el('safe-probe').getBoundingClientRect().height;
-    if (!(safeTop > 0)) return 0;
-    // iOS の screen の縦横は、画面を回しても縦向きのまま
-    const landscape = window.innerWidth > window.innerHeight;
-    const full = landscape ? Math.min(screen.width, screen.height) : Math.max(screen.width, screen.height);
-    const gap = Math.round(full - window.innerHeight);
-    return gap > 0 && Math.abs(gap - safeTop) <= 2 ? gap : 0;
-  }
-
   private resize(): void {
     this.dpr = Math.min(window.devicePixelRatio || 1, 3);
-    this.cssW = window.innerWidth;
-    const gap = this.bottomGap();
-    document.documentElement.style.setProperty('--ios-gap', `${gap}px`);
-    this.cssH = window.innerHeight + gap;
+    // 画面の数値（innerHeight）ではなく、図面の要素の実際の大きさで描く。
+    // ホーム画面から開いたとき（iOS 26）は innerHeight が本当の高さより短く報告されることがあるため
+    const box = el('stage').getBoundingClientRect();
+    const w = Math.round(box.width) || window.innerWidth;
+    const h = Math.round(box.height) || window.innerHeight;
+    // 同じ大きさなら何もしない（見張りから何度呼ばれても描き直しを繰り返さない）
+    if (w === this.cssW && h === this.cssH && this.dpr === this.lastDpr) return;
+    this.lastDpr = this.dpr;
+    this.cssW = w;
+    this.cssH = h;
     this.renderer.resize(this.cssW, this.cssH, this.dpr);
     this.textLayer.resize(this.cssW, this.cssH, this.dpr);
     this.overlay.resize(this.cssW, this.cssH, this.dpr);

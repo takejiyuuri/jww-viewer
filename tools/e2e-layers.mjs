@@ -859,53 +859,46 @@ await page.waitForTimeout(200);
   await ctx3.close();
 }
 
-// ---------- 17. iOS 26 の PWA で画面の高さが短く報告されても、画面の下まで使う ----------
+// ---------- 17. 画面の高さ：図面・枠・ツールバーの下端と描画の大きさがそろい、画面を回すと測り直す ----------
 {
-  /** innerHeight を vh、画面の高さを screenH、ホーム画面起動かどうかを standalone として開く */
-  const openAs = async (vh, screenH, standalone) => {
-    const ctx = await browser.newContext({ viewport: { width: 393, height: vh }, deviceScaleFactor: 3, isMobile: true, hasTouch: true });
+  const openAs = async (standalone) => {
+    const ctx = await browser.newContext({ viewport: { width: 393, height: 852 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true });
     const pg = await ctx.newPage();
-    pg.on('pageerror', (e) => errors.push(`pageerror(iOS): ${e.message}`));
-    await pg.addInitScript(([h, sa]) => {
-      Object.defineProperty(navigator, 'standalone', { get: () => sa });
-      Object.defineProperty(screen, 'height', { get: () => h });
-      Object.defineProperty(screen, 'width', { get: () => 393 });
-      // env(safe-area-inset-*) はここでは 0 なので、アプリが読む前に変数を上書きしておく
-      document.addEventListener('readystatechange', () => {
-        if (document.readyState !== 'interactive') return;
-        const st = document.createElement('style');
-        st.textContent = ':root{--safe-top:59px !important;--safe-bottom:34px !important}';
-        document.head.appendChild(st);
-      });
-    }, [screenH, standalone]);
+    pg.on('pageerror', (e) => errors.push(`pageerror(高さ): ${e.message}`));
+    await pg.addInitScript((sa) => { Object.defineProperty(navigator, 'standalone', { get: () => sa }); }, standalone);
     await pg.goto(srv.url, { waitUntil: 'networkidle' });
     await pg.setInputFiles('#file', sample);
     await pg.waitForFunction(() => document.getElementById('title')?.textContent?.endsWith('.jww'), null, { timeout: 60000 });
-    await pg.waitForTimeout(400);
-    const r = await pg.evaluate(() => {
+    await pg.waitForTimeout(500);
+    const measure = () => pg.evaluate(() => {
       const a = window.__jww;
       const rect = (id) => document.getElementById(id).getBoundingClientRect();
+      window.scrollTo(0, 200);
       return {
-        cssH: a.cssH,
-        gap: getComputedStyle(document.documentElement).getPropertyValue('--ios-gap').trim(),
-        stage: Math.round(rect('stage').height),
+        standalone: document.documentElement.classList.contains('standalone'),
+        cssW: a.cssW, cssH: a.cssH, innerH: innerHeight,
+        stage: [Math.round(rect('stage').width), Math.round(rect('stage').height)],
+        shellBottom: Math.round(rect('shell').bottom),
         toolbarBottom: Math.round(rect('toolbar').bottom),
-        canvas: document.getElementById('gl').height,
-        panelGap: Math.round(rect('toolbar').top - rect('readout').bottom),
+        canvas: [document.getElementById('gl').width, document.getElementById('gl').height],
+        scrollY: window.scrollY,
       };
     });
+    const portrait = await measure();
+    await pg.setViewportSize({ width: 852, height: 393 });
+    await pg.waitForTimeout(600);
+    const landscape = await measure();
     await ctx.close();
-    return r;
+    return { portrait, landscape };
   };
-  const bug = await openAs(793, 852, true);
-  check('iOS の PWA で高さが上のセーフエリア分短いとき、図面とツールバーを画面の下端まで伸ばす',
-    bug.cssH === 852 && bug.gap === '59px' && bug.stage === 852 && bug.toolbarBottom === 852 && bug.canvas === 852 * 3 && bug.panelGap >= 4 && bug.panelGap <= 8, bug);
-  const ok = await openAs(852, 852, true);
-  check('高さが正しく報告されるときは何も足さない', ok.cssH === 852 && ok.gap === '0px' && ok.toolbarBottom === 852, ok);
-  const safari = await openAs(659, 852, false);
-  check('Safari で開いたとき（ホーム画面から開いていない）は何も足さない', safari.cssH === 659 && safari.gap === '0px', safari);
-  const odd = await openAs(700, 852, true);
-  check('差が上のセーフエリアと一致しないときは何も足さない', odd.cssH === 700 && odd.gap === '0px', odd);
+  const good = (m) => m.cssW === m.stage[0] && m.cssH === m.stage[1] && m.stage[1] === m.shellBottom
+    && m.toolbarBottom === m.shellBottom && m.canvas[0] === m.cssW * 3 && m.canvas[1] === m.cssH * 3 && m.scrollY === 0;
+  const home = await openAs(true);
+  check('ホーム画面から開いたとき、図面・枠・ツールバーの下端と描画の大きさがそろう（縦・横）',
+    home.portrait.standalone && good(home.portrait) && good(home.landscape) && home.landscape.cssW === 852, home);
+  const safari = await openAs(false);
+  check('Safari で開いたときも、図面・枠・ツールバーの下端と描画の大きさがそろう（縦・横）',
+    !safari.portrait.standalone && good(safari.portrait) && good(safari.landscape), safari);
 }
 
 check('コンソールにエラーがない', errors.length === 0, { errors: errors.slice(0, 5) });

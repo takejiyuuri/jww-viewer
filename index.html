@@ -11,6 +11,13 @@
 <link rel="apple-touch-icon" href="./icon-180.png">
 <title>JWW ビューア</title>
 <link rel="stylesheet" href="./src/style.css">
+<script>
+  // ホーム画面から開いたとき（スタンドアロン）だけ、画面の高さを 100vh で決める（style.css 参照）。
+  // 描き始める前に決めておきたいので、最初に読み込まれるこの場所で印を付ける
+  if (navigator.standalone === true || (window.matchMedia && matchMedia('(display-mode: standalone)').matches)) {
+    document.documentElement.classList.add('standalone');
+  }
+</script>
 </head>
 <body>
 <!-- アイコンは一度だけ定義して <use> で使い回す -->
@@ -27,13 +34,14 @@
   </defs>
 </svg>
 
-<div id="safe-probe" aria-hidden="true"></div>
 <div id="stage">
   <canvas id="gl"></canvas>
   <canvas id="text"></canvas>
   <canvas id="overlay"></canvas>
 </div>
 
+<!-- 画面の枠。ホーム画面から開いたときは高さを 100vh にした固定レイヤーで、下端を本当の画面の下端に合わせる -->
+<div id="shell">
 <div id="topbar">
   <button id="btn-open" class="chip">ファイル</button>
   <div id="title" class="title">図面を開いてください</div>
@@ -169,6 +177,7 @@
       <li>「レイヤ」でレイヤごとに表示を切り替えられます。最初は Jw_cad と同じ表示です</li>
     </ul>
   </div>
+</div>
 </div>
 
 <input id="file" type="file" hidden>

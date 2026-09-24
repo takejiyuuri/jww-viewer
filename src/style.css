@@ -12,12 +12,6 @@
   --safe-left: env(safe-area-inset-left, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
   /*
-   * iOS 26 の WebKit では、ホーム画面から開いてステータスバーを透過させていると、画面の高さが
-   * 上のセーフエリアの分だけ短く扱われ、画面の下に隙間が残る。その分をここに入れ（main.ts が測る）、
-   * 文書の高さをその分だけ伸ばす。普段は 0
-   */
-  --ios-gap: 0px;
-  /*
    * ツールバーの下の余白。ホームインジケータのある iPhone でも、
    * ボタンがインジケータに掛からない範囲で詰める（34px → 26px）
    */
@@ -31,24 +25,10 @@
   -webkit-tap-highlight-color: transparent;
 }
 
-/*
- * 画面の枠（図面・上のバー・ツールバー・パネル・シート）は、画面に固定（position: fixed）せず、
- * 文書（body）の中に絶対配置する。iOS 26 のホーム画面起動では、固定した要素は短く扱われた
- * 表示領域の中までしか描かれず、下の隙間に届かない。文書の中身は隙間にも描かれるので、
- * 文書の高さを隙間の分だけ伸ばし、枠をその高さいっぱいに広げる。
- * 文書を overflow: hidden にするとその外が切られるので、スクロールは main.ts で止める。
- */
-html {
-  height: calc(100% + var(--ios-gap));
-}
-
-body {
-  position: relative;
-  height: 100%;
-}
-
 html, body {
   margin: 0;
+  height: 100%;
+  overflow: hidden;
   background: var(--bg);
   color: var(--fg);
   font: 15px/1.4 -apple-system, "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
@@ -58,21 +38,47 @@ html, body {
   -webkit-touch-callout: none;
 }
 
+/*
+ * 図面（#stage）と画面の枠（#shell：上のバー・パネル・ツールバー・シート）は、画面いっぱいの固定レイヤー。
+ * 枠の中の部品は #shell を基準に絶対配置する。
+ */
+#stage,
+#shell {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+}
+
 #stage {
-  position: absolute;
-  inset: 0;
   touch-action: none;
 }
 
-/* 上のセーフエリアの高さを測るための見えない要素（env() は JavaScript から直接読めないため） */
-#safe-probe {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 0;
-  height: var(--safe-top);
-  visibility: hidden;
+/* 枠そのものは触れず、中の部品だけが触れる（部品ごとの指定があればそちらが優先） */
+#shell {
   pointer-events: none;
+}
+
+:where(#shell > *) {
+  pointer-events: auto;
+}
+
+/*
+ * ホーム画面から開いたとき（iOS 26）は、画面の高さ（innerHeight・100% など）が上のセーフエリアの分だけ
+ * 短く扱われ、画面の下に隙間が残る WebKit の不具合がある。100vh だけは起動直後から本当の画面の高さに
+ * なるので、ページと固定レイヤーの高さを 100vh で決める。Safari で開いたときは 100vh がツールバーの
+ * 裏まで届いてしまうので使わない。
+ */
+html.standalone,
+html.standalone body {
+  height: 100vh;
+}
+
+html.standalone #stage,
+html.standalone #shell {
+  bottom: auto;
+  height: 100vh;
 }
 
 #stage canvas {
