@@ -6,10 +6,12 @@
 - icon-192.png / icon-512.png（purpose: any）: 元の角丸のまま、角は透明にする
 - icon-maskable-512.png（purpose: maskable）: Android は円などに切り抜くので、
   絵と文字が中央の円（直径 80%）に収まるまで縮め、無地の背景（manifest の background_color）に載せる
+- iOS アプリ（ios/ があるとき）: App Store のアイコン（1024px、透明なし）と、起動画面（暗い地の真ん中に角丸のアイコン）
 
 python tools/make_icons.py
 """
 import math
+import os
 
 import numpy as np
 from PIL import Image, ImageFilter
@@ -96,3 +98,16 @@ save(rounded, 512, 'public/icon-512.png')
 mask_size = max(side, math.ceil(reach / 0.38))
 save(to_image(BACKGROUND + crop(art, mask_size)), 512, 'public/icon-maskable-512.png')
 print(f'tile {x1 - x0}x{y1 - y0}, art radius {reach:.0f}, maskable scale {side / mask_size:.0%}')
+
+# ---- iOS アプリ（npx cap add ios で作った ios/ があるときだけ） ----
+IOS_ASSETS = 'ios/App/App/Assets.xcassets'
+if os.path.isdir(IOS_ASSETS):
+    # App Store のアイコンは透明を使えないので、角まで板の背景で埋めた正方形にする（角は iOS が丸める）
+    save(to_image(crop(tile, side)), 1024, f'{IOS_ASSETS}/AppIcon.appiconset/AppIcon-512@2x.png')
+    # 起動画面：画面いっぱいに切り抜いて表示されるので、縦でも横でも欠けない真ん中に角丸のアイコンを置く
+    splash = Image.new('RGB', (2732, 2732), tuple(int(round(c * 255)) for c in BACKGROUND))
+    mark = rounded.resize((480, 480), Image.LANCZOS)
+    splash.paste(mark, ((2732 - 480) // 2, (2732 - 480) // 2), mark)
+    for name in ('splash-2732x2732.png', 'splash-2732x2732-1.png', 'splash-2732x2732-2.png'):
+        splash.save(f'{IOS_ASSETS}/Splash.imageset/{name}', optimize=True)
+        print(f'{IOS_ASSETS}/Splash.imageset/{name}', 2732, 'x', 2732)
