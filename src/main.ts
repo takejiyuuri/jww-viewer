@@ -134,6 +134,10 @@ class App {
     this.bindUI();
     this.bindGestures();
     this.resize();
+    // 文書は隙間の分だけ高くしてあり、overflow: hidden にもしていないので、ずれたら戻す
+    window.addEventListener('scroll', () => {
+      if (window.scrollX !== 0 || window.scrollY !== 0) window.scrollTo(0, 0);
+    }, { passive: true });
     window.addEventListener('resize', () => this.resize());
     window.visualViewport?.addEventListener('resize', () => this.resize());
 

@@ -13,8 +13,8 @@
   --safe-right: env(safe-area-inset-right, 0px);
   /*
    * iOS 26 の WebKit では、ホーム画面から開いてステータスバーを透過させていると、画面の高さが
-   * 上のセーフエリアの分だけ短く扱われ、画面の下に隙間が残る。その分をここに入れて（main.ts が測る）、
-   * 画面の下端に付くもの（図面、ツールバー、パネル、シート）を本当の下端まで下げる。普段は 0
+   * 上のセーフエリアの分だけ短く扱われ、画面の下に隙間が残る。その分をここに入れ（main.ts が測る）、
+   * 文書の高さをその分だけ伸ばす。普段は 0
    */
   --ios-gap: 0px;
   /*
@@ -31,10 +31,24 @@
   -webkit-tap-highlight-color: transparent;
 }
 
+/*
+ * 画面の枠（図面・上のバー・ツールバー・パネル・シート）は、画面に固定（position: fixed）せず、
+ * 文書（body）の中に絶対配置する。iOS 26 のホーム画面起動では、固定した要素は短く扱われた
+ * 表示領域の中までしか描かれず、下の隙間に届かない。文書の中身は隙間にも描かれるので、
+ * 文書の高さを隙間の分だけ伸ばし、枠をその高さいっぱいに広げる。
+ * 文書を overflow: hidden にするとその外が切られるので、スクロールは main.ts で止める。
+ */
+html {
+  height: calc(100% + var(--ios-gap));
+}
+
+body {
+  position: relative;
+  height: 100%;
+}
+
 html, body {
   margin: 0;
-  height: 100%;
-  overflow: hidden;
   background: var(--bg);
   color: var(--fg);
   font: 15px/1.4 -apple-system, "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
@@ -45,17 +59,14 @@ html, body {
 }
 
 #stage {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: calc(0px - var(--ios-gap));
+  position: absolute;
+  inset: 0;
   touch-action: none;
 }
 
 /* 上のセーフエリアの高さを測るための見えない要素（env() は JavaScript から直接読めないため） */
 #safe-probe {
-  position: fixed;
+  position: absolute;
   top: 0;
   left: 0;
   width: 0;
@@ -83,7 +94,7 @@ html, body {
 
 /* ---- 上部バー ---- */
 #topbar {
-  position: fixed;
+  position: absolute;
   top: 0;
   left: 0;
   right: 0;
@@ -138,10 +149,10 @@ html, body {
 /* ---- 計測・属性のパネル ---- */
 /* 下のツールバーの上に浮かべる。中にボタンがあるので触れるようにしておく */
 .panel {
-  position: fixed;
+  position: absolute;
   left: calc(var(--safe-left) + 10px);
   right: calc(var(--safe-right) + 10px);
-  bottom: calc(var(--bar-height) + 6px - var(--ios-gap));
+  bottom: calc(var(--bar-height) + 6px);
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 16px;
@@ -472,10 +483,10 @@ body[data-bg="light"] #inspect-panel {
 
 /* ---- 下部ツールバー ---- */
 #toolbar {
-  position: fixed;
+  position: absolute;
   left: 0;
   right: 0;
-  bottom: calc(0px - var(--ios-gap));
+  bottom: 0;
   padding: 6px calc(var(--safe-right) + 8px) var(--bar-bottom) calc(var(--safe-left) + 8px);
   display: flex;
   gap: 5px;
@@ -518,7 +529,7 @@ body[data-bg="light"] #inspect-panel {
 
 /* ---- ヒント ---- */
 .hint {
-  position: fixed;
+  position: absolute;
   left: 50%;
   top: calc(var(--safe-top) + 58px);
   transform: translateX(-50%);
@@ -538,15 +549,12 @@ body[data-bg="light"] #inspect-panel {
 
 /* ---- パネル ---- */
 .overlay-panel {
-  position: fixed;
+  position: absolute;
   z-index: 20;
 }
 
 #loading {
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: calc(0px - var(--ios-gap));
+  inset: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -575,7 +583,7 @@ body[data-bg="light"] #inspect-panel {
 .sheet {
   left: 0;
   right: 0;
-  bottom: calc(0px - var(--ios-gap));
+  bottom: 0;
   max-height: 84%;
   background: var(--panel-solid);
   border-top: 1px solid var(--line);
