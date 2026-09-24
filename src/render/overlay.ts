@@ -46,6 +46,13 @@ export interface Highlight {
 }
 
 export interface OverlayState {
+  /** 「全体」を押す前に見えていた範囲（図面座標）。全体を見ているあいだ囲って見せる。無ければ null */
+  backRect: { minX: number; minY: number; maxX: number; maxY: number } | null;
+  /**
+   * バーやパネルに隠れずに見えている範囲（CSS ピクセル）。「前の範囲」の囲いはこの中に掛かるときだけ描く。
+   * 札は labelLeft〜labelRight（左右の安全領域を除いた所）の中に出す
+   */
+  backArea: { top: number; bottom: number; right: number; labelLeft: number; labelRight: number } | null;
   points: MeasurePoint[];
   /** 属性を見ている図形 */
   highlight: Highlight | null;
@@ -75,11 +82,27 @@ export interface OverlayState {
 /** 属性で見ている図形を目立たせる色 */
 const ACCENT = '#35d07f';
 
+/**
+ * 「前の範囲」を囲う色。Jw_cad の標準の線色（水色・白・緑・黄・ピンク・青・赤）にない橙にして、図面の線と見分ける
+ */
+const BACK = '#ff9f0a';
+const BACK_INK: MeasureInk = {
+  stroke: BACK,
+  line: BACK,
+  guide: BACK,
+  fill: 'rgba(255, 159, 10, 0.08)',
+  text: BACK,
+  label: 'rgba(11,12,16,0.88)',
+  dot: 'rgba(11,12,16,0.65)',
+};
+
 export class Overlay {
   private ctx: CanvasRenderingContext2D;
   private w = 0;
   private h = 0;
   private dpr = 1;
+  /** 直前のコマで何も描かなかったか（空のあいだこの層を隠しておくため。切り替えは変わったときだけ） */
+  private wasEmpty = true;
   /** いまの背景。補助線の色を決めるのに使う */
   background: Background = 'dark';
   /**
@@ -119,6 +142,14 @@ export class Overlay {
   render(view: View, s: OverlayState): void {
     const ctx = this.ctx;
     const k = this.dpr;
+    // 何も描かないあいだは、この層ごと隠す。GPU で描く 2D キャンバス（Chrome で確認）では、
+    // 描いていた状態から空になったあと、中身の変わらないコマで消したはずの前の絵（「前の範囲」の囲いなど）が
+    // 1 コマおきに画面に出ることがある。隠しておけば出ない。切り替えは空かどうかが変わったときだけ
+    const empty = !s.backRect && !s.highlight && !s.constraint && s.points.length === 0 && !s.preview && !s.magnifier;
+    if (empty !== this.wasEmpty) {
+      this.canvas.style.visibility = empty ? 'hidden' : '';
+      this.wasEmpty = empty;
+    }
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, this.w, this.h);
     ctx.lineCap = 'round';
@@ -136,6 +167,9 @@ export class Overlay {
       ctx.rect(mag.x * k, mag.y * k, mag.size * k, mag.size * k);
       ctx.clip('evenodd');
     }
+
+    // 「前の範囲」。図面の上の目印なので、属性のハイライトや計測より下に描く
+    if (s.backRect && s.backArea) this.drawBackRect(view, s.backRect, s.backArea, k);
 
     // 属性を見ている図形。測線より下に描いて、計測の表示を隠さないようにする
     if (s.highlight) {
@@ -329,6 +363,70 @@ export class Overlay {
         }
       }
     }
+  }
+
+  /**
+   * 「全体」を押す前に見えていた範囲を、縁取りした点線の四角で囲い、「前の範囲」の札を添える。
+   * 寄せていた範囲がとても小さくても見えるよう、画面では最低限の大きさにする
+   */
+  private drawBackRect(
+    view: View,
+    r: { minX: number; minY: number; maxX: number; maxY: number },
+    area: { top: number; bottom: number; right: number; labelLeft: number; labelRight: number },
+    k: number,
+  ): void {
+    const ctx = this.ctx;
+    let [x0, y0] = this.toScreen(view, r.minX, r.maxY);
+    let [x1, y1] = this.toScreen(view, r.maxX, r.minY);
+    // 見えている範囲（デバイスピクセル）
+    const top = area.top * k;
+    const bottom = area.bottom * k;
+    const right = area.right * k;
+    // 前の範囲が見えている所に掛からない（画面の外）か、見えている所をすっぽり覆う（全体より引いて見ていた）ときは、
+    // 囲っても枠が見えず色が付くだけなので描かない（ボタンの「前の範囲」で戻れることは変わらない）
+    if (x1 < 0 || x0 > right || y1 < top || y0 > bottom) return;
+    if (x0 <= 0 && x1 >= right && y0 <= top && y1 >= bottom) return;
+    const min = 16 * k;
+    if (x1 - x0 < min) {
+      const c = (x0 + x1) / 2;
+      x0 = c - min / 2;
+      x1 = c + min / 2;
+    }
+    if (y1 - y0 < min) {
+      const c = (y0 + y1) / 2;
+      y0 = c - min / 2;
+      y1 = c + min / 2;
+    }
+    // ほかの計測の表示と同じく、道筋を作ってから塗る・引く（点線はあとで必ず戻す）
+    ctx.beginPath();
+    ctx.rect(x0, y0, x1 - x0, y1 - y0);
+    ctx.fillStyle = BACK_INK.fill;
+    ctx.fill();
+    ctx.setLineDash([]);
+    ctx.strokeStyle = INK[this.background].halo;
+    ctx.lineWidth = 4.5 * k;
+    ctx.stroke();
+    ctx.setLineDash([9 * k, 6 * k]);
+    ctx.strokeStyle = BACK;
+    ctx.lineWidth = 2 * k;
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // 札は四角の左上の外（上）に置く。上のバーに隠れるなら四角の下の外へ、そこもパネルに隠れるなら四角の内側へ。
+    // 見えている範囲の左右からははみ出さない
+    const text = '前の範囲';
+    ctx.font = `${12 * k}px -apple-system, "Hiragino Sans", system-ui, sans-serif`;
+    const pw = ctx.measureText(text).width + 12 * k;
+    const ph = 20 * k;
+    const gap = 4 * k;
+    const minX = area.labelLeft * k + pw / 2 + 6 * k;
+    const maxX = area.labelRight * k - pw / 2 - 6 * k;
+    const lx = Math.max(minX, Math.min(maxX, Math.max(x0, area.labelLeft * k) + pw / 2));
+    let ly: number;
+    if (y0 - gap - ph >= top + gap) ly = y0 - gap - ph / 2;
+    else if (y1 + gap + ph <= bottom - gap) ly = y1 + gap + ph / 2;
+    else ly = Math.max(y0, top) + gap + ph / 2;
+    this.pill(lx, ly, text, k, BACK_INK);
   }
 
   /** 図形を目立たせる。線は背景色の縁を付けた太線、塗りは薄く、文字は枠で囲む */

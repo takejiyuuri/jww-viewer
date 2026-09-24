@@ -41,6 +41,8 @@ interface Insets {
   bottom: number;
   /** 横向きで右に寄せたパネル */
   right: number;
+  /** 右に寄せたパネルの上端（CSS ピクセル）。無ければ画面の高さ */
+  rightTop: number;
 }
 type Sheet = 'info-panel' | 'display-panel' | 'layer-panel';
 const SHEETS: Sheet[] = ['info-panel', 'display-panel', 'layer-panel'];
@@ -75,6 +77,9 @@ class App {
   private cssW = 0;
   private cssH = 0;
   private lastDpr = 0;
+  /** 画面の左右の安全領域（CSS ピクセル）。横向きでノッチやダイナミックアイランドのある側 */
+  private safeLeft = 0;
+  private safeRight = 0;
 
   private points: MeasurePoint[] = [];
   /** 水平・垂直に拘束して測る */
@@ -127,11 +132,13 @@ class App {
    */
   private fitCache = new Map<string, Bounds>();
   /** 長押しを始めたときの、上下のバー・パネルの幅。拡大鏡をそこに重ねないために使う */
-  private insets: Insets = { top: 52, bottom: 104, right: 0 };
+  private insets: Insets = { top: 52, bottom: 104, right: 0, rightTop: 0 };
   /** 読み込み時に決めた既定の縮尺。「自動」に戻したときに使う */
   private defaultScale = 1;
   /** 「全体」を押す前の表示。「前の範囲」で戻す */
   private viewBeforeFit: View | null = null;
+  /** 「全体」を押す前に見えていた範囲（図面座標）。全体を見ているあいだ、図面の上に囲って見せる */
+  private backRect: Bounds | null = null;
   /**
    * 全体に合わせた表示（読み込んだときと「全体」を押したとき）。ここからほとんど動かしていないあいだは全体を見ているものとし、
    * 戻る先があればボタンが「前の範囲」になる
@@ -298,6 +305,7 @@ class App {
     this.invertOrigin = null;
     this.fitCache.clear();
     this.viewBeforeFit = null;
+    this.backRect = null;
     this.fittedView = null;
     this.fitStale = false;
     this.fitBasis = null;
@@ -478,6 +486,7 @@ class App {
     if (this.canGoBack()) {
       this.view = { ...this.viewBeforeFit! };
       this.viewBeforeFit = null;
+      this.backRect = null;
       this.fittedView = null;
       this.fitBasis = null;
       this.fitStale = false;
@@ -488,6 +497,8 @@ class App {
       return;
     }
     const before = { ...this.view };
+    // 押す前にパネルやバーに隠れずに見えていた範囲。全体を見ているあいだ囲って見せる
+    const beforeRect = this.visibleRect(before);
     // 全体を見ていたまま（見えるものや画面の向きが変わって合わせ直すだけ）なら、戻る先は前のまま。
     // 読み込んだときの全体表示からなら、戻る先はない
     const wasFitted = this.stillFitted();
@@ -495,13 +506,49 @@ class App {
     this.fit();
     this.textLayer.render(this.view);
     if (wasFitted) {
+      // 画面を回したあとなどは、「前の範囲」で戻ったときに映る所がいまの画面の形で変わるので、囲いも合わせ直す
       this.viewBeforeFit = keep;
-    } else {
+      this.backRect = keep ? this.visibleRect(keep) : null;
+    } else if (this.nearView(before, this.view)) {
       // 動かしたあとでも、ほとんど全体を見ていたなら戻る先はない
-      this.viewBeforeFit = this.nearView(before, this.view) ? null : before;
+      this.viewBeforeFit = null;
+      this.backRect = null;
+    } else {
+      this.viewBeforeFit = before;
+      this.backRect = beforeRect;
     }
     this.recordFit();
     this.updateFitButton();
+  }
+
+  /** 上のバーと下（横向きでは右）のパネルに隠れずに見えている範囲（CSS ピクセル） */
+  private visibleArea(): { top: number; bottom: number; right: number } {
+    const ins = this.measureInsets();
+    let top = ins.top;
+    let bottom = this.cssH - ins.bottom;
+    let right = this.cssW - ins.right;
+    // 横向きで右に寄せたパネルが見えている高さの半分に届かない（右下の小さなパネル）なら、
+    // その上は幅いっぱいに見えているので、幅は削らない
+    if (ins.right > 0 && ins.rightTop > top + (bottom - top) / 2) right = this.cssW;
+    // パネルで見える所がほとんど残らないときは、画面全体を見ているものとする
+    if (bottom - top < 40) {
+      top = 0;
+      bottom = this.cssH;
+    }
+    if (right < 40) right = this.cssW;
+    return { top, bottom, right };
+  }
+
+  /** 表示 v のとき、上のバーと下（横向きでは右）のパネルに隠れずに見えている範囲（図面座標） */
+  private visibleRect(v: View): Bounds {
+    const { top, bottom, right } = this.visibleArea();
+    const k = this.dpr / v.zoom;
+    return {
+      minX: (0 - this.cssW / 2) * k + v.cx,
+      maxX: (right - this.cssW / 2) * k + v.cx,
+      minY: (this.cssH / 2 - bottom) * k + v.cy,
+      maxY: (this.cssH / 2 - top) * k + v.cy,
+    };
   }
 
   /**
@@ -527,6 +574,7 @@ class App {
     // 全体の表示から大きく動かしたら、戻る先は忘れる（あとで全体の近くへ戻ってきたときに、古い範囲へ飛ばないように）
     if (this.fittedView && !this.stillFitted()) {
       this.viewBeforeFit = null;
+      this.backRect = null;
       this.fittedView = null;
       this.fitBasis = null;
     }
@@ -555,6 +603,10 @@ class App {
     this.renderer.resize(this.cssW, this.cssH, this.dpr);
     this.textLayer.resize(this.cssW, this.cssH, this.dpr);
     this.overlay.resize(this.cssW, this.cssH, this.dpr);
+    // 左右の安全領域は env() を JavaScript から直接読めないので、それを含めたツールバーの左右の余白（+8px）から求める
+    const bar = getComputedStyle(el('toolbar'));
+    this.safeLeft = Math.max(0, (parseFloat(bar.paddingLeft) || 8) - 8);
+    this.safeRight = Math.max(0, (parseFloat(bar.paddingRight) || 8) - 8);
     // パネルの幅が変わるので、計測の内訳の詰め方を決め直す
     if (this.scene) this.updateReadout();
     // 画面の大きさ（向き）が変わると全体の範囲も変わる（大きさを比べるだけなので、その場で確かめる）
@@ -604,7 +656,16 @@ class App {
     this.textLayer.syncTransform(this.view);
     this.clipTextForMagnifier();
 
+    // 全体を見ていて「前の範囲」に戻れるあいだは、その範囲を囲って見せる（札は上のバーに隠れない所へ）
+    const back = this.canGoBack() ? this.backRect : null;
+    // 囲いを描くかどうかは、囲う範囲を決めたときと同じ「見えている範囲」で決める。
+    // 札は左右の安全領域（横向きのノッチ・ダイナミックアイランド）にも掛からないようにする
+    const area = back ? this.visibleArea() : null;
     const state: OverlayState = {
+      backRect: back,
+      backArea: area
+        ? { ...area, labelLeft: this.safeLeft, labelRight: Math.min(area.right, this.cssW - this.safeRight) }
+        : null,
       points: this.points,
       highlight: this.currentHighlight(),
       constraint: this.holding ? this.constraint : null,
@@ -876,6 +937,7 @@ class App {
     const bar = document.getElementById('topbar')?.getBoundingClientRect();
     let bottomEdge = this.cssH;
     let rightEdge = this.cssW;
+    let rightTop = this.cssH;
     const ids: string[] = ['toolbar', 'readout', 'inspect-panel'];
     if (withSheets) ids.push(...SHEETS);
     for (const id of ids) {
@@ -884,13 +946,20 @@ class App {
       const r = node.getBoundingClientRect();
       if (r.width <= 0 || r.height <= 0) continue;
       // 横に広いものは下を、右に寄せた細いもの（横向きのパネル）は右を塞ぐ
-      if (r.width >= this.cssW * 0.6) bottomEdge = Math.min(bottomEdge, r.top);
-      else if (r.left > this.cssW / 2) rightEdge = Math.min(rightEdge, r.left);
+      if (r.width >= this.cssW * 0.6) {
+        bottomEdge = Math.min(bottomEdge, r.top);
+      } else if (r.left + r.width / 2 > this.cssW / 2) {
+        // 右の安全領域が広い機種（横向きの iPhone 14 Pro など）では、右に寄せたパネルの左端が画面の中央より左に来るので、
+        // 左端ではなくパネルの真ん中が右半分にあるかで見分ける
+        rightEdge = Math.min(rightEdge, r.left);
+        rightTop = Math.min(rightTop, r.top);
+      }
     }
     return {
       top: bar && bar.height > 0 ? bar.bottom + 4 : 52,
       bottom: this.cssH - bottomEdge + 8,
       right: rightEdge < this.cssW ? this.cssW - rightEdge + 8 : 0,
+      rightTop,
     };
   }
 

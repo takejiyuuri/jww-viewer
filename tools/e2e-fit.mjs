@@ -5,6 +5,7 @@ import { startServer, projectRoot as root } from './serve.mjs';
 
 const srv = await startServer({ port: 5313, host: false, quiet: true });
 const sample = process.argv[2] || path.join(root, 'samples', 'A棟 11階躯体図2026.5.12提出スリーブ.jww');
+const outDir = process.argv[3] || '.';
 
 const browser = await chromium.launch({
   args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'],
@@ -91,6 +92,133 @@ let detail;
   await page.click('#btn-fit');
   const again = await state();
   check('「全体」と「前の範囲」は何度でも行き来できる', same(again.view, detail) && again.label === '全体', { again: again.view });
+}
+
+/**
+ * オーバーレイで「前の範囲」の橙に近いピクセルの数（範囲を指定すればその中だけ）。
+ * 何も描かないあいだオーバーレイは隠れているので、そのときは画面に出ていない（0）とする
+ */
+const orangeOn = (pg, box) => pg.evaluate((box) => {
+    const a = window.__jww;
+    a.draw();
+    const c = document.getElementById('overlay');
+    if (getComputedStyle(c).visibility === 'hidden') return 0;
+    const k = a.dpr;
+    const x0 = box ? Math.max(0, Math.floor(box.x0 * k)) : 0;
+    const y0 = box ? Math.max(0, Math.floor(box.y0 * k)) : 0;
+    const x1 = box ? Math.min(c.width, Math.ceil(box.x1 * k)) : c.width;
+    const y1 = box ? Math.min(c.height, Math.ceil(box.y1 * k)) : c.height;
+    if (x1 <= x0 || y1 <= y0) return 0;
+    const d = c.getContext('2d').getImageData(x0, y0, x1 - x0, y1 - y0).data;
+    let n = 0;
+    for (let i = 0; i < d.length; i += 4) {
+      if (d[i + 3] > 200 && d[i] > 220 && d[i + 1] > 125 && d[i + 1] < 185 && d[i + 2] < 60) n++;
+    }
+  return n;
+}, box ?? null);
+
+// ---------- 2b. 全体を見ているあいだ、「前の範囲」を囲って見せる ----------
+{
+  const orange = (box) => orangeOn(page, box);
+
+  // 寄せた範囲（パネルとバーに隠れずに見えていた所）を、全体表示の画面の上で求める
+  const d = await page.evaluate(() => {
+    const a = window.__jww;
+    a.fit();
+    a.view.zoom *= 5;
+    a.view.cx -= (40 * a.dpr) / a.view.zoom;
+    a.requestDraw(true);
+    return { view: { ...a.view }, rect: a.visibleRect(a.view) };
+  });
+  const none0 = await orange();
+  await page.click('#btn-fit');
+  const edge = await page.evaluate((r) => {
+    const a = window.__jww;
+    const sx = (x) => ((x - a.view.cx) * a.view.zoom) / a.dpr + a.cssW / 2;
+    const sy = (y) => a.cssH / 2 - ((y - a.view.cy) * a.view.zoom) / a.dpr;
+    return { x0: sx(r.minX), x1: sx(r.maxX), y0: sy(r.maxY), y1: sy(r.minY), kept: a.backRect };
+  }, d.rect);
+  const all = await orange();
+  // 四角の 4 辺のそれぞれの近く（±5px の帯）に橙がある
+  const sides = await Promise.all([
+    orange({ x0: edge.x0 - 5, x1: edge.x0 + 5, y0: edge.y0 + 10, y1: edge.y1 - 10 }),
+    orange({ x0: edge.x1 - 5, x1: edge.x1 + 5, y0: edge.y0 + 10, y1: edge.y1 - 10 }),
+    orange({ x0: edge.x0 + 60, x1: edge.x1 - 10, y0: edge.y0 - 5, y1: edge.y0 + 5 }),
+    orange({ x0: edge.x0 + 10, x1: edge.x1 - 10, y0: edge.y1 - 5, y1: edge.y1 + 5 }),
+  ]);
+  check('全体を見ているあいだ、押す前に見えていた範囲を橙の点線で囲う（4 辺とも押す前の見えていた範囲に一致）',
+    none0 < 10 && all > 200 && sides.every((n) => n > 5) && !!edge.kept, { none0, all, sides, edge: { x0: Math.round(edge.x0), x1: Math.round(edge.x1), y0: Math.round(edge.y0), y1: Math.round(edge.y1) } });
+  await page.screenshot({ path: path.join(outDir, 'e2e-fit-back.png') });
+  // 白い背景でも見える
+  await page.evaluate(() => { const a = window.__jww; a.setDisplay({ ...a.display, background: 'light' }); });
+  const light = await orange();
+  await page.screenshot({ path: path.join(outDir, 'e2e-fit-back-light.png') });
+  await page.evaluate(() => { const a = window.__jww; a.setDisplay({ ...a.display, background: 'dark' }); });
+  check('白い背景でも「前の範囲」の囲いが見える', light > 200, { light });
+  // 戻ると消える
+  await page.click('#btn-fit');
+  const after = await orange();
+  check('「前の範囲」で戻ると囲いは消える', after < 10, { after });
+
+  // とても小さく寄せていても、囲いは見える大きさで出る
+  await page.evaluate(() => { const a = window.__jww; a.view.zoom *= 60; a.requestDraw(true); });
+  await page.click('#btn-fit');
+  const tiny = await page.evaluate(() => {
+    const a = window.__jww;
+    const r = a.backRect;
+    return { w: ((r.maxX - r.minX) * a.view.zoom) / a.dpr, h: ((r.maxY - r.minY) * a.view.zoom) / a.dpr };
+  });
+  const tinyPx = await orange();
+  check('とても小さい範囲に寄せていても、囲いと札が見える', tiny.w < 16 && tinyPx > 60, { tiny, tinyPx });
+  await page.click('#btn-fit');
+
+  // 全体表示から大きく動かしたら囲いは消える
+  await page.evaluate(() => { const a = window.__jww; a.view.zoom *= 5; a.requestDraw(true); });
+  await page.click('#btn-fit');
+  await drag(150, 100);
+  const moved = await orange();
+  check('全体表示から大きく動かしたら囲いは消える', moved < 10, { moved });
+  // 全体より引いて見ていたときは、囲いが画面を覆うだけなので描かない（「前の範囲」には戻れる）
+  await page.evaluate(() => { const a = window.__jww; a.fit(); a.recordFit(); a.view.zoom *= 0.6; a.requestDraw(true); });
+  await state();
+  await page.click('#btn-fit');
+  const wide = await state();
+  const widePx = await orange();
+  check('全体より引いて見ていたときは、囲いで画面を覆わない（「前の範囲」には戻れる）', wide.label === '前の範囲' && widePx < 10, { label: wide.label, widePx });
+  await page.click('#btn-fit');
+
+  // 前の範囲が全体表示の画面の外（図面から離れた何もない所）なら、札だけが浮かばない
+  await page.evaluate(() => {
+    const a = window.__jww;
+    a.fit();
+    a.recordFit();
+    a.view.zoom *= 3;
+    a.view.cy += (3000 * a.dpr) / a.view.zoom;
+    a.requestDraw(true);
+  });
+  await state();
+  await page.click('#btn-fit');
+  const off = await page.evaluate(() => {
+    const a = window.__jww;
+    const r = a.backRect;
+    const sy = (y) => a.cssH / 2 - ((y - a.view.cy) * a.view.zoom) / a.dpr;
+    return { label: document.querySelector('#btn-fit span').textContent, bottom: sy(r.minY) };
+  });
+  const offPx = await orange();
+  check('前の範囲が画面の外なら、囲いも札も出さない', off.label === '前の範囲' && off.bottom < 0 && offPx < 10, { ...off, offPx });
+  await page.click('#btn-fit');
+
+  // 次の検査のために、2 で寄せていた範囲へ戻しておく（戻る先は無し）
+  await page.evaluate((d) => {
+    const a = window.__jww;
+    Object.assign(a.view, d);
+    a.viewBeforeFit = null;
+    a.backRect = null;
+    a.fittedView = null;
+    a.fitBasis = null;
+    a.requestDraw(true);
+  }, detail);
+  await state();
 }
 
 // ---------- 3. 全体を見ながら少し動いただけなら戻れる。大きく動かしたら「全体」に戻る ----------
@@ -364,7 +492,60 @@ for (const [name, opts] of [
 ]) {
   const o = await open(opts);
   await o.page.evaluate(() => { const a = window.__jww; a.view.zoom *= 6; a.requestDraw(true); });
+  const before = await o.page.evaluate(() => {
+    const a = window.__jww;
+    const ro = document.getElementById('readout').getBoundingClientRect();
+    return { rect: a.visibleRect(a.view), cssW: a.cssW, cssH: a.cssH, roLeft: ro.left, roTop: ro.top, view: { ...a.view }, dpr: a.dpr };
+  });
   await o.page.click('#btn-fit');
+  if (name.startsWith('横')) {
+    // 横向きの計測パネルは右下の小さな窓なので、その上は幅いっぱい見えていた
+    const widthCss = ((before.rect.maxX - before.rect.minX) * before.view.zoom) / before.dpr;
+    check(`${name}：右下の小さなパネルの上も見えていたので、前の範囲は画面の幅いっぱい`, Math.abs(widthCss - before.cssW) < 1, { widthCss, cssW: before.cssW, roLeft: before.roLeft, roTop: before.roTop });
+    // 回してから「全体」を押し直すと、囲いは今の画面で「前の範囲」が映す所に合わせ直す
+    await o.page.setViewportSize({ width: 375, height: 667 });
+    await o.page.waitForTimeout(600);
+    await o.page.click('#btn-fit');
+    const re = await o.page.evaluate(() => {
+      const a = window.__jww;
+      const want = a.visibleRect(a.viewBeforeFit);
+      const r = a.backRect;
+      const d = Math.max(Math.abs(r.minX - want.minX), Math.abs(r.maxX - want.maxX), Math.abs(r.minY - want.minY), Math.abs(r.maxY - want.maxY));
+      return { label: document.querySelector('#btn-fit span').textContent, diff: d, w: r.maxX - r.minX, h: r.maxY - r.minY };
+    });
+    check(`${name}：回して「全体」を押し直すと、囲いは今の画面で「前の範囲」が映す所に合う（縦長になる）`, re.label === '前の範囲' && re.diff < 1e-6 && re.h > re.w, re);
+    await o.page.setViewportSize(opts.viewport);
+    await o.page.waitForTimeout(600);
+    await o.page.evaluate(() => { const a = window.__jww; a.fit(); a.recordFit(); a.viewBeforeFit = null; a.backRect = null; a.view.zoom *= 6; a.requestDraw(true); });
+    await o.page.click('#btn-fit');
+  }
+  if (name === '横 667') {
+    // 右下の小さなパネルの上の帯（パネルより右側）に寄せていたときも、その範囲を囲う
+    await o.page.evaluate(() => {
+      const a = window.__jww;
+      a.fit();
+      a.recordFit();
+      a.viewBeforeFit = null;
+      a.backRect = null;
+      const ro = document.getElementById('readout').getBoundingClientRect();
+      const w = a.toWorld(ro.left + 150, 120);
+      a.view = { cx: w.x, cy: w.y, zoom: a.view.zoom * 8 };
+      a.requestDraw(true);
+    });
+    await o.page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+    await o.page.click('#btn-fit');
+    const strip = await o.page.evaluate(() => {
+      const a = window.__jww;
+      const ro = document.getElementById('readout').getBoundingClientRect();
+      const sx = (x) => ((x - a.view.cx) * a.view.zoom) / a.dpr + a.cssW / 2;
+      return { x0: sx(a.backRect.minX), roLeft: ro.left, label: document.querySelector('#btn-fit span').textContent };
+    });
+    const px = await orangeOn(o.page);
+    check(`${name}：右下の小さなパネルの上の帯に寄せていたときも、その範囲を囲う`, strip.label === '前の範囲' && strip.x0 > strip.roLeft && px > 50, { ...strip, px });
+    await o.page.click('#btn-fit');
+    await o.page.evaluate(() => { const a = window.__jww; a.fit(); a.recordFit(); a.view.zoom *= 6; a.requestDraw(true); });
+    await o.page.click('#btn-fit');
+  }
   const fit = await o.page.evaluate(async () => {
     await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
     const b = document.getElementById('btn-fit');
@@ -372,6 +553,32 @@ for (const [name, opts] of [
     return { label: span.textContent, cut: span.scrollWidth > b.clientWidth, w: b.clientWidth, text: span.scrollWidth };
   });
   check(`${name}：「前の範囲」の文字がボタンからはみ出さない`, fit.label === '前の範囲' && !fit.cut, fit);
+  await o.ctx.close();
+}
+
+// ---------- 7. 左右の安全領域が広い横向き（iPhone 14 Pro など、幅 852 で左右 59px）でも、右に寄せたパネルを見分ける ----------
+{
+  const o = await open({ viewport: { width: 852, height: 393 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true });
+  const r = await o.page.evaluate(async () => {
+    const a = window.__jww;
+    // 安全領域を 59px にしたときと同じ並びにする（パネルの左端が画面の中央より左に来る）
+    document.documentElement.style.setProperty('--safe-left', '59px');
+    document.documentElement.style.setProperty('--safe-right', '59px');
+    a.cssW = 0;
+    a.resize();
+    // 属性パネルに図形の属性を出して背の高いパネルにする
+    document.getElementById('btn-tool-inspect').click();
+    for (let i = 0; i < a.scene.entities.count; i++) {
+      if (a.layerMask[a.scene.entities.layer[i]] && a.colorVisible[a.scene.entities.color[i]] && a.scene.entities.text[i] >= 0) { a.select(i); break; }
+    }
+    await new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res)));
+    const p = document.getElementById('inspect-panel').getBoundingClientRect();
+    const ins = a.measureInsets();
+    const area = a.visibleArea();
+    return { panelLeft: p.left, panelTop: p.top, cssW: a.cssW, right: ins.right, areaRight: area.right, safeLeft: a.safeLeft, safeRight: a.safeRight };
+  });
+  check('幅 852・左右 59px の横向きでも、右に寄せたパネルを見分け、その下を前の範囲から外す（札は安全領域に入れない）',
+    r.panelLeft < r.cssW / 2 && r.right > 0 && r.areaRight <= r.panelLeft && r.safeLeft === 59 && r.safeRight === 59, r);
   await o.ctx.close();
 }
 
