@@ -121,12 +121,32 @@ class App {
   /** 属性で長押ししている間、指の下にある図形 */
   private previewEntity = -1;
   private shapeCache: { index: number; shape: Highlight } | null = null;
-  /** 見えている図形での「全体」の範囲。色・レイヤの見え方が同じなら求め直さない */
-  private fitCache: { key: string; bounds: Bounds } | null = null;
+  /**
+   * 見えている図形での「全体」の範囲。色・レイヤの見え方ごとに、最近のものをいくつか覚えておく
+   * （レイヤを隠して戻したときなどに求め直さない）
+   */
+  private fitCache = new Map<string, Bounds>();
   /** 長押しを始めたときの、上下のバー・パネルの幅。拡大鏡をそこに重ねないために使う */
   private insets: Insets = { top: 52, bottom: 104, right: 0 };
   /** 読み込み時に決めた既定の縮尺。「自動」に戻したときに使う */
   private defaultScale = 1;
+  /** 「全体」を押す前の表示。「前の範囲」で戻す */
+  private viewBeforeFit: View | null = null;
+  /**
+   * 全体に合わせた表示（読み込んだときと「全体」を押したとき）。ここからほとんど動かしていないあいだは全体を見ているものとし、
+   * 戻る先があればボタンが「前の範囲」になる
+   */
+  private fittedView: View | null = null;
+  /** 全体に合わせたあと、見えるもの（色・レイヤ）や画面の大きさが変わって、全体の範囲が変わった */
+  private fitStale = false;
+  /** 全体に合わせたときの、見えている図形の範囲と画面の大きさ。全体の範囲が変わったかをこれと比べる */
+  private fitBasis: { bounds: Bounds; w: number; h: number; dpr: number } | null = null;
+  /** 見えるものが変わったあと、全体の範囲が変わったかを少し待ってから確かめるタイマー */
+  private fitCheckTimer = 0;
+  /** いま見えている色番号とレイヤ（全体の範囲を覚えておく鍵） */
+  private visibleKey = '';
+  /** いま「全体」のボタンを「前の範囲」として出しているか */
+  private fitBackShown = false;
 
   // ジェスチャ
   private pointers = new Map<number, { x: number; y: number }>();
@@ -276,7 +296,12 @@ class App {
     this.layerPast = [];
     this.layerFuture = [];
     this.invertOrigin = null;
-    this.fitCache = null;
+    this.fitCache.clear();
+    this.viewBeforeFit = null;
+    this.fittedView = null;
+    this.fitStale = false;
+    this.fitBasis = null;
+    clearTimeout(this.fitCheckTimer);
     this.layers.useCounts(scene.layerCounts);
 
     // 同じ図面を開き直したときは、前に隠していた色とレイヤをそのまま隠す。
@@ -323,6 +348,8 @@ class App {
     this.updateInspect();
     this.buildInfoPanel();
     this.fit();
+    // 読み込んだときの全体表示も全体を見ているものとする（ここで「全体」を押しても戻る先は作らない）
+    this.recordFit();
     const hiddenLayers = this.layers.hiddenCount(scene.layerCounts);
     this.hint(hiddenLayers > 0
       ? `読み込みました。${hiddenLayers} 個のレイヤが非表示です`
@@ -334,18 +361,22 @@ class App {
   /** 見えている図形での「全体」の範囲（色・レイヤの見え方ごとに覚えておく） */
   private visibleFit(): Bounds {
     const scene = this.scene!;
-    const key = `${this.layerMask.join('')}|${this.colorVisible.join('')}`;
-    if (this.fitCache?.key !== key) {
-      const bounds = fitScene(scene, (color, layer) => this.colorVisible[color] === 1 && this.layerMask[layer] === 1);
-      this.fitCache = { key, bounds };
+    const key = this.visibleKey;
+    let bounds = this.fitCache.get(key);
+    if (bounds) {
+      // 使ったものを新しい側へ
+      this.fitCache.delete(key);
+    } else {
+      bounds = fitScene(scene, (color, layer) => this.colorVisible[color] === 1 && this.layerMask[layer] === 1);
+      if (this.fitCache.size >= 4) this.fitCache.delete(this.fitCache.keys().next().value!);
     }
-    return this.fitCache.bounds;
+    this.fitCache.set(key, bounds);
+    return bounds;
   }
 
-  private fit(): void {
-    if (!this.scene) return;
+  /** 図形の範囲 b（既定は見えている図形の範囲）がちょうど収まる表示（いまの画面の大きさとパネルで） */
+  private fitView(b: Bounds = this.visibleFit()): View {
     // 見えている図形（色・レイヤ）だけで範囲を決める。隠したレイヤに残った図形で図面が小さくならないように
-    const b = this.visibleFit();
     // 上のバーと下（横向きでは右）のパネルに隠れない範囲に収める。狭すぎるときは画面全体に
     const ins = this.measureInsets();
     let top = ins.top;
@@ -366,11 +397,147 @@ class App {
     const midY = (top + availH / 2) * this.dpr;
     const cx = (b.minX + b.maxX) / 2 - (midX - (this.cssW * this.dpr) / 2) / zoom;
     const cy = (b.minY + b.maxY) / 2 + (midY - (this.cssH * this.dpr) / 2) / zoom;
-    this.view = Number.isFinite(zoom) && zoom > 0 && Number.isFinite(cx) && Number.isFinite(cy)
+    return Number.isFinite(zoom) && zoom > 0 && Number.isFinite(cx) && Number.isFinite(cy)
       ? { cx, cy, zoom }
       : { cx: 0, cy: 0, zoom: 1 };
+  }
+
+  private fit(): void {
+    if (!this.scene) return;
+    this.view = this.fitView();
     this.textLayer.setTexts(this.scene.texts);
     this.requestDraw(true);
+  }
+
+  /**
+   * 2 つの表示がほとんど同じか（倍率の差が 3% 以内で、中心のずれが画面で 32px 以内）。
+   * 全体を見ているときに指が少し触れて動いた程度なら、同じとみなす
+   */
+  private nearView(a: View, b: View): boolean {
+    const zoomSame = Math.abs(Math.log(a.zoom / b.zoom)) < 0.03;
+    const shift = (Math.hypot(a.cx - b.cx, a.cy - b.cy) * b.zoom) / this.dpr;
+    return zoomSame && shift < 32;
+  }
+
+  /** 全体に合わせた表示（読み込んだときや「全体」を押したとき）から、ほとんど動かしていないか */
+  private stillFitted(): boolean {
+    return this.fittedView !== null && this.nearView(this.view, this.fittedView);
+  }
+
+  /**
+   * 「前の範囲」に戻せるか。「全体」を押してからほとんど動かしておらず、
+   * そのあと見えるもの（色・レイヤ）や画面の大きさ（向き）が変わって全体の範囲が変わってもいないとき
+   */
+  private canGoBack(): boolean {
+    return this.viewBeforeFit !== null && this.stillFitted() && !this.fitStale;
+  }
+
+  /** 全体に合わせた表示と、そのときの図形の範囲・画面の大きさを覚える */
+  private recordFit(): void {
+    if (!this.scene) return;
+    this.fittedView = { ...this.view };
+    this.fitBasis = { bounds: this.visibleFit(), w: this.cssW, h: this.cssH, dpr: this.dpr };
+    this.fitStale = false;
+    clearTimeout(this.fitCheckTimer);
+  }
+
+  /**
+   * 全体の範囲が変わったか（見える色・レイヤで図形の範囲が変わったか、画面の大きさ・向きが変わったか）を確かめる。
+   * 変わっていなければ（範囲の内側のレイヤを隠しただけ、背景を変えただけなど）「前の範囲」のまま。
+   * 変わっていればボタンを「全体」に戻して、押すと合わせ直せるようにする。
+   * 戻る先があって全体を見ているときだけ確かめる（それ以外では使わないので、図形の範囲を求める手間を省く）
+   */
+  private checkFitStale(): void {
+    clearTimeout(this.fitCheckTimer);
+    const basis = this.fitBasis;
+    if (!this.scene || !basis || this.viewBeforeFit === null || !this.stillFitted()) return;
+    if (basis.w !== this.cssW || basis.h !== this.cssH || basis.dpr !== this.dpr) {
+      this.fitStale = true;
+    } else {
+      // パネルの高さは合わせたときと違うことがあるので、どちらもいまのパネルで合わせた表示どうしを比べる
+      this.fitStale = !this.nearView(this.fitView(basis.bounds), this.fitView());
+    }
+    this.requestDraw();
+  }
+
+  /** 見えるものを変えた直後は描き直しを先にして、全体の範囲が変わったかは少し待ってから確かめる */
+  private scheduleFitCheck(): void {
+    clearTimeout(this.fitCheckTimer);
+    if (!this.fitBasis || this.viewBeforeFit === null) return;
+    this.fitCheckTimer = window.setTimeout(() => this.checkFitStale(), 150);
+  }
+
+  /**
+   * 右下のボタン。ふだんは「全体」で、押す前の範囲を覚えてから全体を表示する。
+   * 全体を表示したまま（ほとんど動かさずに）もう一度押すと「前の範囲」として、覚えておいた範囲に戻る
+   */
+  private fitOrBack(): void {
+    if (!this.scene) return;
+    // 見えるものを変えた直後で、まだ確かめていなければここで確かめる
+    this.checkFitStale();
+    if (this.canGoBack()) {
+      this.view = { ...this.viewBeforeFit! };
+      this.viewBeforeFit = null;
+      this.fittedView = null;
+      this.fitBasis = null;
+      this.fitStale = false;
+      // 文字はその場で描き直す（待つと、全体表示のときの小さな文字が一瞬ずれて見える）
+      this.textLayer.render(this.view);
+      this.requestDraw(true);
+      this.updateFitButton();
+      return;
+    }
+    const before = { ...this.view };
+    // 全体を見ていたまま（見えるものや画面の向きが変わって合わせ直すだけ）なら、戻る先は前のまま。
+    // 読み込んだときの全体表示からなら、戻る先はない
+    const wasFitted = this.stillFitted();
+    const keep = this.viewBeforeFit;
+    this.fit();
+    this.textLayer.render(this.view);
+    if (wasFitted) {
+      this.viewBeforeFit = keep;
+    } else {
+      // 動かしたあとでも、ほとんど全体を見ていたなら戻る先はない
+      this.viewBeforeFit = this.nearView(before, this.view) ? null : before;
+    }
+    this.recordFit();
+    this.updateFitButton();
+  }
+
+  /**
+   * 選んだ図形や置いた点をパネルの上に出すための、自動の移動。
+   * 全体を見ていたなら、動かしたあとも全体を見ているものとする（「前の範囲」に戻れるまま）。
+   * 指で動かした分は数えたままにするため、覚えている表示も同じだけずらす
+   */
+  private autoPan(move: () => void): void {
+    const keep = this.stillFitted();
+    const b = { ...this.view };
+    move();
+    if (keep && this.fittedView) {
+      this.fittedView = {
+        ...this.fittedView,
+        cx: this.fittedView.cx + (this.view.cx - b.cx),
+        cy: this.fittedView.cy + (this.view.cy - b.cy),
+      };
+    }
+  }
+
+  /** 「全体」のボタンの表示を、いま戻れるかどうかに合わせる（変わったときだけ書き換える） */
+  private updateFitButton(): void {
+    // 全体の表示から大きく動かしたら、戻る先は忘れる（あとで全体の近くへ戻ってきたときに、古い範囲へ飛ばないように）
+    if (this.fittedView && !this.stillFitted()) {
+      this.viewBeforeFit = null;
+      this.fittedView = null;
+      this.fitBasis = null;
+    }
+    const back = this.canGoBack();
+    if (back === this.fitBackShown) return;
+    this.fitBackShown = back;
+    const btn = el('btn-fit');
+    btn.querySelector('use')?.setAttribute('href', back ? '#i-back' : '#i-fit');
+    const label = btn.querySelector('span');
+    if (label) label.textContent = back ? '前の範囲' : '全体';
+    btn.setAttribute('aria-label', back ? '前の範囲に戻す' : '全体を表示');
   }
 
   private resize(): void {
@@ -390,6 +557,8 @@ class App {
     this.overlay.resize(this.cssW, this.cssH, this.dpr);
     // パネルの幅が変わるので、計測の内訳の詰め方を決め直す
     if (this.scene) this.updateReadout();
+    // 画面の大きさ（向き）が変わると全体の範囲も変わる（大きさを比べるだけなので、その場で確かめる）
+    this.checkFitStale();
     this.requestDraw(true);
   }
 
@@ -412,6 +581,7 @@ class App {
   private draw(): void {
     if (!this.scene) return;
     this.renderer.draw(this.view, this.dpr);
+    this.updateFitButton();
 
     // ルーペの中心は指が触れている場所。吸着先を中心にすると、
     // 吸着先が別の図形に移った瞬間に景色ごと大きく飛んでしまう。
@@ -885,12 +1055,14 @@ class App {
     }
     if (!Number.isFinite(target) || sy <= target) return;
     const topLimit = this.measureInsets().top + m;
-    if (target >= topLimit) {
-      this.view.cy -= (sy - target) * k;
-    } else {
-      // 上へずらすと上のバーに入ってしまう（とても低い横画面）ときだけ、左へ
-      this.view.cx += (sx - (r.left - m)) * k;
-    }
+    this.autoPan(() => {
+      if (target >= topLimit) {
+        this.view.cy -= (sy - target) * k;
+      } else {
+        // 上へずらすと上のバーに入ってしまう（とても低い横画面）ときだけ、左へ
+        this.view.cx += (sx - (r.left - m)) * k;
+      }
+    });
     this.requestDraw(true);
   }
 
@@ -1169,8 +1341,10 @@ class App {
     if (ins.right > 0 && right > limitRight) dx = Math.min(right - limitRight, left - pad);
     if (dy <= 0 && dx <= 0) return;
     // 図形を上（左）へ動かす
-    if (dy > 0) this.view.cy -= dy * k;
-    if (dx > 0) this.view.cx += dx * k;
+    this.autoPan(() => {
+      if (dy > 0) this.view.cy -= dy * k;
+      if (dx > 0) this.view.cx += dx * k;
+    });
   }
 
   /**
@@ -1357,7 +1531,7 @@ class App {
       }
     });
 
-    el('btn-fit').addEventListener('click', () => this.fit());
+    el('btn-fit').addEventListener('click', () => this.fitOrBack());
 
     el('btn-scale').addEventListener('click', () => {
       this.openSheet('info-panel');
@@ -1664,6 +1838,12 @@ class App {
 
       const mask = this.layers.mask();
       this.layerMask = mask;
+      const key = `${mask.join('')}|${visible.join('')}`;
+      // 見える色・レイヤが変わると全体の範囲も変わることがある（背景・単色を変えただけなら確かめない）
+      if (key !== this.visibleKey) {
+        this.visibleKey = key;
+        this.scheduleFitCheck();
+      }
       this.shapeCache = null;
       this.renderer.setLayerVisibility(mask);
       this.textLayer.setLayerVisibility(mask);

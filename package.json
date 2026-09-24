@@ -24,7 +24,8 @@
     "e2e:layers": "node tools/e2e-layers.mjs",
     "verify:inspect": "node tools/verify-inspect.ts samples/*.jww",
     "verify:area": "node tools/verify-area.ts",
-    "e2e:modes": "node tools/e2e-modes.mjs"
+    "e2e:modes": "node tools/e2e-modes.mjs",
+    "e2e:fit": "node tools/e2e-fit.mjs"
   },
   "devDependencies": {
     "playwright": "^1.62.1",

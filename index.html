@@ -121,7 +121,8 @@
   <button id="btn-tool-inspect" class="tool" aria-pressed="false"><svg class="ico"><use href="#i-inspect"/></svg><span>属性</span></button>
   <button id="btn-layers" class="tool"><svg class="ico"><use href="#i-layers"/></svg><span>レイヤ</span></button>
   <button id="btn-display" class="tool"><svg class="ico"><use href="#i-display"/></svg><span>表示</span></button>
-  <button id="btn-fit" class="tool"><svg class="ico"><use href="#i-fit"/></svg><span>全体</span></button>
+  <!-- 「全体」を押すと「前の範囲」に変わり、押す前の範囲に戻せる -->
+  <button id="btn-fit" class="tool" aria-label="全体を表示"><svg class="ico"><use href="#i-fit"/></svg><span>全体</span></button>
 </nav>
 
 <div id="hint" class="hint hidden"></div>
