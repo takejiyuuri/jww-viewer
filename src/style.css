@@ -176,27 +176,38 @@ html.standalone #shell {
 }
 
 /*
- * 計測パネル。下の段（操作）は常に同じ位置。測っているときだけ、その上に長さと内訳の段が出る。
- * 縮尺（左端）と消去（右端）は同じ段の両端に離して置く
+ * 計測パネル。下の段（操作）は常に同じ位置。測っているときだけ、その上に値と内訳、戻す・消去の段が出る。
+ * 縮尺（下の段の左端）と消去（上の段の右端）は離して置く
  */
+.readout {
+  /* 計測の色（main.ts が選んだ色を入れる）。値の数字と色のボタンに使う */
+  --measure: var(--accent);
+}
+
 .readout-top {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
   margin-bottom: 6px;
 }
 
 .readout-top .readout-value {
   flex-shrink: 0;
-  max-width: 62%;
+  max-width: 52%;
+}
+
+.readout-top .icon-btn {
+  flex: none;
+  width: 36px;
 }
 
 .readout-top .detail {
   flex: 1;
   min-width: 0;
   margin: 0;
-  white-space: normal;
+  /* 内訳の中の改行（体積の底面と高さの区切り）はそのまま生かす */
+  white-space: pre-line;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -225,7 +236,7 @@ html.standalone #shell {
 
 /* 縮尺の数字の桁が変わっても、隣の直交が横にずれないよう幅を決めておく */
 .readout-bar #btn-scale {
-  width: 64px;
+  width: 60px;
   padding-left: 4px;
   padding-right: 4px;
   text-align: center;
@@ -238,33 +249,87 @@ html.standalone #shell {
   padding: 7px 10px 7px 8px;
 }
 
-/* 使い方は狭い画面では 2 行まで折り返す（段の高さ 36px に収まる大きさで） */
-.readout-hint {
-  flex: 1;
+/* 体積の内訳が 2 行に収まらないときは「底面」「高さ」の文字を省く（main.ts が決める） */
+.readout-top .detail.compact .lbl {
+  display: none;
+}
+
+/* 点がないときは操作の段だけ */
+.readout.idle .readout-top {
+  display: none;
+}
+
+/* 計測の色のボタン。いまの色の丸を見せる */
+.color-btn {
+  flex: none;
+  width: 36px;
+}
+
+.color-dot {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--measure);
+  box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.55);
+}
+
+/* 白黒は、背景に合わせて白か黒になることを半分ずつで示す */
+.color-dot.mono,
+.color-pop button.mono {
+  background: linear-gradient(135deg, #ffffff 50%, #111318 50%);
+}
+
+.color-btn[aria-expanded="true"] {
+  border-color: var(--fg);
+}
+
+/* 色の一覧。操作の段の上に浮かべる */
+.color-pop {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 8px);
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 9px 10px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: var(--panel-solid);
+}
+
+.color-pop button {
+  appearance: none;
+  flex: 0 1 34px;
   min-width: 0;
-  margin: 0;
-  font-size: 11px;
-  line-height: 1.25;
-  white-space: normal;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  border: 0;
+  padding: 0;
+  background: var(--c);
+  box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.35);
 }
 
-.readout-bar #btn-undo {
-  margin-left: auto;
+.color-pop button.on {
+  box-shadow: 0 0 0 2px var(--panel-solid), 0 0 0 4px var(--fg);
 }
 
-/* 点がないときは操作の段だけ（戻す・消去の場所には使い方を出す） */
-.readout.idle .readout-top,
-.readout.idle #btn-undo,
-.readout.idle #btn-clear {
-  display: none;
+/* 距離・面積・体積。操作の段の残りの幅いっぱいに広げる */
+.readout-bar .mode-seg {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 2px;
+  gap: 2px;
+  border-radius: 10px;
 }
 
-.readout:not(.idle) .readout-hint {
-  display: none;
+.readout-bar .mode-seg button {
+  flex: 1 1 0;
+  min-width: 0;
+  white-space: nowrap;
+  padding: 7px 2px;
+  font-size: 13px;
+  border-radius: 8px;
 }
 
 .icon-btn {
@@ -298,7 +363,7 @@ html.standalone #shell {
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.02em;
-  color: var(--accent);
+  color: var(--measure, var(--accent));
   line-height: 1.1;
 }
 
@@ -396,15 +461,15 @@ body[data-bg="light"] #inspect-panel {
   flex-shrink: 0;
 }
 
-.panel-top-end .chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+/* 属性の見出しの行の、表示を戻る・進むボタン */
+.head-btn {
+  width: 36px;
+  height: 32px;
 }
 
-.small-ico {
-  width: 14px;
-  height: 14px;
+.head-btn .ico {
+  width: 20px;
+  height: 20px;
 }
 
 .inspect-kind {
@@ -1021,8 +1086,8 @@ body[data-bg="light"] .panel {
   opacity: 0.45;
 }
 
-/* ---- 狭い画面（幅 375px 未満）：直交はアイコンだけにして、計測値の幅を空ける ---- */
-@media (max-width: 374px) {
+/* ---- 狭い画面（幅 375px 未満と、パネルを右に寄せる横向きの狭い画面）：直交はアイコンだけにする ---- */
+@media (max-width: 374px), (orientation: landscape) and (max-height: 500px) and (max-width: 700px) {
   .readout-bar .pill .label {
     display: none;
   }
@@ -1032,6 +1097,91 @@ body[data-bg="light"] .panel {
     height: 36px;
     padding: 0;
   }
+
+  /* 値の段も詰めて、内訳の幅を空ける */
+  #readout .readout-top {
+    gap: 6px;
+  }
+
+  #readout .readout-top .readout-value {
+    font-size: 19px;
+    max-width: 48%;
+  }
+
+  #readout .readout-top .detail {
+    font-size: 11px;
+  }
+}
+
+/* ---- 体積の高さを入れる窓 ---- */
+.dialog-wrap {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.dialog {
+  position: absolute;
+  left: 50%;
+  top: calc(var(--safe-top) + 64px);
+  transform: translateX(-50%);
+  width: min(320px, calc(100% - 32px));
+  padding: 16px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: var(--panel-solid);
+}
+
+.dialog-title {
+  font-size: 16px;
+  font-weight: 700;
+  margin-bottom: 2px;
+}
+
+.dialog-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 15px;
+  color: var(--dim);
+}
+
+.dialog-input:focus-within {
+  border-color: var(--accent);
+}
+
+.dialog-input input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--fg);
+  /* 16px 未満だと iOS が入力のたびに画面を拡大する */
+  font: inherit;
+  font-size: 18px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  padding: 10px 0;
+}
+
+.dialog-error {
+  min-height: 18px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: #ff7a7a;
+}
+
+.dialog-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
 }
 
 /* ---- 横向き：パネルを右に寄せて、図面を縦いっぱいに見せる ---- */
@@ -1039,10 +1189,61 @@ body[data-bg="light"] .panel {
   .panel,
   #inspect-panel {
     left: auto;
-    width: min(360px, 48vw);
+    /* 幅の狭い横画面（568px）でも、計測の操作の段が 1 行に収まる幅は取る */
+    width: max(300px, min(360px, 48vw));
     max-height: calc(100% - var(--safe-top) - var(--bar-height) - 6px - 62px);
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
+  }
+
+  /* 計測パネルは 2 段に収まるのでスクロールさせない（上に浮かべる色の一覧が切れないように） */
+  #readout {
+    overflow: visible;
+  }
+
+  /* 右に寄せた幅の狭いパネルでは、値の文字を小さくして内訳の幅を空ける */
+  #readout .readout-value {
+    font-size: 21px;
+  }
+
+  /* 高さを聞く窓は上に寄せ、入力とボタンを横に並べる（横向きのキーボードに「決定」が隠れないように） */
+  .dialog {
+    top: calc(var(--safe-top) + 8px);
+    width: min(480px, calc(100% - 32px));
+    display: grid;
+    /* 入力欄は既定の幅を持っているので、縮められるようにしておかないとボタンが窓からはみ出す */
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: 10px;
+    align-items: center;
+    padding: 12px 16px;
+  }
+
+  .dialog-title,
+  .dialog .sub {
+    grid-column: 1 / -1;
+  }
+
+  .dialog-input {
+    grid-row: 3;
+    grid-column: 1;
+    margin-top: 8px;
+  }
+
+  .dialog-actions {
+    grid-row: 3;
+    grid-column: 2;
+    margin-top: 8px;
+  }
+
+  .dialog-actions .pill {
+    flex: none;
+    padding: 12px 16px;
+  }
+
+  .dialog-error {
+    grid-row: 4;
+    grid-column: 1 / -1;
+    min-height: 0;
   }
 }
 

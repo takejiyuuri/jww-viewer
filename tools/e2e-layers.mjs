@@ -168,11 +168,15 @@ await page.waitForTimeout(250);
     return {
       shown: ['btn-layer-only', 'btn-layer-hide', 'btn-layer-invert'].map((id) => !b(id).classList.contains('hidden')),
       enabled: ['btn-layer-only', 'btn-layer-hide', 'btn-layer-invert'].map((id) => !b(id).disabled),
-      back: !b('btn-layer-back').classList.contains('hidden'),
+      back: !b('btn-layer-undo').disabled,
+      fwd: !b('btn-layer-redo').disabled,
+      arrows: ['btn-layer-undo', 'btn-layer-redo'].map((id) => b(id).getClientRects().length > 0),
     };
   });
   check('何も選んでいなくても操作ボタンは同じ 3 つが並び、「表示を反転」だけが押せる',
-    JSON.stringify(btns.shown) === '[true,true,true]' && JSON.stringify(btns.enabled) === '[false,false,true]' && !btns.back, btns);
+    JSON.stringify(btns.shown) === '[true,true,true]' && JSON.stringify(btns.enabled) === '[false,false,true]', btns);
+  check('戻る・進むは見出しにいつも出ていて、変えるまでは押せない',
+    JSON.stringify(btns.arrows) === '[true,true]' && !btns.back && !btns.fwd, btns);
 }
 
 /** 画面の見えている範囲（上のバーと下のパネルの間） */
@@ -257,7 +261,8 @@ const panel = () => page.evaluate(() => ({
   tag: document.getElementById('inspect-tag').textContent,
   body: document.getElementById('inspect-body').innerText,
   only: !document.getElementById('btn-layer-only').disabled,
-  back: !document.getElementById('btn-layer-back').classList.contains('hidden'),
+  back: !document.getElementById('btn-layer-undo').disabled,
+  fwd: !document.getElementById('btn-layer-redo').disabled,
 }));
 
 // ---------- 5. 線をタップすると属性が出て、図形が目立つ ----------
@@ -315,7 +320,7 @@ await page.waitForTimeout(250);
   }
 }
 
-// ---------- 8. このレイヤだけ表示 → 元に戻す ----------
+// ---------- 8. このレイヤだけ表示 → 戻る → 進む ----------
 if (line) {
   const at = await screenOf(line.wx, line.wy);
   await page.touchscreen.tap(at.x, at.y);
@@ -329,14 +334,19 @@ if (line) {
   const before = await rectsOf();
   await page.click('#btn-layer-only');
   await page.waitForTimeout(300);
+  // もう一度押しても何も変わらないので、戻るの履歴には積まない（戻る 1 回で元に戻る）
+  await page.click('#btn-layer-only');
+  await page.waitForTimeout(200);
   const after = await rectsOf();
   check('「レイヤだけ表示」を押しても操作ボタンは動かない', JSON.stringify(before) === JSON.stringify(after), { before, after });
   const backAt = await page.evaluate(() => {
-    const b = document.getElementById('btn-layer-back').getBoundingClientRect();
     const top = document.querySelector('#inspect-panel .panel-top').getBoundingClientRect();
-    return { inHeader: b.top >= top.top - 1 && b.bottom <= top.bottom + 1, shown: b.width > 0 };
+    return ['btn-layer-undo', 'btn-layer-redo'].map((id) => {
+      const b = document.getElementById(id).getBoundingClientRect();
+      return b.width > 0 && b.top >= top.top - 1 && b.bottom <= top.bottom + 1;
+    });
   });
-  check('「元に戻す」は見出しの行に出る', backAt.inHeader && backAt.shown, backAt);
+  check('戻る・進むは見出しの行にある', JSON.stringify(backAt) === '[true,true]', { backAt });
   // 「全体」はそのレイヤの図形に合う（隠した図形に引きずられて豆粒にならない）
   const fitOnly = await page.evaluate((k) => {
     const a = window.__jww;
@@ -367,28 +377,39 @@ if (line) {
   const ink1 = await inkPixels();
   const p = await panel();
   check('「レイヤだけ表示」でそのレイヤだけが見える', only.wrong === 0 && ink1 < ink0 && ink1 > 0, { ...only, ink0, ink1 });
-  check('選んだ図形は選んだまま、元に戻すが出る', only.selected === line.entity && p.back, p);
+  check('選んだ図形は選んだまま、戻るが押せるようになる（進むは押せない）', only.selected === line.entity && p.back && !p.fwd, p);
   await page.screenshot({ path: path.join(outDir, 'e2e-layers-2-only.png') });
   const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('jww-viewer:hidden') ?? 'null'));
   check('一時的な「レイヤだけ表示」は保存しない', !stored || stored.layers === null || JSON.stringify({ groups: stored.groups, layers: stored.layers }) === JSON.stringify(state0), { stored, state0 });
 
-  await page.click('#btn-layer-back');
+  const onlyState = await layerState();
+  await page.click('#btn-layer-undo');
   await page.waitForTimeout(300);
   const state1 = await layerState();
   const ink2 = await inkPixels();
   const p2 = await panel();
-  check('元に戻すで前の表示に戻る', JSON.stringify(state0) === JSON.stringify(state1) && ink2 === ink0 && !p2.back, { ink0, ink2, back: p2.back });
+  check('戻るで前の表示に戻り、進むが押せるようになる', JSON.stringify(state0) === JSON.stringify(state1) && ink2 === ink0 && !p2.back && p2.fwd, { ink0, ink2, p2 });
+  await page.click('#btn-layer-redo');
+  await page.waitForTimeout(300);
+  const redo = await layerState();
+  const p2b = await panel();
+  check('進むで「レイヤだけ表示」がやり直される', JSON.stringify(redo) === JSON.stringify(onlyState) && p2b.back && !p2b.fwd, { p2b });
+  await page.click('#btn-layer-undo');
+  await page.waitForTimeout(250);
 
-  // ---------- 9. このレイヤを隠す → 元に戻す ----------
+  // ---------- 9. このレイヤを隠す → 戻る ----------
   await page.click('#btn-layer-hide');
   await page.waitForTimeout(300);
   const hid = await page.evaluate((k) => ({ visible: window.__jww.layers.visible(k), selected: window.__jww.selected }), lineLayer);
   const p3 = await panel();
-  check('「レイヤを隠す」で隠れて、選択が外れる', !hid.visible && hid.selected === -1 && p3.back && !p3.only, { hid, p3 });
-  await page.click('#btn-layer-back');
+  check('「レイヤを隠す」で隠れて、選択が外れる。進むの続きは捨てる', !hid.visible && hid.selected === -1 && p3.back && !p3.only && !p3.fwd, { hid, p3 });
+  const stHide = await page.evaluate(() => JSON.parse(localStorage.getItem('jww-viewer:hidden') ?? 'null'));
+  check('属性から隠したものは保存しない', !stHide || stHide.layers === null || JSON.stringify({ groups: stHide.groups, layers: stHide.layers }) === JSON.stringify(state0), { stHide });
+  await page.click('#btn-layer-undo');
   await page.waitForTimeout(250);
   const state2 = await layerState();
-  check('隠したあとも元に戻せる', JSON.stringify(state0) === JSON.stringify(state2), { state0, state2 });
+  const p4 = await panel();
+  check('隠したあとも戻るで戻せて、隠す前に見ていた図形がまた選ばれる', JSON.stringify(state0) === JSON.stringify(state2) && p4.selected === line.entity, { state0, state2, selected: p4.selected });
 }
 
 // ---------- 9b. 表示を反転 ----------
@@ -416,7 +437,14 @@ if (line) {
   await page.waitForTimeout(250);
   const v2 = await seen();
   const p2 = await panel();
-  check('もう一度反転すると元の見え方に戻り、「元に戻す」は消える', v2 === v0 && !p2.back, { v0, v2, back: p2.back });
+  check('もう一度反転すると元の見え方に戻る（反転したことは戻るで辿れる）', v2 === v0 && p2.back, { v0, v2, back: p2.back });
+  await page.click('#btn-layer-undo');
+  await page.waitForTimeout(250);
+  const vBack = await seen();
+  check('戻るで 1 回反転した見え方に戻る', vBack === v1, { v1, vBack });
+  await page.click('#btn-layer-redo');
+  await page.waitForTimeout(250);
+  check('進むで元の見え方に戻る', (await seen()) === v0);
 
   if (line) {
     // このレイヤだけ → 反転で「このレイヤ以外」→ 元に戻す
@@ -434,10 +462,32 @@ if (line) {
       return { wrong };
     }, lineLayer);
     check('「レイヤだけ表示」のあと反転すると、そのレイヤ以外が見える', other.wrong === 0, other);
-    await page.click('#btn-layer-back');
+    await page.click('#btn-layer-undo');
+    await page.waitForTimeout(250);
+    const only2 = await page.evaluate((k) => {
+      const a = window.__jww;
+      let wrong = 0;
+      for (let i = 0; i < 256; i++) if (a.layers.visible(i) !== (i === k)) wrong++;
+      return wrong;
+    }, lineLayer);
+    check('戻るを 1 回押すと「レイヤだけ表示」の見え方に戻る', only2 === 0, { only2 });
+    await page.click('#btn-layer-undo');
     await page.waitForTimeout(250);
     const v3 = await seen();
-    check('元に戻すで、反転する前の最初の見え方に戻る', v3 === v0, { v0, v3 });
+    check('もう 1 回押すと、絞り込む前の見え方に戻る', v3 === v0, { v0, v3 });
+    // 一覧で手を入れると、属性からの変更の履歴は捨てる（そのときの表示がそのまま記録になる）
+    await page.click('#btn-layer-redo');
+    await page.waitForTimeout(200);
+    await page.click('#btn-layers');
+    await page.click('#btn-layer-all');
+    await page.waitForTimeout(200);
+    await page.click('#btn-layer-close');
+    const p5 = await panel();
+    check('レイヤ一覧で変えると、戻る・進むは押せなくなる', !p5.back && !p5.fwd, p5);
+    await page.click('#btn-layers');
+    await page.click('#btn-layer-jw');
+    await page.waitForTimeout(200);
+    await page.click('#btn-layer-close');
   }
 }
 
@@ -716,6 +766,13 @@ await page.waitForTimeout(200);
   });
   check('1 点目をパネルのすぐ上に置いても、点が伸びたパネルに隠れない', s.n === 1 && s.sy !== null && s.sy < s.top, s);
   check('そのときパネルのボタンが押されない（直交のまま・点も消えない）', s.n === 1 && s.ortho === true, s);
+  // 同じ所をすぐにもう一度押す：そこには出てきたばかりの消去ボタンがあるが、押されない
+  const under = await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.closest('button')?.id ?? null, [p0.x, p0.top - 10]);
+  await page.touchscreen.tap(p0.x, p0.top - 10);
+  await page.waitForTimeout(150);
+  const again = await page.evaluate(() => window.__jww.points.length);
+  check('値の段が出た直後に同じ所を押しても、出てきた戻す・消去は押されない', under !== null && again === 1, { under, again });
+  await page.waitForTimeout(500);
 
   // 「戻す」を続けて押す：点がなくなってパネルが縮んでも、2 回目のタップは図面に点を置かない
   const undo = await page.evaluate(() => {
@@ -731,25 +788,17 @@ await page.waitForTimeout(200);
     onPanel: !!document.elementFromPoint(x, y)?.closest('#readout'),
   }), [undo.x, undo.y]);
   check('「戻す」を続けて押しても、図面に点を置かない（戻すの場所はパネルのまま）', n2.n === 0 && n2.onPanel, n2);
+  // 少し経つと値の段をしまって、操作の段だけになる
+  await page.waitForTimeout(900);
+  const folded = await page.evaluate(() => document.getElementById('readout').classList.contains('idle'));
+  check('点がなくなって少し経つと、値の段をしまう', folded);
 
-  // 点を置いても消しても、操作の段（縮尺・直交）は同じ位置のまま
+  // 点を置いても消しても、操作の段（縮尺・直交・色・距離／面積／体積）は同じ位置のまま
   const barAt = () => page.evaluate(() => {
     const r = (id) => { const b = document.getElementById(id).getBoundingClientRect(); return [Math.round(b.left), Math.round(b.top)]; };
-    return { ortho: r('btn-ortho'), scale: r('btn-scale') };
+    return { ortho: r('btn-ortho'), scale: r('btn-scale'), color: r('btn-color'), mode: r('seg-mode') };
   });
   const idleBar = await barAt();
-  // 点がないとき、これから「戻す」「消去」が出る場所を押しても、図面に点は置かれない（使い方の文字がある）
-  const future = await page.evaluate(() => {
-    const r = document.getElementById('readout').getBoundingClientRect();
-    return { x: r.right - 40, y: r.bottom - 22 };
-  });
-  await page.touchscreen.tap(future.x, future.y);
-  await page.waitForTimeout(200);
-  const f = await page.evaluate(([x, y]) => ({
-    n: window.__jww.points.length,
-    hint: document.elementFromPoint(x, y)?.id,
-  }), [future.x, future.y]);
-  check('点がないとき、戻す・消去が出る場所は使い方の文字で、押しても点は置かれない', f.n === 0 && f.hint === 'readout-hint', f);
 
   const mid = await page.evaluate(() => ({ x: window.__jww.cssW / 2, y: 300 }));
   await page.touchscreen.tap(mid.x, mid.y);
@@ -798,7 +847,6 @@ await page.waitForTimeout(200);
     for (let i = 0; i < a.scene.entities.count; i++) {
       if (a.layerMask[a.scene.entities.layer[i]] && a.colorVisible[a.scene.entities.color[i]]) { a.select(i); break; }
     }
-    a.layerSnapshot = a.layers.snapshot();
     a.updateInspect();
     const pills = [...document.querySelectorAll('#inspect-actions .pill')].filter((b) => !b.classList.contains('hidden'));
     const panel = document.getElementById('inspect-panel').getBoundingClientRect();
@@ -846,7 +894,6 @@ await page.waitForTimeout(200);
     const a = window.__jww;
     const t = a.scene.texts.find((x) => a.layerMask[x.layer] && a.colorVisible[x.color]);
     if (t) a.select(t.entity);
-    a.layerSnapshot = a.layers.snapshot();
     a.updateInspect();
     const panel = document.getElementById('inspect-panel').getBoundingClientRect();
     const pills = [...document.querySelectorAll('#inspect-actions .pill')].filter((b) => !b.classList.contains('hidden'));

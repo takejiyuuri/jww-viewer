@@ -31,6 +31,8 @@
     <symbol id="i-ortho" viewBox="0 0 24 24"><path d="M5 4v15h15"/><path d="M5 13.5h5.5V19"/></symbol>
     <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 6 4 11l5 5"/><path d="M4 11h10.5a5 5 0 0 1 0 10H12"/></symbol>
     <symbol id="i-clear" viewBox="0 0 24 24"><path d="M4 7h16"/><path d="M9 7V4.5h6V7"/><path d="M6.2 7l.9 13h9.8l.9-13"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="M5 12.5A7 7 0 1 0 12 5.5H7"/><path d="M9.5 2.5 6.5 5.5l3 3"/></symbol>
+    <symbol id="i-forward" viewBox="0 0 24 24"><path d="M19 12.5A7 7 0 1 1 12 5.5h5"/><path d="m14.5 2.5 3 3-3 3"/></symbol>
   </defs>
 </svg>
 
@@ -50,35 +52,60 @@
 
 <!-- 計測中の結果と操作 -->
 <!--
-  図面を広く見せたいので、点がないときは操作の 1 段だけ、測っているときはその上に長さの段を足す。
-  操作の段は常に同じ位置にあり、点を置いたり消したりしてもボタンが指の下へ動いてこない。
-  縮尺のボタンは左端、消去は右端に置いて、押し間違えないように離す
+  図面を広く見せたいので、点がないときは操作の 1 段だけ、測っているときはその上に値の段を足す。
+  操作の段（縮尺・直交・色・距離／面積／体積）は常に同じ位置にあり、点を置いたり消したりしても動かない。
+  戻す・消去は値の段の右端に置き、縮尺（操作の段の左端）から離す
 -->
 <section id="readout" class="panel readout idle hidden" aria-label="計測">
+  <!-- 色の選択。操作の段の上に浮かべる（パネルの高さは変えない） -->
+  <div id="color-pop" class="color-pop hidden" role="group" aria-label="計測の色"></div>
   <div class="readout-top">
     <span id="readout-value" class="readout-value">—</span>
     <div id="readout-detail" class="detail"></div>
+    <button id="btn-undo" class="icon-btn" aria-label="1 点戻す"><svg class="ico"><use href="#i-undo"/></svg></button>
+    <button id="btn-clear" class="icon-btn" aria-label="すべて消去"><svg class="ico"><use href="#i-clear"/></svg></button>
   </div>
   <div class="readout-bar">
     <button id="btn-scale" class="chip small" aria-label="計測に使う縮尺">1/—</button>
     <button id="btn-ortho" class="pill on" aria-pressed="true" aria-label="水平・垂直に拘束"><svg class="ico"><use href="#i-ortho"/></svg><span class="label">直交</span></button>
-    <div id="readout-hint" class="detail readout-hint">タップで計測、長押しで拡大鏡</div>
-    <button id="btn-undo" class="icon-btn" aria-label="1 点戻す"><svg class="ico"><use href="#i-undo"/></svg></button>
-    <button id="btn-clear" class="icon-btn" aria-label="すべて消去"><svg class="ico"><use href="#i-clear"/></svg></button>
+    <button id="btn-color" class="icon-btn color-btn" aria-label="計測の色" aria-haspopup="true" aria-expanded="false"><span class="color-dot"></span></button>
+    <div id="seg-mode" class="segmented mode-seg" role="group" aria-label="計測の種類">
+      <button data-mode="length" aria-pressed="true" class="on">距離</button>
+      <button data-mode="area" aria-pressed="false">面積</button>
+      <button data-mode="volume" aria-pressed="false">体積</button>
+    </div>
   </div>
 </section>
+
+<!-- 体積の高さを入れる。キーボードに隠れないよう画面の上の方に出す -->
+<div id="height-dialog" class="dialog-wrap hidden">
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="height-title">
+    <div id="height-title" class="dialog-title">体積の高さ</div>
+    <div class="sub">囲んだ面積に掛ける高さ（実寸）</div>
+    <label class="dialog-input">
+      <input id="height-input" type="text" inputmode="decimal" enterkeyhint="done" autocomplete="off" aria-label="高さ（mm）">
+      <span>mm</span>
+    </label>
+    <div id="height-error" class="dialog-error"></div>
+    <div class="dialog-actions">
+      <button id="btn-height-cancel" class="pill">やめる</button>
+      <button id="btn-height-ok" class="pill on">決定</button>
+    </div>
+  </div>
+</div>
 
 <!-- タップした図形の属性 -->
 <!--
   操作ボタンは常に同じ 3 つを同じ位置に置く（図形を選んでいないときは押せないだけ）。
-  「元に戻す」は見出しの行に出して、押したボタンの下へ別のボタンが来ないようにする
+  戻る・進むは見出しの行に置き、押したボタンの下へ別のボタンが来ないようにする
 -->
 <section id="inspect-panel" class="panel hidden" aria-label="属性">
   <div class="panel-top">
     <span id="inspect-kind" class="inspect-kind">属性</span>
     <span class="panel-top-end">
       <span id="inspect-tag" class="tag hidden"></span>
-      <button id="btn-layer-back" class="chip small hidden"><svg class="ico small-ico"><use href="#i-undo"/></svg>元に戻す</button>
+      <button id="btn-layer-undo" class="icon-btn head-btn" aria-label="表示を 1 つ前に戻す" disabled><svg class="ico"><use href="#i-back"/></svg></button>
+      <button id="btn-layer-redo" class="icon-btn head-btn" aria-label="戻した表示をやり直す" disabled><svg class="ico"><use href="#i-forward"/></svg></button>
     </span>
   </div>
   <div id="inspect-body" class="inspect-body"></div>

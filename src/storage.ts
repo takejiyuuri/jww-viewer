@@ -1,4 +1,6 @@
 import { DEFAULT_DISPLAY, type DisplaySettings } from './render/theme.ts';
+import { DEFAULT_MEASURE_COLOR, MEASURE_COLORS } from './measure/colors.ts';
+import { MEASURE_MODES, type MeasureMode } from './measure/measure.ts';
 
 /** 直近に開いた図面を IndexedDB に置いておき、次に開いたときすぐ表示する */
 
@@ -72,6 +74,39 @@ export function saveDisplay(d: DisplaySettings): void {
     localStorage.setItem(DISPLAY_KEY, JSON.stringify(d));
   } catch {
     // 保存できなくても表示には影響しない
+  }
+}
+
+/** 計測の好み（色・種類・体積の高さ）。端末ごとに次回も使う */
+export interface MeasurePrefs {
+  color: string;
+  mode: MeasureMode;
+  /** 体積で面積に掛ける高さ（実寸 mm） */
+  height: number;
+}
+
+const MEASURE_KEY = 'jww-viewer:measure';
+export const DEFAULT_HEIGHT = 1000;
+
+export function loadMeasurePrefs(): MeasurePrefs {
+  const prefs: MeasurePrefs = { color: DEFAULT_MEASURE_COLOR, mode: 'length', height: DEFAULT_HEIGHT };
+  try {
+    const v = JSON.parse(localStorage.getItem(MEASURE_KEY) ?? 'null') as Partial<MeasurePrefs> | null;
+    if (!v) return prefs;
+    if (MEASURE_COLORS.some((c) => c.id === v.color)) prefs.color = v.color as string;
+    if (MEASURE_MODES.includes(v.mode as MeasureMode)) prefs.mode = v.mode as MeasureMode;
+    if (typeof v.height === 'number' && Number.isFinite(v.height) && v.height > 0) prefs.height = v.height;
+  } catch {
+    // 読めなければ既定のまま
+  }
+  return prefs;
+}
+
+export function saveMeasurePrefs(p: MeasurePrefs): void {
+  try {
+    localStorage.setItem(MEASURE_KEY, JSON.stringify(p));
+  } catch {
+    // 保存できなくても計測には影響しない
   }
 }
 

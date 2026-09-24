@@ -1,7 +1,10 @@
 import type { View } from './renderer.ts';
-import type { MeasurePoint } from '../measure/measure.ts';
+import type { MeasureMode, MeasurePoint } from '../measure/measure.ts';
 import type { Axis, SnapResult } from '../measure/snap.ts';
-import { SNAP_LABEL, formatLength, measureLengths } from '../measure/measure.ts';
+import {
+  SNAP_LABEL, formatArea, formatLength, formatVolume, measureArea, measureLengths, polygonCenter,
+} from '../measure/measure.ts';
+import type { MeasureInk } from '../measure/colors.ts';
 import type { Background } from './theme.ts';
 
 /**
@@ -61,10 +64,16 @@ export interface OverlayState {
   scale: number;
   /** 利用者が縮尺を選んでいて、すべての区間をその縮尺で測る */
   fixedScale: boolean;
+  /** 距離・面積・体積のどれを測っているか */
+  mode: MeasureMode;
+  /** 体積で面積に掛ける高さ（実寸 mm） */
+  height: number;
+  /** 計測の印・線・数字の色 */
+  ink: MeasureInk;
 }
 
+/** 属性で見ている図形を目立たせる色 */
 const ACCENT = '#35d07f';
-const ACCENT_SOFT = 'rgba(53, 208, 127, 0.85)';
 
 export class Overlay {
   private ctx: CanvasRenderingContext2D;
@@ -133,10 +142,14 @@ export class Overlay {
       this.drawHighlight(s.highlight, (x, y) => this.toScreen(view, x, y), k);
     }
 
+    const ink = s.ink;
+    // 面積・体積では、3 点以上で最後の点から最初の点へ戻して囲む
+    const closed = s.mode !== 'length' && pts.length >= 3;
+
     // 直交拘束の基準線。この線の上だけを動くことを示す
     if (s.constraint) {
       const [cx, cy] = this.toScreen(view, s.constraint.x, s.constraint.y);
-      ctx.strokeStyle = 'rgba(53, 208, 127, 0.38)';
+      ctx.strokeStyle = ink.guide;
       ctx.lineWidth = 1 * k;
       ctx.setLineDash([9 * k, 7 * k]);
       ctx.beginPath();
@@ -151,31 +164,64 @@ export class Overlay {
       ctx.setLineDash([]);
     }
 
-    // 測線
+    // 囲んだ範囲を薄く塗る
+    if (closed) {
+      ctx.fillStyle = ink.fill;
+      ctx.beginPath();
+      ctx.moveTo(pts[0][0], pts[0][1]);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // 測線。囲むときの最後の点から最初の点へ戻る辺は点線にして、置いた辺と見分ける
     if (pts.length >= 2) {
-      ctx.strokeStyle = ACCENT_SOFT;
+      ctx.strokeStyle = ink.line;
       ctx.lineWidth = 2 * k;
       ctx.setLineDash([]);
       ctx.beginPath();
       ctx.moveTo(pts[0][0], pts[0][1]);
       for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
       ctx.stroke();
+      if (closed) {
+        ctx.setLineDash([7 * k, 6 * k]);
+        ctx.beginPath();
+        ctx.moveTo(pts[pts.length - 1][0], pts[pts.length - 1][1]);
+        ctx.lineTo(pts[0][0], pts[0][1]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
     }
 
-    // 区間の長さ。下の計測結果と同じく、区間ごとに両端が乗っている図の縮尺で実寸に直す
+    // 辺の長さ。下の計測結果と同じ縮尺で実寸に直す
+    // （距離は区間ごとに両端が乗っている図の縮尺、面積・体積は囲んだ範囲全体で一つの縮尺）
     if (pts.length >= 2) {
-      const { segments } = measureLengths(s.points, s.scale, s.fixedScale);
-      for (let i = 1; i < pts.length; i++) {
-        const mx = (pts[i - 1][0] + pts[i][0]) / 2;
-        const my = (pts[i - 1][1] + pts[i][1]) / 2;
-        this.pill(mx, my, formatLength(segments[i - 1]), k);
+      const n = pts.length;
+      const edges = s.mode === 'length'
+        ? measureLengths(s.points, s.scale, s.fixedScale).segments
+        : measureArea(s.points, s.scale, s.fixedScale).edges;
+      for (let i = 0; i < edges.length; i++) {
+        // 同じ所に重ねた点のあいだ（長さ 0）は、印の上に「0.0 mm」が重なるだけなので出さない
+        if (!(edges[i] > 1e-6)) continue;
+        const a = pts[i];
+        const b = pts[(i + 1) % n];
+        this.pill((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, formatLength(edges[i]), k, ink);
       }
     }
 
     // 確定した点。動かしている点は大きく描く
     for (let i = 0; i < pts.length; i++) {
       const strong = i === s.activeIndex || (s.activeIndex === null && i === pts.length - 1);
-      this.marker(pts[i][0], pts[i][1], k, strong);
+      this.marker(pts[i][0], pts[i][1], k, strong, ink);
+    }
+
+    // 面積・体積の値は、囲んだ範囲の真ん中に大きめに出す（辺の長さより手前に）
+    if (closed) {
+      const m = measureArea(s.points, s.scale, s.fixedScale);
+      const c = polygonCenter(s.points);
+      const [cx, cy] = this.toScreen(view, c.x, c.y);
+      const text = s.mode === 'volume' ? formatVolume(m.area * s.height) : formatArea(m.area);
+      this.pill(cx, cy, text, k, ink, true);
     }
 
     // 長押し中のプレビュー
@@ -192,9 +238,9 @@ export class Overlay {
       ctx.stroke();
       ctx.setLineDash([]);
 
-      this.marker(px, py, k, true);
+      this.marker(px, py, k, true, ink);
       if (s.preview.kind !== 'free') {
-        this.pill(px, py - 26 * k, SNAP_LABEL[s.preview.kind], k, true);
+        this.pill(px, py - 26 * k, SNAP_LABEL[s.preview.kind], k, null);
       }
     }
 
@@ -270,10 +316,11 @@ export class Overlay {
             ctx.lineTo(sx, sy + 13 * k);
             ctx.stroke();
           };
-          ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+          // 縁取りは印と反対の明るさにする（白黒の黒でも埋もれないように）
+          ctx.strokeStyle = ink.label;
           ctx.lineWidth = 4.5 * k;
           cross();
-          ctx.strokeStyle = ACCENT;
+          ctx.strokeStyle = ink.stroke;
           ctx.lineWidth = 1.6 * k;
           cross();
           ctx.beginPath();
@@ -352,14 +399,14 @@ export class Overlay {
     }
   }
 
-  private marker(x: number, y: number, k: number, strong: boolean): void {
+  private marker(x: number, y: number, k: number, strong: boolean, ink: MeasureInk): void {
     const ctx = this.ctx;
     const r = (strong ? 8 : 6) * k;
     ctx.beginPath();
     ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(11,12,16,0.65)';
+    ctx.fillStyle = ink.dot;
     ctx.fill();
-    ctx.strokeStyle = ACCENT;
+    ctx.strokeStyle = ink.stroke;
     ctx.lineWidth = (strong ? 2.4 : 1.8) * k;
     ctx.stroke();
     ctx.beginPath();
@@ -370,15 +417,26 @@ export class Overlay {
     ctx.stroke();
   }
 
-  private pill(x: number, y: number, text: string, k: number, muted = false): void {
+  /**
+   * 数字などのラベル。ink が null なら控えめな色（吸着先の種類）。
+   * big は面積・体積の値で、辺の長さより大きく太く、縁も付けて目立たせる
+   */
+  private pill(x: number, y: number, text: string, k: number, ink: MeasureInk | null, big = false): void {
     const ctx = this.ctx;
-    ctx.font = `${12 * k}px -apple-system, "Hiragino Sans", system-ui, sans-serif`;
-    const w = ctx.measureText(text).width + 12 * k;
-    const h = 20 * k;
-    ctx.fillStyle = muted ? 'rgba(0,0,0,0.7)' : 'rgba(11,12,16,0.88)';
+    ctx.font = big
+      ? `600 ${14 * k}px -apple-system, "Hiragino Sans", system-ui, sans-serif`
+      : `${12 * k}px -apple-system, "Hiragino Sans", system-ui, sans-serif`;
+    const w = ctx.measureText(text).width + (big ? 18 : 12) * k;
+    const h = (big ? 26 : 20) * k;
+    ctx.fillStyle = ink ? ink.label : 'rgba(0,0,0,0.7)';
     this.roundRect(x - w / 2, y - h / 2, w, h, h / 2);
     ctx.fill();
-    ctx.fillStyle = muted ? '#c9cfda' : ACCENT;
+    if (big && ink) {
+      ctx.strokeStyle = ink.stroke;
+      ctx.lineWidth = 1.5 * k;
+      ctx.stroke();
+    }
+    ctx.fillStyle = ink ? ink.text : '#c9cfda';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(text, x, y + 0.5 * k);

@@ -80,3 +80,152 @@ export function measureLengths(points: MeasurePoint[], fallback: number, fixed =
   }
   return { segments, scales, total: segments.reduce((x, y) => x + y, 0), mixed };
 }
+
+/** 計測の種類。距離は点を結んだ長さ、面積は点で囲んだ範囲、体積はその面積に高さを掛けたもの */
+export type MeasureMode = 'length' | 'area' | 'volume';
+
+export const MEASURE_MODES: MeasureMode[] = ['length', 'area', 'volume'];
+
+export interface AreaMeasured {
+  /** 実寸の面積(mm²)。3 点未満なら 0 */
+  area: number;
+  /** 外周(mm)。最後の点から最初の点へ戻る辺を含む（2 点なら往復せず 1 辺だけ） */
+  perimeter: number;
+  /** 辺ごとの実寸(mm)。3 点以上なら最後は最後の点から最初の点へ戻る辺 */
+  edges: number[];
+  /** 使った縮尺の分母。面積は図形全体を一つの縮尺で測る */
+  scale: number;
+  /** 縮尺の異なるレイヤグループの点が混じっている */
+  mixed: boolean;
+  /** 辺どうしが交差している（面積が意図した範囲と違う） */
+  crossing: boolean;
+}
+
+/**
+ * 点で囲んだ範囲の面積と外周。
+ * 面積は辺ごとに縮尺を変えられないので、点が乗った図形の縮尺が一つにそろっていればそれを、
+ * 分からなければ fallback を使う。縮尺の違う点が混じっていれば fallback で測って mixed にする。
+ * fixed なら、利用者が選んだ縮尺 fallback で測る。
+ */
+export function measureArea(points: MeasurePoint[], fallback: number, fixed = false): AreaMeasured {
+  let scale = fallback;
+  let mixed = false;
+  if (!fixed) {
+    const known = new Set<number>();
+    for (const p of points) if (p.scale != null) known.add(p.scale);
+    if (known.size === 1) scale = [...known][0];
+    else if (known.size > 1) mixed = true;
+  }
+  const n = points.length;
+  const edges: number[] = [];
+  const count = n >= 3 ? n : n - 1;
+  for (let i = 0; i < count; i++) {
+    const a = points[i];
+    const b = points[(i + 1) % n];
+    edges.push(Math.hypot(b.x - a.x, b.y - a.y) * scale);
+  }
+  // 靴ひもの公式。図面座標のまま求め、縮尺の 2 乗を掛けて実寸にする
+  let twice = 0;
+  if (n >= 3) {
+    // 座標が大きくても桁落ちしないよう、最初の点を原点にして足す
+    const ox = points[0].x;
+    const oy = points[0].y;
+    for (let i = 1; i + 1 < n; i++) {
+      const ax = points[i].x - ox, ay = points[i].y - oy;
+      const bx = points[i + 1].x - ox, by = points[i + 1].y - oy;
+      twice += ax * by - bx * ay;
+    }
+  }
+  return {
+    area: (Math.abs(twice) / 2) * scale * scale,
+    perimeter: edges.reduce((x, y) => x + y, 0),
+    edges,
+    scale,
+    mixed,
+    crossing: n >= 4 && edgesCross(points),
+  };
+}
+
+/** 閉じた多角形の、隣り合わない辺どうしが交わっているか */
+function edgesCross(p: MeasurePoint[]): boolean {
+  const n = p.length;
+  const side = (a: MeasurePoint, b: MeasurePoint, c: MeasurePoint): number =>
+    Math.sign((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x));
+  for (let i = 0; i < n; i++) {
+    const a = p[i], b = p[(i + 1) % n];
+    for (let j = i + 2; j < n; j++) {
+      // 最初の辺と最後の辺は隣どうし
+      if (i === 0 && j === n - 1) continue;
+      const c = p[j], d = p[(j + 1) % n];
+      const s1 = side(a, b, c), s2 = side(a, b, d);
+      const s3 = side(c, d, a), s4 = side(c, d, b);
+      // 端が相手の辺にちょうど乗っているだけの場合は交差としない
+      if (s1 * s2 < 0 && s3 * s4 < 0) return true;
+    }
+  }
+  return false;
+}
+
+/** 面積の重心（ラベルを置く場所）。面積がほとんどなければ点の平均 */
+export function polygonCenter(points: ReadonlyArray<{ x: number; y: number }>): { x: number; y: number } {
+  const n = points.length;
+  let sx = 0, sy = 0;
+  for (const p of points) { sx += p.x; sy += p.y; }
+  const mean = { x: sx / Math.max(n, 1), y: sy / Math.max(n, 1) };
+  if (n < 3) return mean;
+  const ox = points[0].x, oy = points[0].y;
+  let a2 = 0, cx = 0, cy = 0;
+  for (let i = 0; i < n; i++) {
+    const ax = points[i].x - ox, ay = points[i].y - oy;
+    const b = points[(i + 1) % n];
+    const bx = b.x - ox, by = b.y - oy;
+    const cross = ax * by - bx * ay;
+    a2 += cross;
+    cx += (ax + bx) * cross;
+    cy += (ay + by) * cross;
+  }
+  // 周の長さに比べて面積がほとんどない（一直線に並んでいる）ときは、重心が遠くへ飛ぶので使わない
+  let per = 0;
+  for (let i = 0; i < n; i++) {
+    const b = points[(i + 1) % n];
+    per += Math.hypot(b.x - points[i].x, b.y - points[i].y);
+  }
+  if (!(Math.abs(a2) > per * per * 1e-6)) return mean;
+  const c = { x: ox + cx / (3 * a2), y: oy + cy / (3 * a2) };
+  // 辺が交差して面積が打ち消し合うと、重心が点の範囲の外へ飛ぶことがある。そのときも点の平均にする
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of points) {
+    minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+    minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+  }
+  return c.x >= minX && c.x <= maxX && c.y >= minY && c.y <= maxY ? c : mean;
+}
+
+/** 実寸 mm² を読みやすい文字列にする（0.01 m² 以上は m²） */
+export function formatArea(mm2: number): string {
+  if (Math.abs(mm2) >= 1e4) return `${(mm2 / 1e6).toFixed(3)} m²`;
+  return `${mm2.toFixed(1)} mm²`;
+}
+
+/**
+ * 実寸 mm³ を読みやすい文字列にする（0.01 m³ 以上は m³、それより小さければ cm³）。
+ * 面積と同じく 0.01 で区切る（m³ の小数 3 桁では、0.01 m³ 未満は有効数字が 1 桁になってしまう）
+ */
+export function formatVolume(mm3: number): string {
+  if (Math.abs(mm3) >= 1e7) return `${(mm3 / 1e9).toFixed(3)} m³`;
+  return `${(mm3 / 1e3).toFixed(1)} cm³`;
+}
+
+/**
+ * 入力された長さ（mm）を数にする。桁区切りのカンマや全角の数字も受け付ける。
+ * 0 以下や大きすぎる値（10 km 以上）は null
+ */
+export function parseLength(text: string): number | null {
+  const s = text
+    .replace(/[０-９．]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+    .replace(/[,，\s]/g, '')
+    .replace(/mm$/i, '');
+  if (!/^\d*\.?\d+$|^\d+\.$/.test(s)) return null;
+  const v = Number(s);
+  return Number.isFinite(v) && v > 0 && v < 1e7 ? v : null;
+}

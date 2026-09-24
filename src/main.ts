@@ -5,11 +5,13 @@ import type { Scene } from './render/geometry.ts';
 import type { LoadResponse, LoadedInfo } from './jww/worker.ts';
 import { SnapIndex, type Axis, type SnapResult } from './measure/snap.ts';
 import {
-  SNAP_LABEL, formatLength, measureLengths,
-  type MeasurePoint,
+  MEASURE_MODES, SNAP_LABEL, formatArea, formatLength, formatVolume, measureArea, measureLengths, parseLength,
+  type MeasureMode, type MeasurePoint,
 } from './measure/measure.ts';
+import { MEASURE_COLORS, measureColor, measureInk } from './measure/colors.ts';
 import {
-  loadDisplay, loadLast, loadViewState, saveDisplay, saveLast, saveViewState,
+  loadDisplay, loadLast, loadMeasurePrefs, loadViewState, saveDisplay, saveLast, saveMeasurePrefs, saveViewState,
+  type MeasurePrefs,
 } from './storage.ts';
 import {
   BACKGROUND_RGB, buildPalette, displayColor, type DisplaySettings,
@@ -43,6 +45,15 @@ interface Insets {
 type Sheet = 'info-panel' | 'display-panel' | 'layer-panel';
 const SHEETS: Sheet[] = ['info-panel', 'display-panel', 'layer-panel'];
 
+/** 属性からの表示の変更の履歴の 1 段。そのときのレイヤの状態と、見ていた図形 */
+interface LayerStep {
+  layers: LayerSnapshot;
+  selected: number;
+}
+
+/** 属性からの表示の変更を覚えておく数 */
+const LAYER_HISTORY = 50;
+
 const el = <T extends HTMLElement>(id: string): T => {
   const node = document.getElementById(id);
   if (!node) throw new Error(`要素が見つかりません: ${id}`);
@@ -74,6 +85,14 @@ class App {
   private constraint: { x: number; y: number; axis: Axis } | null = null;
   private measureScale = 1;
   private manualScale = false;
+  /** 計測の色・種類（距離・面積・体積）・体積の高さ。端末ごとの好みとして次回も使う */
+  private measurePrefs: MeasurePrefs = loadMeasurePrefs();
+  /** 値の段が出た時刻。出た直後に続けて押したタップで、戻す・消去が押されないようにする */
+  private topShownAt = 0;
+  /** 戻す・消去で点がなくなったあと、値の段をしまうまでのタイマー */
+  private idleTimer = 0;
+  /** 色の一覧を閉じるために図面に触れた。このタップでは点を置かない */
+  private swallowTap = false;
 
   /** 背景の白黒と単色表示。端末ごとの好みとして次回も使う */
   private display: DisplaySettings = loadDisplay();
@@ -81,8 +100,12 @@ class App {
   private hiddenGroups = new Set<number>();
   /** レイヤグループ・レイヤの表示状態 */
   private layers = new LayerVisibility();
-  /** 属性から「このレイヤだけ表示」「隠す」をする前の状態。「元に戻す」で戻す */
-  private layerSnapshot: LayerSnapshot | null = null;
+  /**
+   * 属性からの表示の変更（レイヤだけ表示・隠す・反転）の履歴。戻る・進むで行き来する。
+   * layerPast[0] は属性から変える前の状態で、図面ごとの記録にはこの状態を残す
+   */
+  private layerPast: LayerStep[] = [];
+  private layerFuture: LayerStep[] = [];
   /** 反転を続けて押す前の状態。反転で同じ見え方に戻ったら、グループの持ち方まで元どおりにするのに使う */
   private invertOrigin: LayerSnapshot | null = null;
   /** レイヤ一覧で開いているグループ */
@@ -153,6 +176,7 @@ class App {
     window.setTimeout(() => this.resize(), 1200);
 
     this.applyDisplay();
+    this.buildMeasureControls();
     void this.restoreLast();
   }
 
@@ -249,7 +273,8 @@ class App {
     this.selected = -1;
     this.previewEntity = -1;
     this.shapeCache = null;
-    this.layerSnapshot = null;
+    this.layerPast = [];
+    this.layerFuture = [];
     this.invertOrigin = null;
     this.fitCache = null;
     this.layers.useCounts(scene.layerCounts);
@@ -363,6 +388,8 @@ class App {
     this.renderer.resize(this.cssW, this.cssH, this.dpr);
     this.textLayer.resize(this.cssW, this.cssH, this.dpr);
     this.overlay.resize(this.cssW, this.cssH, this.dpr);
+    // パネルの幅が変わるので、計測の内訳の詰め方を決め直す
+    if (this.scene) this.updateReadout();
     this.requestDraw(true);
   }
 
@@ -418,6 +445,9 @@ class App {
       magnifierView: magView ? { ...magView, dpr: this.dpr } : null,
       scale: this.measureScale,
       fixedScale: this.manualScale,
+      mode: this.measurePrefs.mode,
+      height: this.measurePrefs.height,
+      ink: measureInk(this.measurePrefs.color, this.display.background),
     };
     this.overlay.render(this.view, state);
   }
@@ -498,6 +528,8 @@ class App {
       this.moved = 0;
       clearTimeout(this.holdTimer);
 
+      // 色の一覧を閉じるためのタッチは、図面を動かすだけにする（点をつまんだり、長押しで置いたりしない）
+      if (this.swallowTap) return;
       // 置いた点をつまんだなら、その場で動かし始める
       const grabbed = this.tool === 'measure' ? this.hitPoint(e.clientX, e.clientY) : null;
       if (grabbed !== null) {
@@ -578,8 +610,8 @@ class App {
 
     clearTimeout(this.holdTimer);
     const quick = performance.now() - this.downAt < 400;
-    // 2 本以上触れていた操作はピンチなので、点を打たない
-    if (this.pointers.size === 0 && this.maxPointers === 1 && quick && this.moved < 9) {
+    // 2 本以上触れていた操作はピンチなので、点を打たない。色の一覧を閉じるためのタップでも打たない
+    if (this.pointers.size === 0 && this.maxPointers === 1 && quick && this.moved < 9 && !this.swallowTap) {
       if (this.tool === 'inspect') {
         this.select(this.pickAt(e.clientX, e.clientY));
       } else {
@@ -604,6 +636,7 @@ class App {
     if (this.pointers.size === 0) {
       this.maxPointers = 0;
       this.moved = 0;
+      this.swallowTap = false;
     }
   }
 
@@ -811,6 +844,13 @@ class App {
 
   private addPoint(hit: SnapResult): void {
     const p = this.toMeasurePoint(hit);
+    // 面積・体積は最後の点から最初の点へ自動でつなぐので、最初の点に戻ってきた点は足さない
+    const first = this.points[0];
+    if (this.measurePrefs.mode !== 'length' && this.points.length >= 3 && first
+      && Math.hypot(p.x - first.x, p.y - first.y) <= 1e-9 * Math.max(1, Math.abs(first.x), Math.abs(first.y))) {
+      this.hint('最初の点に戻ったので、ここで囲みます');
+      return;
+    }
 
     // 最初の点が乗ったレイヤグループの縮尺を既定にする
     if (!this.manualScale && this.points.length === 0 && p.scale != null) {
@@ -854,16 +894,24 @@ class App {
     this.requestDraw(true);
   }
 
-  private updateReadout(): void {
+  /**
+   * 計測パネルの表示を点に合わせる。
+   * fromButton は戻す・消去で点を減らしたとき（点がなくなっても値の段を少しのあいだ残す）
+   */
+  private updateReadout(fromButton = false): void {
     const value = el('readout-value');
     const detail = el('readout-detail');
     const scale = el('btn-scale');
     const n = this.points.length;
     el<HTMLButtonElement>('btn-undo').disabled = n === 0;
     el<HTMLButtonElement>('btn-clear').disabled = n === 0;
-    // 点がないときは操作の段だけにして、図面を広く見せる。
-    // 操作の段は動かないので、「戻す」を続けて押してもボタンが指の下から逃げない
-    el('readout').classList.toggle('idle', n === 0);
+    this.setIdle(n === 0, fromButton);
+    detail.classList.remove('compact');
+
+    if (this.measurePrefs.mode !== 'length') {
+      this.updateAreaReadout();
+      return;
+    }
 
     if (n < 2) {
       value.textContent = '—';
@@ -897,6 +945,157 @@ class App {
         : `${SNAP_LABEL[a.kind]} → ${SNAP_LABEL[b.kind]}`;
     }
     detail.textContent = warn + text;
+  }
+
+  /** 面積・体積のときの計測パネル */
+  private updateAreaReadout(): void {
+    const value = el('readout-value');
+    const detail = el('readout-detail');
+    const n = this.points.length;
+    const volume = this.measurePrefs.mode === 'volume';
+    const height = this.measurePrefs.height;
+    const m = measureArea(this.points, this.measureScale, this.manualScale);
+    // 囲んだ範囲全体に使った縮尺
+    el('btn-scale').textContent = `1/${formatScale(m.scale)}`;
+
+    if (n < 3) {
+      value.textContent = '—';
+      if (n === 0) {
+        detail.textContent = '';
+      } else if (n === 1) {
+        detail.textContent = `1 点目は${SNAP_LABEL[this.points[0].kind]}。${volume ? '底面' : '囲む範囲'}の角を順にタップしてください`;
+      } else {
+        detail.textContent = volume
+          ? `あと 1 点で体積を出します（高さ ${formatLength(height)}）`
+          : `あと 1 点で面積を出します（辺 ${formatLength(m.edges[0])}）`;
+      }
+      return;
+    }
+
+    // 注意は、2 行に切り詰めても消えないように先頭に置く
+    const warn = (m.mixed ? '※縮尺の違う図をまたいでいます　' : '') + (m.crossing ? '※辺が交差しています　' : '');
+    if (volume) {
+      value.textContent = formatVolume(m.area * height);
+      // 底面と高さは行を分ける。2 行に収まらなければ「底面」「高さ」の文字を省いて（m² × m で分かる）、値を切らさない
+      detail.innerHTML = `${escapeHtml(warn)}<span class="lbl">底面 </span>${formatArea(m.area)}\n× <span class="lbl">高さ </span>${formatLength(height)}`;
+      if (detail.scrollHeight > detail.clientHeight + 1) detail.classList.add('compact');
+    } else {
+      value.textContent = formatArea(m.area);
+      // 数と「点」が別の行に分かれないようにつなぐ
+      detail.textContent = `${warn}外周 ${formatLength(m.perimeter)} ／ ${n}\u00a0点`;
+    }
+  }
+
+  /**
+   * 点がないときは値の段をしまって、操作の段だけにする（図面を広く見せる）。操作の段は動かない。
+   * 戻す・消去で点がなくなったときは少し待ってからしまう。続けて押したタップが、
+   * 縮んだパネルの外（図面）に当たって点を置いてしまわないように
+   */
+  private setIdle(idle: boolean, delayed: boolean): void {
+    const box = el('readout');
+    clearTimeout(this.idleTimer);
+    if (!idle) {
+      if (box.classList.contains('idle')) {
+        box.classList.remove('idle');
+        this.topShownAt = performance.now();
+      }
+      return;
+    }
+    if (delayed && !box.classList.contains('idle')) {
+      this.idleTimer = window.setTimeout(() => {
+        if (this.points.length === 0) box.classList.add('idle');
+      }, 1000);
+    } else {
+      box.classList.add('idle');
+    }
+  }
+
+  /** 値の段が出た直後か。図面へのタップに続けて同じ所を押しても、出てきた戻す・消去は押さない */
+  private topJustShown(): boolean {
+    return performance.now() - this.topShownAt < 450;
+  }
+
+  /** 計測の色・種類のボタンを、いまの好みに合わせる */
+  private buildMeasureControls(): void {
+    const p = this.measurePrefs;
+    const c = measureColor(p.color);
+    // 白黒のときパネル（いつも暗い）の数字は白にする
+    el('readout').style.setProperty('--measure', c.hex ?? '#f2f4f8');
+    el('btn-color').querySelector('.color-dot')?.classList.toggle('mono', !c.hex);
+    el('btn-color').setAttribute('aria-label', `計測の色（${c.name}）`);
+    for (const b of el('color-pop').querySelectorAll<HTMLButtonElement>('button')) {
+      const on = b.dataset.color === c.id;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-pressed', String(on));
+    }
+    for (const b of el('seg-mode').querySelectorAll<HTMLButtonElement>('button')) {
+      const on = b.dataset.mode === p.mode;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-pressed', String(on));
+    }
+  }
+
+  private setMeasurePrefs(next: MeasurePrefs): void {
+    this.measurePrefs = next;
+    saveMeasurePrefs(next);
+    this.buildMeasureControls();
+    this.updateReadout();
+    this.requestDraw();
+  }
+
+  private toggleColors(open = el('color-pop').classList.contains('hidden')): void {
+    // 値の段をしまう待ち時間の途中なら、先にしまう（開いた一覧があとから下へずれないように）
+    if (open && this.points.length === 0) {
+      clearTimeout(this.idleTimer);
+      el('readout').classList.add('idle');
+    }
+    el('color-pop').classList.toggle('hidden', !open);
+    el('btn-color').setAttribute('aria-expanded', String(open));
+  }
+
+  /**
+   * 距離・面積・体積を切り替える。置いた点はそのまま使う（結んだ線を囲んだ範囲として測り直す）。
+   * 体積は高さが要るので、選んだとき（選んであるときにもう一度押したときも）高さを聞く
+   */
+  private setMode(mode: MeasureMode): void {
+    const changed = mode !== this.measurePrefs.mode;
+    if (changed) this.setMeasurePrefs({ ...this.measurePrefs, mode });
+    if (mode === 'volume') {
+      this.openHeightDialog();
+    } else if (changed) {
+      this.hint(mode === 'area' ? '囲む範囲の角を順にタップすると面積を出します' : 'タップした点を結んだ長さを出します');
+    }
+  }
+
+  private openHeightDialog(): void {
+    const input = el<HTMLInputElement>('height-input');
+    input.value = String(this.measurePrefs.height);
+    el('height-error').textContent = '';
+    el('height-dialog').classList.remove('hidden');
+    this.toggleColors(false);
+    // 窓は画面の上の方にあってキーボードに隠れないので、画面を動かさずに入力を始める
+    input.focus({ preventScroll: true });
+    input.select();
+  }
+
+  private closeHeightDialog(accept: boolean): void {
+    const input = el<HTMLInputElement>('height-input');
+    if (accept) {
+      const height = parseLength(input.value);
+      if (height === null) {
+        el('height-error').textContent = '0 より大きい数（mm）を入れてください';
+        input.focus();
+        return;
+      }
+      this.setMeasurePrefs({ ...this.measurePrefs, height });
+      this.hint(`高さ ${formatLength(height)} で体積を出します`);
+    }
+    input.blur();
+    el('height-dialog').classList.add('hidden');
+    // iOS はキーボードを出したときに画面をずらしたまま戻さないことがあるので、閉じ終わった頃に戻す
+    window.setTimeout(() => {
+      if (window.scrollX !== 0 || window.scrollY !== 0) window.scrollTo(0, 0);
+    }, 350);
   }
 
   // ---------- 属性 ----------
@@ -995,7 +1194,8 @@ class App {
     const info = this.info;
     const i = this.selected;
     // 「表示を反転」は図形を選んでいなくても使える。「レイヤだけ表示」「隠す」は選んだ図形のレイヤに対して
-    el('btn-layer-back').classList.toggle('hidden', this.layerSnapshot === null);
+    el<HTMLButtonElement>('btn-layer-undo').disabled = this.layerPast.length === 0;
+    el<HTMLButtonElement>('btn-layer-redo').disabled = this.layerFuture.length === 0;
 
     if (!scene || !info || i < 0) {
       kind.textContent = '属性';
@@ -1030,6 +1230,7 @@ class App {
   private setTool(tool: Tool): void {
     if (this.tool === tool) return;
     this.cancelHold();
+    this.toggleColors(false);
     this.tool = tool;
     this.updatePanels();
     this.requestDraw();
@@ -1102,15 +1303,58 @@ class App {
     });
 
     el('btn-undo').addEventListener('click', () => {
+      if (this.topJustShown()) return;
       this.points.pop();
-      this.updateReadout();
+      this.updateReadout(true);
       this.requestDraw();
     });
 
     el('btn-clear').addEventListener('click', () => {
+      if (this.topJustShown()) return;
       this.points = [];
-      this.updateReadout();
+      this.updateReadout(true);
       this.requestDraw();
+    });
+
+    // ---- 計測の色・種類 ----
+    el('color-pop').innerHTML = MEASURE_COLORS.map((c) =>
+      `<button data-color="${c.id}"${c.hex ? ` style="--c:${c.hex}"` : ' class="mono"'} aria-label="${c.name}" aria-pressed="false"></button>`,
+    ).join('');
+    el('btn-color').addEventListener('click', () => this.toggleColors());
+    el('color-pop').addEventListener('click', (e) => {
+      const b = (e.target as HTMLElement).closest<HTMLButtonElement>('button');
+      if (!b?.dataset.color) return;
+      this.setMeasurePrefs({ ...this.measurePrefs, color: b.dataset.color });
+      this.toggleColors(false);
+    });
+    // 色の一覧は、ほかの所に触れたら閉じる。図面に触れたときは、そのタップで点を置かない
+    document.addEventListener('pointerdown', (e) => {
+      if (el('color-pop').classList.contains('hidden')) return;
+      const target = e.target as HTMLElement;
+      if (target.closest('#color-pop, #btn-color')) return;
+      this.toggleColors(false);
+      if (target.closest('#stage')) this.swallowTap = true;
+    }, true);
+    el('seg-mode').addEventListener('click', (e) => {
+      const b = (e.target as HTMLElement).closest<HTMLButtonElement>('button');
+      const mode = b?.dataset.mode as MeasureMode | undefined;
+      if (mode && MEASURE_MODES.includes(mode)) this.setMode(mode);
+    });
+
+    // ---- 体積の高さ ----
+    el('btn-height-ok').addEventListener('click', () => this.closeHeightDialog(true));
+    el('btn-height-cancel').addEventListener('click', () => this.closeHeightDialog(false));
+    el('height-dialog').addEventListener('click', (e) => {
+      // 窓の外（暗くした所）に触れたらやめる
+      if (e.target === e.currentTarget) this.closeHeightDialog(false);
+    });
+    el('height-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        this.closeHeightDialog(true);
+      } else if (e.key === 'Escape') {
+        this.closeHeightDialog(false);
+      }
     });
 
     el('btn-fit').addEventListener('click', () => this.fit());
@@ -1129,8 +1373,15 @@ class App {
     el('btn-layer-only').addEventListener('click', () => {
       if (!this.scene || this.selected < 0) return;
       const k = this.scene.entities.layer[this.selected];
-      // 続けて操作しても、「元に戻す」は最初の状態に戻す
-      if (!this.layerSnapshot) this.layerSnapshot = this.layers.snapshot();
+      const before = this.layers.snapshot();
+      this.layers.only(k);
+      // もうそのレイヤだけの状態なら何も変わらないので、戻るの履歴に積まない
+      if (JSON.stringify(this.layers.snapshot()) === JSON.stringify(before)) {
+        this.hint(`レイヤ ${layerTag(k)} だけが表示されています`);
+        return;
+      }
+      this.layers.restore(before);
+      this.pushLayerStep();
       this.layers.only(k);
       this.afterLayerChange(false);
       this.hint(`レイヤ ${layerTag(k)} だけを表示しています`);
@@ -1138,19 +1389,15 @@ class App {
     el('btn-layer-hide').addEventListener('click', () => {
       if (!this.scene || this.selected < 0) return;
       const k = this.scene.entities.layer[this.selected];
-      if (!this.layerSnapshot) this.layerSnapshot = this.layers.snapshot();
+      this.pushLayerStep();
       this.layers.forget(k >> 4);
       this.layers.layer[k] = false;
       this.afterLayerChange(false);
       this.hint(`レイヤ ${layerTag(k)} を隠しました`);
     });
     el('btn-layer-invert').addEventListener('click', () => this.invertLayers(true));
-    el('btn-layer-back').addEventListener('click', () => {
-      if (!this.layerSnapshot) return;
-      this.layers.restore(this.layerSnapshot);
-      this.layerSnapshot = null;
-      this.afterLayerChange(false);
-    });
+    el('btn-layer-undo').addEventListener('click', () => this.stepLayers(true));
+    el('btn-layer-redo').addEventListener('click', () => this.stepLayers(false));
 
     // ---- レイヤ ----
     el('btn-layers').addEventListener('click', () => {
@@ -1250,14 +1497,14 @@ class App {
 
   /**
    * 図面ごとの表示状態（隠した色・レイヤ）を覚えておく。
-   * 「このレイヤだけ表示」「隠す」は一時的なものなので、その前の状態を覚える。
+   * 属性からの「このレイヤだけ表示」「隠す」「反転」は一時的なものなので、その前の状態を覚える。
    * レイヤが Jw_cad の状態のままなら記録しない（図面の側の状態にいつも従うように）。
    */
   private saveViewState(): void {
     const info = this.info;
     const scene = this.scene;
     if (!info || !scene) return;
-    const layers = this.layerSnapshot ? this.layersFrom(this.layerSnapshot) : this.layers;
+    const layers = this.layerPast.length > 0 ? this.layersFrom(this.layerPast[0].layers) : this.layers;
     const jw = new LayerVisibility().useCounts(scene.layerCounts);
     jw.resetToJw(info.groups, info.writeGroup);
     const hidden = layers.hidden();
@@ -1281,10 +1528,14 @@ class App {
 
   /**
    * レイヤの表示を変えたあと。
-   * fromList はレイヤ一覧で変えたとき。一覧で手を入れたら、属性からの「元に戻す」は意味が変わるので捨てる。
+   * fromList はレイヤ一覧で変えたとき。一覧で手を入れたら、属性からの変更の履歴は意味が変わるので捨てる
+   * （そのときの表示がそのまま図面ごとの記録になる）。
    */
   private afterLayerChange(fromList: boolean): void {
-    if (fromList) this.layerSnapshot = null;
+    if (fromList) {
+      this.layerPast = [];
+      this.layerFuture = [];
+    }
     // 反転以外で表示を変えたら、反転を続けて押す前の状態は忘れる（反転からは invertLayers が戻し直す）
     this.invertOrigin = null;
     this.saveViewState();
@@ -1300,25 +1551,49 @@ class App {
     return v;
   }
 
+  /** 属性から表示を変える前に、いまの状態を履歴に積む（進む側は捨てる） */
+  private pushLayerStep(): void {
+    this.layerPast.push({ layers: this.layers.snapshot(), selected: this.selected });
+    // 古いものから捨てるが、最初の状態（図面ごとの記録に残す状態）は残す
+    if (this.layerPast.length > LAYER_HISTORY) this.layerPast.splice(1, 1);
+    this.layerFuture = [];
+  }
+
   /**
-   * 表示を反転する。temporary は属性パネルからの一時的な操作（「元に戻す」で戻せ、保存しない）。
+   * 属性からの表示の変更を 1 つ戻す（back）か、戻したものをやり直す。
+   * 図形を選んでいなければ（隠して選択が外れたときなど）、そのとき見ていた図形を選び直す
+   */
+  private stepLayers(back: boolean): void {
+    const from = back ? this.layerPast : this.layerFuture;
+    const to = back ? this.layerFuture : this.layerPast;
+    const step = from.pop();
+    if (!step) return;
+    to.push({ layers: this.layers.snapshot(), selected: this.selected });
+    this.layers.restore(step.layers);
+    if (this.selected < 0 && step.selected >= 0) {
+      el('inspect-panel').scrollTop = 0;
+      this.selected = step.selected;
+    }
+    // 見えなくなった図形の選択は applyDisplay が外す
+    this.afterLayerChange(false);
+    this.requestDraw(true);
+    this.hint(back ? '表示を 1 つ前に戻しました' : '戻した表示をやり直しました');
+  }
+
+  /**
+   * 表示を反転する。temporary は属性パネルからの一時的な操作（戻る・進むで行き来でき、保存しない）。
    * 反転を続けて押して同じ見え方に戻ったら、グループの持ち方まで元どおりにする
    * （反転だけでは、グループごと隠していたときの中の設定までは戻せないため）。
    */
   private invertLayers(temporary: boolean): void {
     if (!this.scene) return;
-    if (temporary && !this.layerSnapshot) this.layerSnapshot = this.layers.snapshot();
+    if (temporary) this.pushLayerStep();
     const origin = this.invertOrigin ?? this.layers.snapshot();
     this.layers.invert();
     let keep: LayerSnapshot | null = origin;
     if (this.layers.sameAs(this.layersFrom(origin))) {
       this.layers.restore(origin);
       keep = null;
-    }
-    // 属性からの操作の前と同じ見え方に戻ったなら、その状態に戻して「元に戻す」をしまう
-    if (this.layerSnapshot && this.layers.sameAs(this.layersFrom(this.layerSnapshot))) {
-      this.layers.restore(this.layerSnapshot);
-      this.layerSnapshot = null;
     }
     this.afterLayerChange(!temporary);
     this.invertOrigin = keep;
