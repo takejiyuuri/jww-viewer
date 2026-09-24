@@ -27,6 +27,7 @@
     "e2e:modes": "node tools/e2e-modes.mjs",
     "e2e:fit": "node tools/e2e-fit.mjs",
     "e2e:files": "node tools/e2e-files.mjs",
+    "e2e:ui": "node tools/e2e-ui.mjs",
     "ios:sync": "npm run build && cap sync ios"
   },
   "devDependencies": {

@@ -47,6 +47,8 @@
     <symbol id="i-clear" viewBox="0 0 24 24"><path d="M4 7h16"/><path d="M9 7V4.5h6V7"/><path d="M6.2 7l.9 13h9.8l.9-13"/></symbol>
     <symbol id="i-back" viewBox="0 0 24 24"><path d="M5 12.5A7 7 0 1 0 12 5.5H7"/><path d="M9.5 2.5 6.5 5.5l3 3"/></symbol>
     <symbol id="i-forward" viewBox="0 0 24 24"><path d="M19 12.5A7 7 0 1 1 12 5.5h5"/><path d="m14.5 2.5 3 3-3 3"/></symbol>
+    <symbol id="i-expand" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-6.5 6.5M10 20H4v-6M4 20l6.5-6.5"/></symbol>
+    <symbol id="i-shrink" viewBox="0 0 24 24"><path d="M20 10h-6V4M14 10l6.5-6.5M4 14h6v6M10 14l-6.5 6.5"/></symbol>
   </defs>
 </svg>
 
@@ -61,8 +63,13 @@
 <div id="topbar">
   <button id="btn-open" class="chip" aria-haspopup="true" aria-expanded="false">ファイル</button>
   <div id="title" class="title">図面を開いてください</div>
+  <!-- ボタンやパネルを隠して、図面を画面いっぱいに見る -->
+  <button id="btn-ui-hide" class="chip icon ui-toggle" aria-label="ボタンを隠して図面を広く見る"><svg class="ico"><use href="#i-expand"/></svg></button>
   <button id="btn-info" class="chip icon" aria-label="図面情報">i</button>
 </div>
+
+<!-- ボタンを隠しているあいだだけ出す、元に戻すボタン -->
+<button id="btn-ui-show" class="ui-show" aria-label="ボタンを出す"><svg class="ico"><use href="#i-shrink"/></svg></button>
 
 <!-- 計測中の結果と操作 -->
 <!--
@@ -115,6 +122,8 @@
   戻る・進むは見出しの行に置き、押したボタンの下へ別のボタンが来ないようにする
 -->
 <section id="inspect-panel" class="panel hidden" aria-label="属性">
+  <!-- つまみ：見出しを下へずらすと見出しだけに縮み、上へずらすか押すと戻る -->
+  <div class="grab" aria-hidden="true"></div>
   <div class="panel-top">
     <span id="inspect-kind" class="inspect-kind">属性</span>
     <span class="panel-top-end">
@@ -169,6 +178,7 @@
 </div>
 
 <div id="layer-panel" class="overlay-panel sheet hidden">
+  <div class="grab" aria-hidden="true"></div>
   <div class="sheet-head">
     <strong>レイヤ</strong>
     <!-- 戻る・進むは属性の見出しのものと同じ履歴を行き来する -->

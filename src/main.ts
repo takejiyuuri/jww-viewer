@@ -91,7 +91,8 @@ class App {
   private cssW = 0;
   private cssH = 0;
   private lastDpr = 0;
-  /** 画面の左右の安全領域（CSS ピクセル）。横向きでノッチやダイナミックアイランドのある側 */
+  /** 画面の上と左右の安全領域（CSS ピクセル）。上はステータスバー、左右は横向きでノッチやダイナミックアイランドのある側 */
+  private safeTop = 0;
   private safeLeft = 0;
   private safeRight = 0;
 
@@ -731,6 +732,7 @@ class App {
     this.overlay.resize(this.cssW, this.cssH, this.dpr);
     // 左右の安全領域は env() を JavaScript から直接読めないので、それを左右の余白にした見えない要素から読む
     const probe = getComputedStyle(el('safe-probe'));
+    this.safeTop = Math.max(0, parseFloat(probe.paddingTop) || 0);
     this.safeLeft = Math.max(0, parseFloat(probe.paddingLeft) || 0);
     this.safeRight = Math.max(0, parseFloat(probe.paddingRight) || 0);
     // パネルの幅が変わるので、計測の内訳の詰め方を決め直す
@@ -1099,7 +1101,8 @@ class App {
     const rail = railEdge < this.cssW ? this.cssW - railEdge + 8 : 0;
     const panel = rightEdge < this.cssW ? this.cssW - rightEdge + 8 : 0;
     return {
-      top: bar && bar.height > 0 ? bar.bottom + 4 : 52,
+      // 上のバーを隠しているとき（ボタンを隠して図面を広く見ているとき）は、ステータスバーの下から
+      top: bar && bar.height > 0 ? bar.bottom + 4 : this.safeTop + 8,
       bottom: this.cssH - bottomEdge + 8,
       left: leftEdge > 0 ? leftEdge + 8 : 0,
       right: Math.max(rail, panel),
@@ -1705,8 +1708,86 @@ class App {
     }
   }
 
+  /**
+   * パネルの見出しを下へずらすと、見出しだけに縮める。縮めたものは、見出しを上へずらすか押すと戻る。
+   * 見出しの中のボタン（戻る・進む・閉じる）は、そのボタンとして押せる
+   */
+  private makeCollapsible(panel: HTMLElement, head: HTMLElement): void {
+    let drag: { id: number; y: number; moved: boolean } | null = null;
+    const release = (): void => {
+      panel.style.transform = '';
+      panel.style.transition = '';
+    };
+    head.addEventListener('pointerdown', (e) => {
+      if ((e.target as HTMLElement).closest('button')) return;
+      drag = { id: e.pointerId, y: e.clientY, moved: false };
+      try {
+        head.setPointerCapture(e.pointerId);
+      } catch {
+        // 指を取り込めなくても、見出しの上で動かしているあいだは同じように働く
+      }
+      // 指について動かすあいだは、遅れずに付いてくるように
+      panel.style.transition = 'none';
+    });
+    head.addEventListener('pointermove', (e) => {
+      if (!drag || e.pointerId !== drag.id) return;
+      const dy = e.clientY - drag.y;
+      if (Math.abs(dy) > 6) drag.moved = true;
+      // 開いているときは、下へずらす指についてパネルを下げる（縮める手応え）
+      if (!panel.classList.contains('collapsed')) panel.style.transform = `translateY(${Math.max(0, dy)}px)`;
+    });
+    head.addEventListener('pointerup', (e) => {
+      if (!drag || e.pointerId !== drag.id) return;
+      const dy = e.clientY - drag.y;
+      const moved = drag.moved;
+      drag = null;
+      release();
+      const collapsed = panel.classList.contains('collapsed');
+      if (!moved) this.setCollapsed(panel, !collapsed);
+      else if (!collapsed && dy > 40) this.setCollapsed(panel, true);
+      else if (collapsed && dy < -24) this.setCollapsed(panel, false);
+    });
+    head.addEventListener('pointercancel', (e) => {
+      if (!drag || e.pointerId !== drag.id) return;
+      drag = null;
+      release();
+    });
+  }
+
+  /** パネルを縮める（見出しだけにする）か、元に戻す */
+  private setCollapsed(panel: HTMLElement, collapsed: boolean): void {
+    if (panel.classList.contains('collapsed') === collapsed) return;
+    panel.classList.toggle('collapsed', collapsed);
+    // 見えている所が変わるので描き直す（前の範囲の囲いや、拡大鏡の置き場所にも効く）
+    this.requestDraw(true);
+  }
+
+  /**
+   * ボタンやパネルを隠して、図面を画面いっぱいに見る（hidden）／元に戻す。
+   * 全体を見ていたときは、広さが変わった画面に合わせ直す（「前の範囲」にはそのまま戻れる）
+   */
+  private setUiHidden(hidden: boolean): void {
+    if (document.body.classList.contains('ui-hidden') === hidden) return;
+    const recorded = this.stillFitted();
+    const fitted = this.scene !== null && (recorded || this.nearView(this.view, this.fitView()));
+    if (hidden) {
+      this.openSheet(null);
+      this.toggleColors(false);
+    }
+    document.body.classList.toggle('ui-hidden', hidden);
+    if (fitted) {
+      this.view = this.fitView();
+      if (recorded) this.recordFit();
+      this.textLayer.render(this.view);
+    }
+    this.requestDraw(true);
+    this.updateFitButton();
+  }
+
   /** 下から出るシートは同時に一つだけ。null ならすべて閉じる */
   private openSheet(id: Sheet | null): void {
+    // 開き直したレイヤ一覧は、縮めていても元の大きさで出す
+    if (id === 'layer-panel') el('layer-panel').classList.remove('collapsed');
     for (const s of SHEETS) el(s).classList.toggle('hidden', s !== id);
     for (const [btn, sheet] of [['btn-layers', 'layer-panel'], ['btn-display', 'display-panel']] as const) {
       el(btn).setAttribute('aria-expanded', String(id === sheet));
@@ -1911,6 +1992,22 @@ class App {
       this.openSheet('info-panel');
       this.buildInfoPanel();
     });
+
+    // ボタンやパネルを隠して図面を画面いっぱいに見る／戻す
+    el('btn-ui-hide').addEventListener('click', () => this.setUiHidden(true));
+    el('btn-ui-show').addEventListener('click', () => this.setUiHidden(false));
+    // レイヤ一覧と属性のパネルは、見出しを下へずらすと見出しだけに縮める
+    this.makeCollapsible(el('layer-panel'), el('layer-panel').querySelector<HTMLElement>('.sheet-head')!);
+    this.makeCollapsible(el('inspect-panel'), el('inspect-panel').querySelector<HTMLElement>('.panel-top')!);
+    // 横向きで縮めたレイヤ一覧を、右下の計測・属性のパネルの上に載せるため、そのパネルの高さを CSS に渡す
+    if (window.ResizeObserver) {
+      const stack = new ResizeObserver(() => {
+        const box = [el('readout'), el('inspect-panel')].map((n) => n.getBoundingClientRect()).find((r) => r.height > 0);
+        document.documentElement.style.setProperty('--panel-stack', `${box ? Math.round(box.height) + 8 : 0}px`);
+      });
+      stack.observe(el('readout'));
+      stack.observe(el('inspect-panel'));
+    }
 
     el('btn-info').addEventListener('click', () => {
       if (this.toggleSheet('info-panel')) this.buildInfoPanel();

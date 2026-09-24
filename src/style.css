@@ -103,6 +103,7 @@ html.standalone #shell {
   position: absolute;
   visibility: hidden;
   pointer-events: none;
+  padding-top: var(--safe-top);
   padding-left: var(--safe-left);
   padding-right: var(--safe-right);
 }
@@ -997,6 +998,88 @@ body[data-bg="light"] .panel {
   left: 3px;
 }
 
+/* ---- つまみ：レイヤ一覧と属性のパネルは、見出しを下へずらすと見出しだけに縮み、上へずらすか押すと戻る ---- */
+.grab {
+  position: absolute;
+  top: 5px;
+  left: 50%;
+  width: 36px;
+  height: 5px;
+  margin-left: -18px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.28);
+  pointer-events: none;
+}
+
+/* 見出しを指でずらせるように（ブラウザの送りに取られないように） */
+#layer-panel .sheet-head,
+#inspect-panel .panel-top {
+  touch-action: none;
+}
+
+/* 指について動かしたあと、元の位置へ戻るとき */
+#layer-panel,
+#inspect-panel {
+  transition: transform 0.18s ease-out;
+}
+
+#layer-panel.collapsed .sheet-body,
+#inspect-panel.collapsed #inspect-body,
+#inspect-panel.collapsed #inspect-actions {
+  display: none;
+}
+
+/* 縮めた属性のパネルは、見出しの下の余白も詰める */
+#inspect-panel.collapsed .panel-top {
+  margin-bottom: 0;
+}
+
+/* ---- ボタンやパネルを隠して、図面を画面いっぱいに見る ---- */
+.chip.icon.ui-toggle .ico,
+.ui-show .ico {
+  display: block;
+  width: 18px;
+  height: 18px;
+  margin: 0 auto;
+}
+
+body.ui-hidden #topbar,
+body.ui-hidden #toolbar,
+body.ui-hidden #readout,
+body.ui-hidden #inspect-panel,
+body.ui-hidden #layer-panel,
+body.ui-hidden #display-panel,
+body.ui-hidden #info-panel,
+body.ui-hidden #files-panel,
+body.ui-hidden #color-pop {
+  display: none;
+}
+
+/* 隠しているあいだだけ出す、元に戻すボタン（右上の角） */
+.ui-show {
+  display: none;
+  position: absolute;
+  top: calc(var(--safe-top) + 8px);
+  right: calc(var(--safe-right) + 10px);
+  z-index: 30;
+  width: 38px;
+  height: 38px;
+  align-items: center;
+  justify-content: center;
+  appearance: none;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: rgba(22, 24, 32, 0.72);
+  color: var(--fg);
+  padding: 0;
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+
+body.ui-hidden .ui-show {
+  display: flex;
+}
+
 /* ---- 図面を開くシート（最近開いた図面） ---- */
 .recent-caption {
   margin: 16px 0 6px;
@@ -1443,6 +1526,12 @@ body[data-bg="light"] .panel {
     padding-bottom: 0;
     border: 1px solid var(--line);
     border-radius: 16px;
+  }
+
+  /* 縮めたレイヤ一覧は、右下の計測・属性のパネル（--panel-stack は main.ts が測る）の上に載せ、どちらも使えるようにする */
+  #layer-panel.collapsed {
+    top: auto;
+    bottom: calc(var(--bar-bottom) + var(--panel-stack, 0px));
   }
 
   /*
