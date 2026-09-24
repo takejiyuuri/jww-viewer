@@ -55,9 +55,10 @@ workflows:
       vars:
         XCODE_PROJECT: ios/App/App.xcodeproj
         XCODE_SCHEME: App
-        # App Store Connect でアプリを作ったあとに「App 情報」に出る Apple ID（数字）。
-        # 入れておくと、TestFlight にある最新のビルド番号の次を使う。空のあいだは Codemagic の通し番号を使う
-        APP_STORE_APPLE_ID: ""
+        # App Store Connect でアプリを作ったら、「App 情報」に出る Apple ID（数字）を次の形で足す（任意）。
+        # 足すと TestFlight にある最新のビルド番号の次を使い、無いあいだは Codemagic の通し番号を使う。
+        # 空の値は書けない（Codemagic が設定の誤りとして止める）ので、分かるまでは行ごと置かない
+        #   APP_STORE_APPLE_ID: 1234567890
       node: 22
       xcode: latest
     scripts:

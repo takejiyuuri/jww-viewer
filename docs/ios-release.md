@@ -50,7 +50,8 @@ Windows（開発・テスト） → GitHub（main に push） → Codemagic（�
 4. **アプリを登録する**：App Store Connect → アプリ → ＋ → 新規 App。
    - プラットフォーム：iOS / 名前：`JWWミテハカール` / プライマリ言語：日本語 /
      バンドル ID：`io.github.takejiyuuri.mitehakaru` / SKU：`mitehakaru-ios`（自由な管理用の文字）/ ユーザアクセス：フルアクセス
-   - 作ったあと「App 情報」に出る **Apple ID（数字）** を `codemagic.yaml` の `APP_STORE_APPLE_ID` に入れて push する（任意。入れるとビルド番号を TestFlight の続きにする）
+   - 作ったあと「App 情報」に出る **Apple ID（数字）** を、`codemagic.yaml` の `vars` に `APP_STORE_APPLE_ID: 1234567890` の形で
+     1 行足して push する（任意。足すとビルド番号を TestFlight の続きにする。空の値は書けないので、分かるまでは行ごと置かない）
 5. **有料アプリの準備**（300 円で売るのに必要。TestFlight だけなら後でもよい）：
    App Store Connect → ビジネス → **有料 App 契約**に同意し、**税務情報**と**銀行口座**を登録する。
    あわせて **EU デジタルサービス法（DSA）のトレーダー申告**も済ませる（最初の提出の前に必要）。
@@ -129,3 +130,5 @@ Windows（開発・テスト） → GitHub（main に push） → Codemagic（�
 - Codemagic のビルドが失敗したら、まず `ios-check`（署名なし）で通るかを見る。通るなら署名の設定（API キーの名前、
   証明書、プロファイルの Bundle ID）を見直す。
 - `npm ci` で失敗するときは、Windows で `npm install` し直して `package-lock.json` をコミットする。
+- Codemagic の画面で「無効な yaml 設定」「検証エラー」と出たら、`codemagic.yaml` の書き方の誤り。赤い印を押すと場所が出る
+  （たとえば `vars` に空の値 `""` は書けない）。
