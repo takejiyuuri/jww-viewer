@@ -600,11 +600,19 @@ body[data-bg="light"] #inspect-panel {
   background: #2a2d38;
 }
 
-.tool.on {
+.tool.on,
+.tool.open {
   /* 半透明にすると白い図面の上で色が抜けて浮くので、不透明な暗い緑にする */
   background: #11301f;
   border-color: var(--accent);
   color: var(--accent);
+}
+
+/* 「前の範囲」に戻せるあいだの全体のボタン。図面の上の囲いと同じ橙 */
+.tool.back {
+  background: #3a2406;
+  border-color: #ff9f0a;
+  color: #ff9f0a;
 }
 
 /* ---- ヒント ---- */
@@ -977,7 +985,7 @@ body[data-bg="light"] .panel {
   display: flex;
   border: 0;
   background: transparent;
-  padding: 6px 2px 6px 8px;
+  padding: 5px 2px 5px 8px;
   flex-shrink: 0;
 }
 
@@ -1047,8 +1055,9 @@ body[data-bg="light"] .panel {
 }
 
 /* ---- レイヤシート ---- */
+/* レイヤが多くても図面を隠しすぎないよう、画面の半分までにして中を送る */
 #layer-panel {
-  max-height: 70%;
+  max-height: 50%;
 }
 
 /* 見出しの右側に、表示を戻る・進むボタンと「閉じる」を並べる（閉じると押し間違えないよう少し離す） */
@@ -1098,7 +1107,7 @@ body[data-bg="light"] .panel {
   color: var(--fg);
   font: inherit;
   font-size: 14px;
-  padding: 11px 0;
+  padding: 9px 0;
   text-align: left;
 }
 
@@ -1337,16 +1346,21 @@ body[data-bg="light"] .panel {
  */
 @media (orientation: landscape) and (max-height: 500px) {
   :root {
-    /* 縦に並べたボタンの幅と、ツールバーが画面の端（安全領域の内側）から取る幅 */
+    /*
+     * 縦に並べたボタンの幅と、ツールバーの列が画面の端から取る幅。
+     * 列は縦向きで下だった側（ダイナミックアイランドやノッチのない側）に置くので、安全領域の分は空けずに端へ寄せる
+     * （iOS は横向きの安全領域を左右同じ幅で返すが、ふさがっているのはアイランドの側だけ）
+     */
     --rail-button: 64px;
     --rail-space: calc(var(--rail-button) + 16px);
-    --rail-left: 0px;
-    --rail-right: var(--rail-space);
+    /* 上のバー・パネル・シートを置き始める、左右の端からの位置。ツールバーの側はその列の幅、反対側は安全領域の内側 */
+    --edge-left: calc(var(--safe-left) + 10px);
+    --edge-right: var(--rail-space);
   }
 
   :root[data-rail="left"] {
-    --rail-left: var(--rail-space);
-    --rail-right: 0px;
+    --edge-left: var(--rail-space);
+    --edge-right: calc(var(--safe-right) + 10px);
   }
 
   #toolbar {
@@ -1354,22 +1368,22 @@ body[data-bg="light"] .panel {
     bottom: 0;
     left: auto;
     right: 0;
-    width: calc(var(--safe-right) + var(--rail-space));
+    width: var(--rail-space);
     flex-direction: column;
     /* 高さが足りないとき（Safari のバーが出た低い横画面）は、上下のボタンが画面の外へ出ないよう上から詰める */
     justify-content: safe center;
     gap: 6px;
-    padding: calc(var(--safe-top) + 8px) calc(var(--safe-right) + 8px) var(--bar-bottom) 8px;
-    /* 縦向きの下のツールバーと同じく、ボタンをわずかに外したタップで図面に点が置かれないよう、列全体で受ける */
-    background: linear-gradient(270deg, rgba(11, 12, 16, 0.92), rgba(11, 12, 16, 0));
+    padding: calc(var(--safe-top) + 8px) 8px var(--bar-bottom) 8px;
+    /*
+     * 地はぼかさない（横向きでは画面の端にモヤがかかったように見えるため）。ボタンはそれぞれ地を持っている。
+     * 縦向きの下のツールバーと同じく、ボタンをわずかに外したタップで図面に点が置かれないよう、列全体で受ける
+     */
+    background: none;
   }
 
   :root[data-rail="left"] #toolbar {
     left: 0;
     right: auto;
-    width: calc(var(--safe-left) + var(--rail-space));
-    padding: calc(var(--safe-top) + 8px) 8px var(--bar-bottom) calc(var(--safe-left) + 8px);
-    background: linear-gradient(90deg, rgba(11, 12, 16, 0.92), rgba(11, 12, 16, 0));
   }
 
   /* 高さが足りなければボタンを低くして、5 つとも画面に収める */
@@ -1380,25 +1394,34 @@ body[data-bg="light"] .panel {
     min-height: 36px;
   }
 
-  /* 白背景では、縦のツールバーの地も白くぼかす（縦向きの下のツールバーと同じ考え方で、向きだけ横に） */
+  /* 白背景でもぼかさない */
   body[data-bg="light"] #toolbar {
-    background: linear-gradient(270deg, rgba(255, 255, 255, 0.94), rgba(255, 255, 255, 0));
+    background: none;
   }
 
-  :root[data-rail="left"] body[data-bg="light"] #toolbar {
-    background: linear-gradient(90deg, rgba(255, 255, 255, 0.94), rgba(255, 255, 255, 0));
+  /*
+   * 上のバーは、ツールバーの列にかからないよう内側から始める。
+   * 横向きではステータスバーが出ないので、上の端のぼかし（モヤに見える）はやめ、題名は縁取りで読めるようにする
+   */
+  #topbar,
+  body[data-bg="light"] #topbar {
+    padding-left: var(--edge-left);
+    padding-right: var(--edge-right);
+    background: none;
   }
 
-  /* 上のバーは、ツールバーの列にかからないよう内側から始める */
-  #topbar {
-    padding-left: calc(var(--safe-left) + max(10px, var(--rail-left)));
-    padding-right: calc(var(--safe-right) + max(10px, var(--rail-right)));
+  .title {
+    text-shadow: 0 0 3px rgba(11, 12, 16, 0.95), 0 0 8px rgba(11, 12, 16, 0.8);
+  }
+
+  body[data-bg="light"] .title {
+    text-shadow: 0 0 3px #fff, 0 0 8px rgba(255, 255, 255, 0.9);
   }
 
   /* 計測・属性のパネルは右に寄せたまま、下にツールバーがないので画面の下端近くまで下ろす */
   .panel,
   #inspect-panel {
-    right: calc(var(--safe-right) + max(10px, var(--rail-right)));
+    right: var(--edge-right);
     bottom: var(--bar-bottom);
     max-height: calc(100% - var(--safe-top) - var(--bar-bottom) - 62px);
   }
@@ -1411,10 +1434,11 @@ body[data-bg="light"] .panel {
   #layer-panel,
   #display-panel {
     left: auto;
-    right: calc(var(--safe-right) + max(10px, var(--rail-right)));
+    right: var(--edge-right);
     top: calc(var(--safe-top) + 56px);
     bottom: var(--bar-bottom);
-    width: min(400px, 50%);
+    /* 図面を隠しすぎないよう、幅は控えめにする */
+    width: min(340px, 44%);
     max-height: none;
     padding-bottom: 0;
     border: 1px solid var(--line);
@@ -1422,12 +1446,12 @@ body[data-bg="light"] .panel {
   }
 
   /*
-   * 知らせは、右側に出るシート（幅 min(400px, 50%)）とツールバーを除いた所の真ん中に出す。
+   * 知らせは、右側に出るシート（幅 min(340px, 44%)）とツールバーを除いた所の真ん中に出す。
    * シートを開いていても見出しに重ならない
    */
   .hint {
-    --hint-from: calc(var(--safe-left) + max(10px, var(--rail-left)));
-    --hint-to: calc(100% - var(--safe-right) - max(10px, var(--rail-right)) - min(400px, 50%) - 10px);
+    --hint-from: var(--edge-left);
+    --hint-to: calc(100% - var(--edge-right) - min(340px, 44%) - 10px);
     left: calc((var(--hint-from) + var(--hint-to)) / 2);
     max-width: calc(var(--hint-to) - var(--hint-from));
     text-align: center;

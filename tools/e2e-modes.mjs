@@ -529,8 +529,75 @@ const overlayAt = (x, y) => page.evaluate(([x, y]) => {
       });
       check(`${tag}：レイヤのシートは右側に縦長に出て、画面の左半分を覆わない`,
         sheet.left >= sheet.cssW / 2 - 90 && sheet.bottom - sheet.top > sheet.cssH * 0.6, sheet);
+      // 開いているシートのボタン（レイヤ）は緑、ほかのシートのボタン（表示）は緑にしない。閉じれば戻る
+      const open1 = await o.page.evaluate(() => ({
+        layers: document.getElementById('btn-layers').classList.contains('open'),
+        display: document.getElementById('btn-display').classList.contains('open'),
+        color: getComputedStyle(document.getElementById('btn-layers')).color,
+      }));
+      await o.page.click('#btn-layer-close');
+      const open2 = await o.page.evaluate(() => document.getElementById('btn-layers').classList.contains('open'));
+      check(`${tag}：レイヤを開いているあいだはレイヤのボタンが緑になり、閉じると戻る`,
+        open1.layers && !open1.display && open1.color === 'rgb(53, 208, 127)' && !open2, { open1, open2 });
+      // ツールバーの列と上のバーは、ぼかしの帯（モヤ）を出さない
+      const haze = await o.page.evaluate(() => ({
+        toolbar: getComputedStyle(document.getElementById('toolbar')).backgroundImage,
+        topbar: getComputedStyle(document.getElementById('topbar')).backgroundImage,
+      }));
+      check(`${tag}：ツールバーの列と上のバーにぼかしの帯を出さない`, haze.toolbar === 'none' && haze.topbar === 'none', haze);
       await o.ctx.close();
     }
+  }
+
+  // iPhone 14 Pro などの横向き（左右の安全領域 59px）：ツールバーの列はアイランドのない側なので端に寄せ、
+  // 反対側（アイランドの側）の上のバー・パネルは安全領域の内側に置く
+  for (const [angle, want] of [[90, 'right'], [-90, 'left']]) {
+    const o = await openRotated({ width: 852, height: 393 }, angle);
+    const r = await o.page.evaluate(async () => {
+      const root = document.documentElement.style;
+      root.setProperty('--safe-left', '59px');
+      root.setProperty('--safe-right', '59px');
+      root.setProperty('--safe-bottom', '21px');
+      window.__jww.cssW = 0;
+      window.__jww.resize();
+      await new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res)));
+      const tools = [...document.querySelectorAll('#toolbar .tool')].map((t) => t.getBoundingClientRect());
+      const open = document.getElementById('btn-open').getBoundingClientRect();
+      const info = document.getElementById('btn-info').getBoundingClientRect();
+      const ro = document.getElementById('readout').getBoundingClientRect();
+      return {
+        w: innerWidth,
+        toolsL: Math.min(...tools.map((t) => t.left)),
+        toolsR: Math.max(...tools.map((t) => t.right)),
+        openL: open.left, infoR: info.right, roL: ro.left, roR: ro.right,
+      };
+    });
+    const side = want === 'right' ? '右' : '左';
+    const edge = want === 'right' ? r.w - r.toolsR : r.toolsL;
+    // アイランドの側（ツールバーの反対側）
+    const island = want === 'right' ? r.openL : r.w - r.infoR;
+    const panelClear = want === 'right' ? r.roR <= r.toolsL - 4 : r.roL >= r.toolsR + 4;
+    check(`横 852・安全領域 59px・ツールバーは${side}：列は端に寄せ（8px）、アイランドの側は安全領域の内側に置く`,
+      edge <= 9 && island >= 59 && panelClear, { edge, island, ...r });
+    await o.ctx.close();
+  }
+
+  // 縦向き：レイヤが多くても、レイヤのシートは画面の半分までにして中を送る
+  {
+    const o = await openRotated({ width: 393, height: 852 }, 0);
+    await o.page.click('#btn-layers');
+    // すべてのグループを開いて、いちばん長くする
+    await o.page.evaluate(() => {
+      for (const h of document.querySelectorAll('#layer-list .lg-head[aria-expanded="false"]')) h.click();
+    });
+    await o.page.waitForTimeout(200);
+    const r = await o.page.evaluate(() => {
+      const p = document.getElementById('layer-panel').getBoundingClientRect();
+      const body = document.querySelector('#layer-panel .sheet-body');
+      return { h: p.height, vh: innerHeight, scrolls: body.scrollHeight > body.clientHeight + 1 };
+    });
+    check('縦向きでレイヤを全部開いても、レイヤのシートは画面の半分までで、中を送れる', r.h <= r.vh * 0.5 + 1 && r.scrolls, r);
+    await o.ctx.close();
   }
 
   // Safari のバーが出て高さの低い横画面でも、ボタンを低くして 5 つとも画面に収める
@@ -563,6 +630,9 @@ const overlayAt = (x, y) => page.evaluate(([x, y]) => {
       return { w: r.width, h: r.height, bottom: r.bottom, cssH: window.__jww.cssH };
     });
     check('縦向きではツールバーは下に横に並ぶ', portrait.w > portrait.h && Math.abs(portrait.bottom - portrait.cssH) < 1, portrait);
+    // 縦向きではステータスバーの文字が図面に埋もれないよう、上のバーのぼかしは残す
+    const topbar = await o.page.evaluate(() => getComputedStyle(document.getElementById('topbar')).backgroundImage);
+    check('縦向きでは上のバーのぼかしを残す（ステータスバーの文字を読みやすく）', topbar !== 'none', { topbar });
     await o.ctx.close();
   }
 }

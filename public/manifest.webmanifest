@@ -1,6 +1,6 @@
 {
   "name": "JWWミテハカール",
-  "short_name": "JWWミテハカール",
+  "short_name": "ミテハカール",
   "description": "Jw_cad の図面を iPhone で開いて実寸で計測する",
   "start_url": "./",
   "scope": "./",

@@ -257,7 +257,15 @@ class App {
     void this.refreshRecent();
     let launched = false;
     try {
-      launched = await listenForFiles({ open: (buffer, name) => this.load(buffer, name), fail: (m) => this.fail(m) });
+      launched = await listenForFiles({
+        // アプリが閉じた状態から渡されたときは起動に時間がかかるので、受け取った時点ですぐ読み込み中と知らせる
+        receiving: (name) => this.showLoading(name),
+        open: (buffer, name) => this.load(buffer, name),
+        fail: (m) => {
+          el('loading').classList.add('hidden');
+          this.fail(m);
+        },
+      });
     } catch {
       // 受け取れなくても起動は続ける
     }
@@ -274,22 +282,34 @@ class App {
     if (!el('files-panel').classList.contains('hidden')) this.renderRecent();
   }
 
+  /**
+   * 前回の図面を出し直す。出し直すものがなければ、最初の画面（図面を開く案内）を出す。
+   * 最初の画面ははじめ隠しておき、前回の図面を開くときに一瞬だけ見えないようにしている
+   */
   private async restoreLast(): Promise<void> {
     // 読み出しを待つあいだに、渡された図面や選んだ図面を開き始めていたら、そちらを優先する
     const seq = this.loadSeq;
+    let last: Awaited<ReturnType<typeof loadLast>> = null;
     try {
-      const last = await loadLast();
-      if (last && this.loadSeq === seq) this.load(last.buffer, last.name, false);
+      last = await loadLast();
     } catch {
       // 復元できなくても起動は続ける
     }
+    if (this.loadSeq !== seq) return;
+    if (last) this.load(last.buffer, last.name, false);
+    else el('welcome').classList.remove('hidden');
+  }
+
+  /** 読み込み中の知らせを出す（最初の画面はしまう） */
+  private showLoading(name: string): void {
+    el('welcome').classList.add('hidden');
+    el('loading').classList.remove('hidden');
+    el('loading-text').textContent = `${name} を読み込み中…`;
   }
 
   private load(buffer: ArrayBuffer, name: string, persist = true): void {
     this.loadSeq++;
-    el('welcome').classList.add('hidden');
-    el('loading').classList.remove('hidden');
-    el('loading-text').textContent = `${name} を読み込み中…`;
+    this.showLoading(name);
 
     // 転送で中身が失われる前に保存用の複製を取る。保存は読み込めたときだけにする
     // （読めないファイルを最近の一覧に入れたり、次に起動したとき出し直そうとしたりしないように）
@@ -657,6 +677,8 @@ class App {
     if (back === this.fitBackShown) return;
     this.fitBackShown = back;
     const btn = el('btn-fit');
+    // 「前の範囲」に戻せるあいだは、図面の上の囲いと同じ橙にする
+    btn.classList.toggle('back', back);
     btn.querySelector('use')?.setAttribute('href', back ? '#i-back' : '#i-fit');
     const label = btn.querySelector('span');
     if (label) label.textContent = back ? '前の範囲' : '全体';
@@ -1686,8 +1708,11 @@ class App {
   /** 下から出るシートは同時に一つだけ。null ならすべて閉じる */
   private openSheet(id: Sheet | null): void {
     for (const s of SHEETS) el(s).classList.toggle('hidden', s !== id);
-    el('btn-layers').setAttribute('aria-expanded', String(id === 'layer-panel'));
-    el('btn-display').setAttribute('aria-expanded', String(id === 'display-panel'));
+    for (const [btn, sheet] of [['btn-layers', 'layer-panel'], ['btn-display', 'display-panel']] as const) {
+      el(btn).setAttribute('aria-expanded', String(id === sheet));
+      // 横向きではシートを開いてもボタンが見えているので、開いているシートのボタンを緑にする
+      el(btn).classList.toggle('open', id === sheet);
+    }
     el('btn-open').setAttribute('aria-expanded', String(id === 'files-panel'));
   }
 

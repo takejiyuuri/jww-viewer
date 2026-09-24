@@ -10,6 +10,8 @@ export const isNative = Capacitor.isNativePlatform();
 
 /** 受け取った図面を開く側 */
 export interface OpenHandlers {
+  /** 図面を受け取った（これから読む）。読み終わるまで待たせるあいだの知らせに使う */
+  receiving?: (name: string) => void;
   open: (buffer: ArrayBuffer, name: string) => void;
   fail: (message: string) => void;
 }
@@ -52,6 +54,7 @@ export function incomingHandler(
     const prev = recent.get(url);
     if (prev && t - prev.at < DUPLICATE_MS) return prev.result;
     const result = (async () => {
+      h.receiving?.(fileNameOf(url));
       let buffer: ArrayBuffer;
       try {
         buffer = await reader.read(url);

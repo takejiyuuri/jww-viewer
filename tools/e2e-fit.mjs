@@ -38,6 +38,9 @@ const state = () => page.evaluate(async () => {
     label: b.querySelector('span').textContent,
     icon: b.querySelector('use').getAttribute('href'),
     aria: b.getAttribute('aria-label'),
+    // 「前の範囲」のあいだは橙（back）
+    back: b.classList.contains('back'),
+    color: getComputedStyle(b).color,
     view: { ...a.view },
     n: a.points.length,
   };
@@ -83,10 +86,11 @@ let detail;
   const s = await state();
   check('寄せた所で「全体」を押すと全体を表示し、ボタンが「前の範囲」になる',
     s.label === '前の範囲' && s.icon === '#i-back' && s.aria.includes('戻す') && s.view.zoom < detail.zoom / 3, { label: s.label, icon: s.icon, aria: s.aria });
+  check('「前の範囲」のあいだは、ボタンが囲いと同じ橙になる', s.back && s.color === 'rgb(255, 159, 10)', { back: s.back, color: s.color });
   await page.click('#btn-fit');
   const back = await state();
-  check('「前の範囲」を押すと、押す前とまったく同じ範囲に戻り、ボタンは「全体」に戻る',
-    same(back.view, detail) && back.label === '全体' && back.icon === '#i-fit', { back: back.view, detail });
+  check('「前の範囲」を押すと、押す前とまったく同じ範囲に戻り、ボタンは「全体」に戻る（橙もやめる）',
+    same(back.view, detail) && back.label === '全体' && back.icon === '#i-fit' && !back.back, { back: back.view, detail, cls: back.back });
   // 何度でも行き来できる
   await page.click('#btn-fit');
   await page.click('#btn-fit');

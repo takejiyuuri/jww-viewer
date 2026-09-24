@@ -41,6 +41,17 @@ await page.goto(srv.url, { waitUntil: 'networkidle' });
 await page.evaluate(() => new Promise((r) => { const q = indexedDB.deleteDatabase('jww-viewer'); q.onsuccess = q.onerror = q.onblocked = () => r(); }));
 await page.reload({ waitUntil: 'networkidle' });
 
+// ---------- 0. 前回の図面がなければ、最初の画面（図面を開く案内）を出す ----------
+{
+  await page.waitForFunction(() => !document.getElementById('welcome').classList.contains('hidden'), null, { timeout: 10000 })
+    .catch(() => {});
+  const s = await page.evaluate(() => ({
+    welcome: !document.getElementById('welcome').classList.contains('hidden'),
+    loading: !document.getElementById('loading').classList.contains('hidden'),
+  }));
+  check('前回の図面がなければ、起動すると最初の画面を出す', s.welcome && !s.loading, s);
+}
+
 // ---------- 1. 何も開いていなければ、「ファイル」はそのままファイルを選ぶ ----------
 {
   const chooser = page.waitForEvent('filechooser', { timeout: 3000 }).then(() => true).catch(() => false);
@@ -120,7 +131,7 @@ await recentHas(1);
 {
   const r = await page.evaluate(async () => {
     const nat = await import('/src/native.ts');
-    const log = { opened: [], failed: [], removed: [] };
+    const log = { opened: [], failed: [], removed: [], receiving: [], order: [] };
     const reader = {
       read: async (url) => {
         if (url.includes('broken')) throw new Error('x');
@@ -130,8 +141,9 @@ await recentHas(1);
     };
     let clock = 1000;
     const handle = nat.incomingHandler(reader, {
-      open: (buf, name) => log.opened.push({ name, bytes: buf.byteLength }),
-      fail: (m) => log.failed.push(m),
+      receiving: (name) => { log.receiving.push(name); log.order.push('receiving'); },
+      open: (buf, name) => { log.opened.push({ name, bytes: buf.byteLength }); log.order.push('open'); },
+      fail: (m) => { log.failed.push(m); log.order.push('fail'); },
     }, () => clock);
     const inbox = 'file:///private/var/mobile/Containers/Data/Application/X/Documents/Inbox/%E5%B9%B3%E9%9D%A2%E5%9B%B3%201.jww';
     // 起動したとき：起動時の URL と、動いている間の URL で同じものがほぼ同時に届く。一度だけ開き、どちらも「開いた」を返す
@@ -156,6 +168,8 @@ await recentHas(1);
     r.a && r.b && r.openedAtLaunch === 1, r);
   check('少し経ってから同じ名前の図面をまた渡されたら、改めて開く', r.again && r.log.opened.length === 2, r);
   check('ファイル以外の URL は無視する', !r.c && !r.d, r);
+  check('受け取ったら、読む前に「読み込み中」を出すよう知らせる（名前付き）',
+    r.log.receiving[0] === '平面図 1.jww' && r.log.order[0] === 'receiving' && r.log.order[1] === 'open', { receiving: r.log.receiving, order: r.log.order });
   check('読めないファイルは「読み取れませんでした」と知らせる', !r.e && r.log.failed.length === 1 && /読み取れません/.test(r.log.failed[0]), r);
   check('名前が崩れていても落ちない（崩れたままの名前か「図面.jww」）',
     r.names[0] === '図面.JWW' && r.names[1] === '%E0%A4%A.jww' && r.names[2] === '図面.jww', { names: r.names });
