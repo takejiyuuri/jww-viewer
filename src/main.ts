@@ -39,8 +39,12 @@ type Tool = 'measure' | 'inspect';
 interface Insets {
   top: number;
   bottom: number;
-  /** 横向きで右に寄せたパネル */
+  /** 横向きで左に縦に並べたツールバー */
+  left: number;
+  /** 横向きで右に寄せたパネルと、右に縦に並べたツールバー */
   right: number;
+  /** right のうち、右に縦に並べたツールバー（上から下まで塞ぐ）の分 */
+  rail: number;
   /** 右に寄せたパネルの上端（CSS ピクセル）。無ければ画面の高さ */
   rightTop: number;
 }
@@ -138,8 +142,8 @@ class App {
    * （レイヤを隠して戻したときなどに求め直さない）
    */
   private fitCache = new Map<string, Bounds>();
-  /** 長押しを始めたときの、上下のバー・パネルの幅。拡大鏡をそこに重ねないために使う */
-  private insets: Insets = { top: 52, bottom: 104, right: 0, rightTop: 0 };
+  /** 長押しを始めたときの、上下左右のバー・パネル・ツールバーの幅。拡大鏡をそこに重ねないために使う */
+  private insets: Insets = { top: 52, bottom: 104, left: 0, right: 0, rail: 0, rightTop: 0 };
   /** 読み込み時に決めた既定の縮尺。「自動」に戻したときに使う */
   private defaultScale = 1;
   /** 「全体」を押す前の表示。「前の範囲」で戻す */
@@ -154,7 +158,7 @@ class App {
   /** 全体に合わせたあと、見えるもの（色・レイヤ）や画面の大きさが変わって、全体の範囲が変わった */
   private fitStale = false;
   /** 全体に合わせたときの、見えている図形の範囲と画面の大きさ。全体の範囲が変わったかをこれと比べる */
-  private fitBasis: { bounds: Bounds; w: number; h: number; dpr: number } | null = null;
+  private fitBasis: { bounds: Bounds; w: number; h: number; dpr: number; rail: string } | null = null;
   /** 見えるものが変わったあと、全体の範囲が変わったかを少し待ってから確かめるタイマー */
   private fitCheckTimer = 0;
   /** いま見えている色番号とレイヤ（全体の範囲を覚えておく鍵） */
@@ -205,6 +209,8 @@ class App {
     window.addEventListener('resize', () => this.resize());
     window.visualViewport?.addEventListener('resize', () => this.resize());
     window.addEventListener('orientationchange', () => window.setTimeout(() => this.resize(), 300));
+    // 横向きのまま逆さにしたときは大きさが変わらないので、向きの変化でも測り直す
+    screen.orientation?.addEventListener?.('change', () => this.resize());
     window.addEventListener('pageshow', () => this.resize());
     window.setTimeout(() => this.resize(), 400);
     window.setTimeout(() => this.resize(), 1200);
@@ -395,22 +401,37 @@ class App {
     // 見えている図形（色・レイヤ）だけで範囲を決める。隠したレイヤに残った図形で図面が小さくならないように
     // 上のバーと下（横向きでは右）のパネルに隠れない範囲に収める。狭すぎるときは画面全体に
     const ins = this.measureInsets();
-    let top = ins.top;
-    let availH = this.cssH - ins.top - ins.bottom;
-    if (availH < this.cssH * 0.4) {
-      top = 0;
-      availH = this.cssH;
-    }
-    let availW = this.cssW - ins.right;
-    if (availW < this.cssW * 0.4) availW = this.cssW;
-    const w = availW * this.dpr;
-    const h = availH * this.dpr;
     const bw = Math.max(b.maxX - b.minX, 1e-6);
     const bh = Math.max(b.maxY - b.minY, 1e-6);
+    // 収める枠の候補（CSS ピクセル）。横向きで縦に並べたツールバーの列は、どの枠でもいつも避ける
+    const top0 = ins.top;
+    const bottom0 = this.cssH - ins.bottom;
+    const railRight = this.cssW - ins.rail;
+    const boxes = [{ l: ins.left, t: top0, r: this.cssW - ins.right, b: bottom0 }];
+    // 横向きで右に寄せたパネルがあれば、その上（ツールバーの手前まで幅いっぱい）にも収めてみて、大きく見える方を使う。
+    // 横長の図面は右下の小さなパネルの上に、縦長の図面はパネルの左に収まる
+    if (ins.right > ins.rail) boxes.push({ l: ins.left, t: top0, r: railRight, b: Math.min(bottom0, ins.rightTop - 8) });
+    let box: { l: number; t: number; r: number; b: number } | null = null;
+    let best = 0;
+    for (const x of boxes) {
+      // 狭すぎる枠は使わない
+      if (x.r - x.l < this.cssW * 0.25 || x.b - x.t < this.cssH * 0.4) continue;
+      const z = Math.min((x.r - x.l) / bw, (x.b - x.t) / bh);
+      if (z > best) {
+        best = z;
+        box = x;
+      }
+    }
+    // どの枠も狭すぎれば、ツールバーの列だけを避ける（高さも足りなければ画面の上から下まで）
+    if (!box) box = { l: ins.left, t: bottom0 - top0 < this.cssH * 0.4 ? 0 : top0, r: railRight, b: bottom0 - top0 < this.cssH * 0.4 ? this.cssH : bottom0 };
+    const availW = box.r - box.l;
+    const availH = box.b - box.t;
+    const w = availW * this.dpr;
+    const h = availH * this.dpr;
     const zoom = Math.min(w / bw, h / bh) * 0.94;
-    // 見えている範囲の中央に図面の中央が来るように、画面の中央からずらす
-    const midX = (availW / 2) * this.dpr;
-    const midY = (top + availH / 2) * this.dpr;
+    // 収める枠の中央に図面の中央が来るように、画面の中央からずらす
+    const midX = (box.l + availW / 2) * this.dpr;
+    const midY = (box.t + availH / 2) * this.dpr;
     const cx = (b.minX + b.maxX) / 2 - (midX - (this.cssW * this.dpr) / 2) / zoom;
     const cy = (b.minY + b.maxY) / 2 + (midY - (this.cssH * this.dpr) / 2) / zoom;
     return Number.isFinite(zoom) && zoom > 0 && Number.isFinite(cx) && Number.isFinite(cy)
@@ -452,7 +473,7 @@ class App {
   private recordFit(): void {
     if (!this.scene) return;
     this.fittedView = { ...this.view };
-    this.fitBasis = { bounds: this.visibleFit(), w: this.cssW, h: this.cssH, dpr: this.dpr };
+    this.fitBasis = { bounds: this.visibleFit(), w: this.cssW, h: this.cssH, dpr: this.dpr, rail: this.railShown() };
     this.fitStale = false;
     clearTimeout(this.fitCheckTimer);
   }
@@ -467,7 +488,8 @@ class App {
     clearTimeout(this.fitCheckTimer);
     const basis = this.fitBasis;
     if (!this.scene || !basis || this.viewBeforeFit === null || !this.stillFitted()) return;
-    if (basis.w !== this.cssW || basis.h !== this.cssH || basis.dpr !== this.dpr) {
+    // 横向きのまま端末の向きを逆にすると、大きさは同じでもツールバーが反対側へ移って見える所が変わる
+    if (basis.w !== this.cssW || basis.h !== this.cssH || basis.dpr !== this.dpr || basis.rail !== this.railShown()) {
       this.fitStale = true;
     } else {
       // パネルの高さは合わせたときと違うことがあるので、どちらもいまのパネルで合わせた表示どうしを比べる
@@ -529,30 +551,36 @@ class App {
     this.updateFitButton();
   }
 
-  /** 上のバーと下（横向きでは右）のパネルに隠れずに見えている範囲（CSS ピクセル） */
-  private visibleArea(): { top: number; bottom: number; right: number } {
+  /**
+   * 上のバーと下（横向きでは右）のパネル、横向きで縦に並べたツールバーに隠れずに見えている範囲（CSS ピクセル）
+   */
+  private visibleArea(): { top: number; bottom: number; left: number; right: number } {
     const ins = this.measureInsets();
     let top = ins.top;
     let bottom = this.cssH - ins.bottom;
+    let left = ins.left;
     let right = this.cssW - ins.right;
     // 横向きで右に寄せたパネルが見えている高さの半分に届かない（右下の小さなパネル）なら、
-    // その上は幅いっぱいに見えているので、幅は削らない
-    if (ins.right > 0 && ins.rightTop > top + (bottom - top) / 2) right = this.cssW;
+    // その上は（右に並べたツールバーの手前まで）幅いっぱいに見えているので、パネルの分は幅を削らない
+    if (ins.right > ins.rail && ins.rightTop > top + (bottom - top) / 2) right = this.cssW - ins.rail;
     // パネルで見える所がほとんど残らないときは、画面全体を見ているものとする
     if (bottom - top < 40) {
       top = 0;
       bottom = this.cssH;
     }
-    if (right < 40) right = this.cssW;
-    return { top, bottom, right };
+    if (right - left < 40) {
+      left = 0;
+      right = this.cssW;
+    }
+    return { top, bottom, left, right };
   }
 
-  /** 表示 v のとき、上のバーと下（横向きでは右）のパネルに隠れずに見えている範囲（図面座標） */
+  /** 表示 v のとき、バーやパネル、ツールバーに隠れずに見えている範囲（図面座標） */
   private visibleRect(v: View): Bounds {
-    const { top, bottom, right } = this.visibleArea();
+    const { top, bottom, left, right } = this.visibleArea();
     const k = this.dpr / v.zoom;
     return {
-      minX: (0 - this.cssW / 2) * k + v.cx,
+      minX: (left - this.cssW / 2) * k + v.cx,
       maxX: (right - this.cssW / 2) * k + v.cx,
       minY: (this.cssH / 2 - bottom) * k + v.cy,
       maxY: (this.cssH / 2 - top) * k + v.cy,
@@ -596,7 +624,36 @@ class App {
     btn.setAttribute('aria-label', back ? '前の範囲に戻す' : '全体を表示');
   }
 
+  /**
+   * 横向きのとき、ツールバーを縦に並べる側。縦向きで下だった側で、
+   * 端末を左に回す（上が左へ行く）と右、右に回すと左になる。向きが分からなければ右
+   */
+  private railSide(): 'left' | 'right' {
+    // iOS の Safari では window.orientation が確か（左に回すと 90、右に回すと -90）。無ければ Screen Orientation API
+    const o = (window as unknown as { orientation?: unknown }).orientation;
+    const angle = typeof o === 'number' ? o : screen.orientation?.angle;
+    return angle === -90 || angle === 270 ? 'left' : 'right';
+  }
+
+  /** いま縦に並べて見せているツールバーの側（横に並べているときは空） */
+  private railShown(): string {
+    const r = el('toolbar').getBoundingClientRect();
+    if (!(r.height > r.width)) return '';
+    return r.left + r.width / 2 > this.cssW / 2 ? 'right' : 'left';
+  }
+
+  /** ツールバーを並べる側を <html data-rail> に書く（index.html でも最初に書いている）。変わったら true */
+  private updateRail(): boolean {
+    const side = this.railSide();
+    const root = document.documentElement;
+    if (root.dataset.rail === side) return false;
+    root.dataset.rail = side;
+    return true;
+  }
+
   private resize(): void {
+    // 横向きのまま端末の向きを逆にしたときは、大きさが同じでもツールバーが反対側へ移るので測り直す
+    const railMoved = this.updateRail();
     this.dpr = Math.min(window.devicePixelRatio || 1, 3);
     // 画面の数値（innerHeight）ではなく、図面の要素の実際の大きさで描く。
     // ホーム画面から開いたとき（iOS 26）は innerHeight が本当の高さより短く報告されることがあるため
@@ -604,17 +661,17 @@ class App {
     const w = Math.round(box.width) || window.innerWidth;
     const h = Math.round(box.height) || window.innerHeight;
     // 同じ大きさなら何もしない（見張りから何度呼ばれても描き直しを繰り返さない）
-    if (w === this.cssW && h === this.cssH && this.dpr === this.lastDpr) return;
+    if (!railMoved && w === this.cssW && h === this.cssH && this.dpr === this.lastDpr) return;
     this.lastDpr = this.dpr;
     this.cssW = w;
     this.cssH = h;
     this.renderer.resize(this.cssW, this.cssH, this.dpr);
     this.textLayer.resize(this.cssW, this.cssH, this.dpr);
     this.overlay.resize(this.cssW, this.cssH, this.dpr);
-    // 左右の安全領域は env() を JavaScript から直接読めないので、それを含めたツールバーの左右の余白（+8px）から求める
-    const bar = getComputedStyle(el('toolbar'));
-    this.safeLeft = Math.max(0, (parseFloat(bar.paddingLeft) || 8) - 8);
-    this.safeRight = Math.max(0, (parseFloat(bar.paddingRight) || 8) - 8);
+    // 左右の安全領域は env() を JavaScript から直接読めないので、それを左右の余白にした見えない要素から読む
+    const probe = getComputedStyle(el('safe-probe'));
+    this.safeLeft = Math.max(0, parseFloat(probe.paddingLeft) || 0);
+    this.safeRight = Math.max(0, parseFloat(probe.paddingRight) || 0);
     // パネルの幅が変わるので、計測の内訳の詰め方を決め直す
     if (this.scene) this.updateReadout();
     // 画面の大きさ（向き）が変わると全体の範囲も変わる（大きさを比べるだけなので、その場で確かめる）
@@ -672,7 +729,7 @@ class App {
     const state: OverlayState = {
       backRect: back,
       backArea: area
-        ? { ...area, labelLeft: this.safeLeft, labelRight: Math.min(area.right, this.cssW - this.safeRight) }
+        ? { ...area, labelLeft: Math.max(area.left, this.safeLeft), labelRight: Math.min(area.right, this.cssW - this.safeRight) }
         : null,
       points: this.points,
       highlight: this.currentHighlight(),
@@ -938,13 +995,16 @@ class App {
   }
 
   /**
-   * 図面の見えている範囲を狭めているもの（上のバー、下のパネルとツールバー、横向きで右に寄せたパネル）。
+   * 図面の見えている範囲を狭めているもの（上のバー、下のパネルとツールバー、横向きで右に寄せたパネル、
+   * 横向きで左右どちらかに縦に並べたツールバー）。
    * withSheets なら開いているシートも数える。全体表示では一時的なシートは数えない。
    */
   private measureInsets(withSheets = false): Insets {
     const bar = document.getElementById('topbar')?.getBoundingClientRect();
     let bottomEdge = this.cssH;
+    let leftEdge = 0;
     let rightEdge = this.cssW;
+    let railEdge = this.cssW;
     let rightTop = this.cssH;
     const ids: string[] = ['toolbar', 'readout', 'inspect-panel'];
     if (withSheets) ids.push(...SHEETS);
@@ -953,21 +1013,31 @@ class App {
       if (!node || node.classList.contains('hidden')) continue;
       const r = node.getBoundingClientRect();
       if (r.width <= 0 || r.height <= 0) continue;
-      // 横に広いものは下を、右に寄せた細いもの（横向きのパネル）は右を塞ぐ
+      // 右の安全領域が広い機種（横向きの iPhone 14 Pro など）では、右に寄せたパネルの左端が画面の中央より左に来るので、
+      // 左端ではなくパネルの真ん中が右半分にあるかで見分ける
+      const onRight = r.left + r.width / 2 > this.cssW / 2;
       if (r.width >= this.cssW * 0.6) {
+        // 横に広いもの（下のツールバー、縦向きのパネルとシート）は下を塞ぐ
         bottomEdge = Math.min(bottomEdge, r.top);
-      } else if (r.left + r.width / 2 > this.cssW / 2) {
-        // 右の安全領域が広い機種（横向きの iPhone 14 Pro など）では、右に寄せたパネルの左端が画面の中央より左に来るので、
-        // 左端ではなくパネルの真ん中が右半分にあるかで見分ける
+      } else if (id === 'toolbar') {
+        // 横向きで縦に並べたツールバーは、左右どちらかの端を上から下まで塞ぐ
+        if (onRight) railEdge = Math.min(railEdge, r.left);
+        else leftEdge = Math.max(leftEdge, r.right);
+      } else if (onRight) {
+        // 右に寄せた細いもの（横向きのパネルとシート）は右を塞ぐ
         rightEdge = Math.min(rightEdge, r.left);
         rightTop = Math.min(rightTop, r.top);
       }
     }
+    const rail = railEdge < this.cssW ? this.cssW - railEdge + 8 : 0;
+    const panel = rightEdge < this.cssW ? this.cssW - rightEdge + 8 : 0;
     return {
       top: bar && bar.height > 0 ? bar.bottom + 4 : 52,
       bottom: this.cssH - bottomEdge + 8,
-      right: rightEdge < this.cssW ? this.cssW - rightEdge + 8 : 0,
-      rightTop,
+      left: leftEdge > 0 ? leftEdge + 8 : 0,
+      right: Math.max(rail, panel),
+      rail,
+      rightTop: panel > rail ? rightTop : this.cssH,
     };
   }
 
@@ -979,15 +1049,16 @@ class App {
     const margin = 12;
     const topLimit = this.insets.top;       // 上部のバー
     const bottomLimit = this.insets.bottom; // 下部のパネルとツールバー（開いているシートも）
-    const rightLimit = this.insets.right;   // 横向きで右に寄せたパネル
+    const rightLimit = this.insets.right;   // 横向きで右に寄せたパネル（と右に並べたツールバー）
+    const leftEdge = this.insets.left + margin; // 横向きで左に並べたツールバー
     const gap = 28;                         // 指との間隔
     // 横向きやシートを開いているときは、見えている範囲に収まるまで小さくする
     const roomH = this.cssH - topLimit - bottomLimit;
-    const roomW = this.cssW - rightLimit - margin * 2;
+    const roomW = this.cssW - rightLimit - leftEdge - margin;
     const size = Math.round(Math.max(64, Math.min(180, Math.min(this.cssW, this.cssH) * 0.44, roomH, roomW)));
     const maxX = this.cssW - rightLimit - size - margin;
 
-    const clampX = (v: number): number => Math.max(margin, Math.min(maxX, v));
+    const clampX = (v: number): number => Math.max(leftEdge, Math.min(maxX, v));
 
     const roomAbove = cssY - gap - topLimit;
     const roomBelow = this.cssH - bottomLimit - (cssY + gap);
@@ -1002,13 +1073,13 @@ class App {
 
     // 縦に逃がせないので左右へ。指から遠い側に置き、そこに入りきらなければ入る大きさまで小さくする
     // （指の上に重ねると、指で隠れた所を見せるという役目を果たせないため）
-    const mid = (this.cssW - rightLimit) / 2;
-    const leftRoom = cssX - gap - margin;
+    const mid = (leftEdge - margin + this.cssW - rightLimit) / 2;
+    const leftRoom = cssX - gap - leftEdge;
     const rightRoom = this.cssW - rightLimit - margin - (cssX + gap);
     const useLeft = cssX > mid ? leftRoom >= 64 || leftRoom >= rightRoom : !(rightRoom >= 64 || rightRoom >= leftRoom);
     const s2 = Math.round(Math.max(48, Math.min(size, useLeft ? leftRoom : rightRoom)));
     const y = Math.max(topLimit, Math.min(this.cssH - bottomLimit - s2, cssY - s2 / 2));
-    const x = useLeft ? Math.max(margin, cssX - gap - s2) : Math.min(this.cssW - rightLimit - margin - s2, cssX + gap);
+    const x = useLeft ? Math.max(leftEdge, cssX - gap - s2) : Math.min(this.cssW - rightLimit - margin - s2, cssX + gap);
     return { x, y, size: s2 };
   }
 
@@ -1124,20 +1195,36 @@ class App {
     const m = 16;
     // 計測パネルかツールバーに隠れた（またはその縁にかかった）ら、その上端より上へずらす。
     // 横向きで右に寄せたパネルでも上へずらすのは、直交で続けて測る行がパネルの下に入らないようにするため
+    const bar = el('toolbar').getBoundingClientRect();
+    // 横向きで縦に並べたツールバーは左右の端を上から下まで塞ぐので、上ではなく横へずらす（図面を右へずらす量。負なら左へ）
+    const rail = bar.width > 0 && bar.height > bar.width;
+    let shift = 0;
+    if (rail) {
+      if (bar.left + bar.width / 2 < this.cssW / 2) {
+        if (sx < bar.right + m) shift = bar.right + m - sx;
+      } else if (sx > bar.left - m) {
+        shift = bar.left - m - sx;
+      }
+    }
+    // 横へずらした先で、計測パネル（縦向きではツールバーも）に隠れるなら上へ
+    const tx = sx + shift;
     let target = Infinity;
-    for (const box of [r, el('toolbar').getBoundingClientRect()]) {
+    for (const box of rail ? [r] : [r, bar]) {
       if (box.width <= 0 || box.height <= 0) continue;
-      if (sx < box.left - m || sx > box.right + m || sy < box.top - m || sy > box.bottom + m) continue;
+      if (tx < box.left - m || tx > box.right + m || sy < box.top - m || sy > box.bottom + m) continue;
       target = Math.min(target, box.top - m);
     }
-    if (!Number.isFinite(target) || sy <= target) return;
+    const up = Number.isFinite(target) && sy > target;
+    if (!up && shift === 0) return;
     const topLimit = this.measureInsets().top + m;
     this.autoPan(() => {
+      this.view.cx -= shift * k;
+      if (!up) return;
       if (target >= topLimit) {
         this.view.cy -= (sy - target) * k;
       } else {
         // 上へずらすと上のバーに入ってしまう（とても低い横画面）ときだけ、左へ
-        this.view.cx += (sx - (r.left - m)) * k;
+        this.view.cx += (tx - (r.left - m)) * k;
       }
     });
     this.requestDraw(true);
@@ -1415,12 +1502,15 @@ class App {
     if (bottom > limitBottom) dy = Math.min(bottom - limitBottom, top - (ins.top + pad));
     let dx = 0;
     const limitRight = this.cssW - ins.right - pad;
-    if (ins.right > 0 && right > limitRight) dx = Math.min(right - limitRight, left - pad);
-    if (dy <= 0 && dx <= 0) return;
-    // 図形を上（左）へ動かす
+    const limitLeft = ins.left + pad;
+    if (ins.right > 0 && right > limitRight) dx = Math.max(0, Math.min(right - limitRight, left - limitLeft));
+    // 横向きで左に並べたツールバーに隠れていれば右へ
+    else if (ins.left > 0 && left < limitLeft) dx = -Math.max(0, Math.min(limitLeft - left, limitRight - right));
+    if (dy <= 0 && dx === 0) return;
+    // 図形を上（左右）へ動かす
     this.autoPan(() => {
       if (dy > 0) this.view.cy -= dy * k;
-      if (dx > 0) this.view.cx += dx * k;
+      this.view.cx += dx * k;
     });
   }
 

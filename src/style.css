@@ -98,6 +98,15 @@ html.standalone #shell {
   will-change: transform;
 }
 
+/* 左右の安全領域を読むための見えない要素 */
+#safe-probe {
+  position: absolute;
+  visibility: hidden;
+  pointer-events: none;
+  padding-left: var(--safe-left);
+  padding-right: var(--safe-right);
+}
+
 /* ---- 上部バー ---- */
 #topbar {
   position: absolute;
@@ -1255,6 +1264,112 @@ body[data-bg="light"] .panel {
     grid-row: 4;
     grid-column: 1 / -1;
     min-height: 0;
+  }
+}
+
+/*
+ * ---- 横向き：ツールバーを縦に並べて、縦向きで下だった側（html の data-rail）の端に置く ----
+ * 横向きの画面は低いので、下にツールバーを出すと高さの 2 割近くを使ってしまう。
+ * 縦に並べれば幅の 1 割ほどで済み、図面を上から下まで見られる。
+ * 上のバー・パネル・シートは、ツールバーの列を避けて置く
+ */
+@media (orientation: landscape) and (max-height: 500px) {
+  :root {
+    /* 縦に並べたボタンの幅と、ツールバーが画面の端（安全領域の内側）から取る幅 */
+    --rail-button: 64px;
+    --rail-space: calc(var(--rail-button) + 16px);
+    --rail-left: 0px;
+    --rail-right: var(--rail-space);
+  }
+
+  :root[data-rail="left"] {
+    --rail-left: var(--rail-space);
+    --rail-right: 0px;
+  }
+
+  #toolbar {
+    top: 0;
+    bottom: 0;
+    left: auto;
+    right: 0;
+    width: calc(var(--safe-right) + var(--rail-space));
+    flex-direction: column;
+    /* 高さが足りないとき（Safari のバーが出た低い横画面）は、上下のボタンが画面の外へ出ないよう上から詰める */
+    justify-content: safe center;
+    gap: 6px;
+    padding: calc(var(--safe-top) + 8px) calc(var(--safe-right) + 8px) var(--bar-bottom) 8px;
+    /* 縦向きの下のツールバーと同じく、ボタンをわずかに外したタップで図面に点が置かれないよう、列全体で受ける */
+    background: linear-gradient(270deg, rgba(11, 12, 16, 0.92), rgba(11, 12, 16, 0));
+  }
+
+  :root[data-rail="left"] #toolbar {
+    left: 0;
+    right: auto;
+    width: calc(var(--safe-left) + var(--rail-space));
+    padding: calc(var(--safe-top) + 8px) 8px var(--bar-bottom) calc(var(--safe-left) + 8px);
+    background: linear-gradient(90deg, rgba(11, 12, 16, 0.92), rgba(11, 12, 16, 0));
+  }
+
+  /* 高さが足りなければボタンを低くして、5 つとも画面に収める */
+  .tool {
+    flex: 0 1 50px;
+    width: 100%;
+    height: auto;
+    min-height: 36px;
+  }
+
+  /* 白背景では、縦のツールバーの地も白くぼかす（縦向きの下のツールバーと同じ考え方で、向きだけ横に） */
+  body[data-bg="light"] #toolbar {
+    background: linear-gradient(270deg, rgba(255, 255, 255, 0.94), rgba(255, 255, 255, 0));
+  }
+
+  :root[data-rail="left"] body[data-bg="light"] #toolbar {
+    background: linear-gradient(90deg, rgba(255, 255, 255, 0.94), rgba(255, 255, 255, 0));
+  }
+
+  /* 上のバーは、ツールバーの列にかからないよう内側から始める */
+  #topbar {
+    padding-left: calc(var(--safe-left) + max(10px, var(--rail-left)));
+    padding-right: calc(var(--safe-right) + max(10px, var(--rail-right)));
+  }
+
+  /* 計測・属性のパネルは右に寄せたまま、下にツールバーがないので画面の下端近くまで下ろす */
+  .panel,
+  #inspect-panel {
+    right: calc(var(--safe-right) + max(10px, var(--rail-right)));
+    bottom: var(--bar-bottom);
+    max-height: calc(100% - var(--safe-top) - var(--bar-bottom) - 62px);
+  }
+
+  /*
+   * シート（レイヤ・表示・図面情報）も、下から画面を覆わずに右側へ縦長に出す。
+   * 左の図面を見ながら切り替えられる
+   */
+  .sheet,
+  #layer-panel,
+  #display-panel {
+    left: auto;
+    right: calc(var(--safe-right) + max(10px, var(--rail-right)));
+    top: calc(var(--safe-top) + 56px);
+    bottom: var(--bar-bottom);
+    width: min(400px, 50%);
+    max-height: none;
+    padding-bottom: 0;
+    border: 1px solid var(--line);
+    border-radius: 16px;
+  }
+
+  /*
+   * 知らせは、右側に出るシート（幅 min(400px, 50%)）とツールバーを除いた所の真ん中に出す。
+   * シートを開いていても見出しに重ならない
+   */
+  .hint {
+    --hint-from: calc(var(--safe-left) + max(10px, var(--rail-left)));
+    --hint-to: calc(100% - var(--safe-right) - max(10px, var(--rail-right)) - min(400px, 50%) - 10px);
+    left: calc((var(--hint-from) + var(--hint-to)) / 2);
+    max-width: calc(var(--hint-to) - var(--hint-from));
+    text-align: center;
+    z-index: 25;
   }
 }
 

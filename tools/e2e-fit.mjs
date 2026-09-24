@@ -495,13 +495,21 @@ for (const [name, opts] of [
   const before = await o.page.evaluate(() => {
     const a = window.__jww;
     const ro = document.getElementById('readout').getBoundingClientRect();
-    return { rect: a.visibleRect(a.view), cssW: a.cssW, cssH: a.cssH, roLeft: ro.left, roTop: ro.top, view: { ...a.view }, dpr: a.dpr };
+    const bar = document.getElementById('toolbar').getBoundingClientRect();
+    return {
+      rect: a.visibleRect(a.view), cssW: a.cssW, cssH: a.cssH, roLeft: ro.left, roTop: ro.top, view: { ...a.view }, dpr: a.dpr,
+      // 横向きで縦に並べたツールバー（右端）の左端
+      barLeft: bar.height > bar.width ? bar.left : a.cssW,
+    };
   });
   await o.page.click('#btn-fit');
   if (name.startsWith('横')) {
-    // 横向きの計測パネルは右下の小さな窓なので、その上は幅いっぱい見えていた
-    const widthCss = ((before.rect.maxX - before.rect.minX) * before.view.zoom) / before.dpr;
-    check(`${name}：右下の小さなパネルの上も見えていたので、前の範囲は画面の幅いっぱい`, Math.abs(widthCss - before.cssW) < 1, { widthCss, cssW: before.cssW, roLeft: before.roLeft, roTop: before.roTop });
+    // 横向きの計測パネルは右下の小さな窓なので、その上は（右端に縦に並べたツールバーの手前まで）幅いっぱい見えていた
+    const leftCss = ((before.rect.minX - before.view.cx) * before.view.zoom) / before.dpr + before.cssW / 2;
+    const rightCss = ((before.rect.maxX - before.view.cx) * before.view.zoom) / before.dpr + before.cssW / 2;
+    check(`${name}：右下の小さなパネルの上も見えていたので、前の範囲は左端から右のツールバーの手前まで`,
+      Math.abs(leftCss) < 1 && rightCss > before.roLeft + 100 && rightCss <= before.barLeft && rightCss > before.barLeft - 20,
+      { leftCss, rightCss, barLeft: before.barLeft, roLeft: before.roLeft, roTop: before.roTop });
     // 回してから「全体」を押し直すと、囲いは今の画面で「前の範囲」が映す所に合わせ直す
     await o.page.setViewportSize({ width: 375, height: 667 });
     await o.page.waitForTimeout(600);

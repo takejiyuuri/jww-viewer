@@ -377,6 +377,139 @@ const overlayAt = (x, y) => page.evaluate(([x, y]) => {
   check('黒い背景では白で描く', white > 100, { white });
 }
 
+// ---------- 横向きではツールバーを縦に並べ、縦向きで下だった側に置く ----------
+{
+  /** 端末の向き（window.orientation。左に回すと 90、右に回すと -90）を決めて開く */
+  const openRotated = async (viewport, angle) => {
+    const ctx = await browser.newContext({ viewport, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+    await ctx.addInitScript((a) => {
+      window.__angle = a;
+      Object.defineProperty(window, 'orientation', { get: () => window.__angle, configurable: true });
+    }, angle);
+    const page = await ctx.newPage();
+    page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+    page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
+    await page.goto(srv.url, { waitUntil: 'networkidle' });
+    await page.setInputFiles('#file', sample);
+    await page.waitForFunction(() => document.getElementById('title')?.textContent?.endsWith('.jww'), null, { timeout: 60000 });
+    await page.waitForTimeout(600);
+    return { ctx, page };
+  };
+  /** ツールバーの並びと、ほかのものとの重なり */
+  const layout = (page) => page.evaluate(async () => {
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const a = window.__jww;
+    const rect = (n) => { const r = n.getBoundingClientRect(); return { l: r.left, t: r.top, r: r.right, b: r.bottom, w: r.width, h: r.height }; };
+    const bar = rect(document.getElementById('toolbar'));
+    const tools = [...document.querySelectorAll('#toolbar .tool')].map(rect);
+    const overlap = (p, q) => p.l < q.r && q.l < p.r && p.t < q.b && q.t < p.b;
+    const hits = ['btn-open', 'btn-info', 'readout', 'inspect-panel', 'layer-panel', 'display-panel', 'info-panel']
+      .map((id) => document.getElementById(id))
+      .filter((n) => n && !n.classList.contains('hidden') && n.getBoundingClientRect().width > 0)
+      .filter((n) => tools.some((t) => overlap(t, rect(n))))
+      .map((n) => n.id);
+    return {
+      rail: document.documentElement.dataset.rail,
+      cssW: a.cssW,
+      cssH: a.cssH,
+      vertical: bar.h > bar.w,
+      side: bar.l + bar.w / 2 > a.cssW / 2 ? 'right' : 'left',
+      stacked: tools.every((t, i) => i === 0 || (Math.abs(t.l - tools[0].l) < 1 && t.t >= tools[i - 1].b)),
+      inside: tools.length === 5 && tools.every((t) => t.l >= 0 && t.r <= a.cssW && t.t >= 0 && t.b <= a.cssH),
+      hits,
+      area: a.visibleArea(),
+      toolsL: Math.min(...tools.map((t) => t.l)),
+      toolsR: Math.max(...tools.map((t) => t.r)),
+      label: document.querySelector('#btn-fit span').textContent,
+    };
+  });
+
+  for (const [name, viewport] of [['横 852', { width: 852, height: 393 }], ['横 568', { width: 568, height: 320 }]]) {
+    for (const [angle, want] of [[90, 'right'], [-90, 'left']]) {
+      const tag = `${name}・${want === 'right' ? '左に回した' : '右に回した'}`;
+      const side = want === 'right' ? '右' : '左';
+      const o = await openRotated(viewport, angle);
+      const s = await layout(o.page);
+      check(`${tag}：ツールバーは縦に並び、縦向きで下だった${side}の端に収まる`,
+        s.rail === want && s.vertical && s.side === want && s.stacked && s.inside, s);
+      const clear = want === 'right' ? s.area.right <= s.toolsL : s.area.left >= s.toolsR;
+      check(`${tag}：見えている範囲（全体表示・前の範囲の囲い）はツールバーの列を避ける`, clear,
+        { area: s.area, toolsL: s.toolsL, toolsR: s.toolsR });
+      // 全体表示の図面は、ツールバーのボタンにも計測パネルにも重ならず、十分な大きさで見える
+      const fitted = await o.page.evaluate(() => {
+        const a = window.__jww;
+        a.fit();
+        const b = a.visibleFit();
+        const k = a.dpr / a.view.zoom;
+        const d = { l: (b.minX - a.view.cx) / k + a.cssW / 2, r: (b.maxX - a.view.cx) / k + a.cssW / 2, t: a.cssH / 2 - (b.maxY - a.view.cy) / k, b: a.cssH / 2 - (b.minY - a.view.cy) / k };
+        const rect = (n) => { const r = n.getBoundingClientRect(); return { l: r.left, t: r.top, r: r.right, b: r.bottom }; };
+        const overlap = (p, q) => p.l < q.r - 1 && q.l < p.r - 1 && p.t < q.b - 1 && q.t < p.b - 1;
+        const blockers = [...document.querySelectorAll('#toolbar .tool'), document.getElementById('readout')].map(rect);
+        return { drawing: d, hits: blockers.filter((q) => overlap(d, q)).length, share: Math.max((d.r - d.l) / a.cssW, (d.b - d.t) / a.cssH) };
+      });
+      check(`${tag}：全体表示の図面はツールバーにも計測パネルにも重ならず、大きく見える`, fitted.hits === 0 && fitted.share > 0.5, fitted);
+      // 拡大鏡もツールバーの列に重ねない。列のすぐ内側の下の方（拡大鏡が指の上に出る所）で長押ししたとき。
+      // 右の列では計測パネルの幅が列より広いので、パネルを除いて列だけで避けられるかを見る
+      const mag = await o.page.evaluate(([right, l, r]) => {
+        const a = window.__jww;
+        const ins = a.measureInsets(true);
+        a.insets = right ? { ...ins, right: ins.rail } : ins;
+        const box = a.placeMagnifier(right ? l - 10 : r + 10, a.cssH - 40);
+        return { box, above: box.y + box.size <= a.cssH - 40, clear: right ? box.x + box.size <= l : box.x >= r };
+      }, [want === 'right', s.toolsL, s.toolsR]);
+      check(`${tag}：拡大鏡をツールバーに重ねない`, mag.above && mag.clear, mag);
+      // 属性のパネルとレイヤのシートを開いても、ツールバーのボタンと重ならない
+      await o.page.click('#btn-tool-inspect');
+      const s2 = await layout(o.page);
+      await o.page.click('#btn-layers');
+      const s3 = await layout(o.page);
+      check(`${tag}：上のバー・計測と属性のパネル・シートがツールバーのボタンに重ならない`,
+        s.hits.length === 0 && s2.hits.length === 0 && s3.hits.length === 0, { measure: s.hits, inspect: s2.hits, sheet: s3.hits });
+      // レイヤのシートは右側に縦長に出て、左の図面を覆わない
+      const sheet = await o.page.evaluate(() => {
+        const r = document.getElementById('layer-panel').getBoundingClientRect();
+        return { left: r.left, top: r.top, bottom: r.bottom, cssW: window.__jww.cssW, cssH: window.__jww.cssH };
+      });
+      check(`${tag}：レイヤのシートは右側に縦長に出て、画面の左半分を覆わない`,
+        sheet.left >= sheet.cssW / 2 - 90 && sheet.bottom - sheet.top > sheet.cssH * 0.6, sheet);
+      await o.ctx.close();
+    }
+  }
+
+  // Safari のバーが出て高さの低い横画面でも、ボタンを低くして 5 つとも画面に収める
+  {
+    const o = await openRotated({ width: 568, height: 240 }, 90);
+    const s = await layout(o.page);
+    check('高さ 240 の低い横画面でも、縦に並べたボタンが 5 つとも画面に収まる', s.vertical && s.stacked && s.inside, s);
+    await o.ctx.close();
+  }
+
+  // 横向きのまま逆さにする（左右が入れ替わる）と、大きさが同じでもツールバーは反対側へ移り、
+  // 全体に合わせ直せるよう「全体」に戻る
+  {
+    const o = await openRotated({ width: 852, height: 393 }, 90);
+    await o.page.evaluate(() => { const a = window.__jww; a.view.zoom *= 4; a.requestDraw(true); });
+    await o.page.click('#btn-fit');
+    const before = await layout(o.page);
+    await o.page.evaluate(() => { window.__angle = -90; window.dispatchEvent(new Event('orientationchange')); });
+    await o.page.waitForTimeout(600);
+    const after = await layout(o.page);
+    check('横向きのまま逆さにすると、ツールバーが反対側へ移り、ボタンが「全体」に戻る',
+      before.side === 'right' && before.label === '前の範囲' && after.rail === 'left' && after.side === 'left' && after.label === '全体',
+      { before: { side: before.side, label: before.label }, after: { rail: after.rail, side: after.side, label: after.label } });
+    // 縦向きに戻すと、ツールバーはまた下に横に並ぶ
+    await o.page.setViewportSize({ width: 393, height: 852 });
+    await o.page.evaluate(() => { window.__angle = 0; window.dispatchEvent(new Event('orientationchange')); });
+    await o.page.waitForTimeout(600);
+    const portrait = await o.page.evaluate(() => {
+      const r = document.getElementById('toolbar').getBoundingClientRect();
+      return { w: r.width, h: r.height, bottom: r.bottom, cssH: window.__jww.cssH };
+    });
+    check('縦向きではツールバーは下に横に並ぶ', portrait.w > portrait.h && Math.abs(portrait.bottom - portrait.cssH) < 1, portrait);
+    await o.ctx.close();
+  }
+}
+
 check('コンソールにエラーがない', errors.length === 0, { errors: errors.slice(0, 5) });
 await ctx.close();
 

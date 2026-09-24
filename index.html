@@ -18,9 +18,18 @@
   if (navigator.standalone === true || (window.matchMedia && matchMedia('(display-mode: standalone)').matches)) {
     document.documentElement.classList.add('standalone');
   }
+  // 横向きでツールバーを縦に並べる側（縦向きで下だった側）。main.ts の railSide と同じ決め方で、
+  // 描き始める前に決めておく（端末を左に回すと右、右に回すと左）
+  (function () {
+    var o = window.orientation;
+    var a = typeof o === 'number' ? o : (window.screen && screen.orientation ? screen.orientation.angle : 0);
+    document.documentElement.dataset.rail = a === -90 || a === 270 ? 'left' : 'right';
+  })();
 </script>
 </head>
 <body>
+<!-- 左右の安全領域を JavaScript から読むための見えない要素（余白に env() の値が入る） -->
+<div id="safe-probe" aria-hidden="true"></div>
 <!-- アイコンは一度だけ定義して <use> で使い回す -->
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
   <defs>

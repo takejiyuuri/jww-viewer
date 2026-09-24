@@ -52,7 +52,7 @@ export interface OverlayState {
    * バーやパネルに隠れずに見えている範囲（CSS ピクセル）。「前の範囲」の囲いはこの中に掛かるときだけ描く。
    * 札は labelLeft〜labelRight（左右の安全領域を除いた所）の中に出す
    */
-  backArea: { top: number; bottom: number; right: number; labelLeft: number; labelRight: number } | null;
+  backArea: { top: number; bottom: number; left: number; right: number; labelLeft: number; labelRight: number } | null;
   points: MeasurePoint[];
   /** 属性を見ている図形 */
   highlight: Highlight | null;
@@ -372,7 +372,7 @@ export class Overlay {
   private drawBackRect(
     view: View,
     r: { minX: number; minY: number; maxX: number; maxY: number },
-    area: { top: number; bottom: number; right: number; labelLeft: number; labelRight: number },
+    area: { top: number; bottom: number; left: number; right: number; labelLeft: number; labelRight: number },
     k: number,
   ): void {
     const ctx = this.ctx;
@@ -381,11 +381,12 @@ export class Overlay {
     // 見えている範囲（デバイスピクセル）
     const top = area.top * k;
     const bottom = area.bottom * k;
+    const left = area.left * k;
     const right = area.right * k;
     // 前の範囲が見えている所に掛からない（画面の外）か、見えている所をすっぽり覆う（全体より引いて見ていた）ときは、
     // 囲っても枠が見えず色が付くだけなので描かない（ボタンの「前の範囲」で戻れることは変わらない）
-    if (x1 < 0 || x0 > right || y1 < top || y0 > bottom) return;
-    if (x0 <= 0 && x1 >= right && y0 <= top && y1 >= bottom) return;
+    if (x1 < left || x0 > right || y1 < top || y0 > bottom) return;
+    if (x0 <= left && x1 >= right && y0 <= top && y1 >= bottom) return;
     const min = 16 * k;
     if (x1 - x0 < min) {
       const c = (x0 + x1) / 2;
