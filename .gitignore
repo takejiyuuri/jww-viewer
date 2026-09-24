@@ -10,6 +10,8 @@ samples/
 # 検証スクリプトが吐く画像
 *.png
 !public/icon-*.png
+# iOS アプリのアイコンと起動画面
+!ios/App/App/Assets.xcassets/**/*.png
 e2e-*.png
 preview.png
 desktop.ini
