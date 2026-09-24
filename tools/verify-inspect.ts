@@ -12,6 +12,7 @@ import { buildInfo } from '../src/jww/info.ts';
 import { SnapIndex } from '../src/measure/snap.ts';
 import { describeEntity, entityShape, pickEntity, textContains } from '../src/ui/inspect.ts';
 import { LayerVisibility } from '../src/ui/layers.ts';
+import { versionWarning } from '../src/jww/header.ts';
 
 const files = process.argv.slice(2);
 if (files.length === 0) {
@@ -730,6 +731,36 @@ for (const file of files) {
   again.resetToJw(groups, 0);
   if (!inv.sameAs(again)) fail('2 回反転しても元の見え方に戻らない');
   console.log(`\n合成データ（Jw_cad の状態・このレイヤだけ・反転）: ${failures === before ? 'OK' : 'NG'}`);
+}
+
+// ---------- 6. 内部バージョンの扱い：2.30 より前は断り、2.31〜2.99 は読んで注意を出す ----------
+{
+  const before = failures;
+  const headOnly = (version: number): ArrayBuffer => {
+    const b = new Uint8Array(12);
+    b.set([...'JwwData.'].map((c) => c.charCodeAt(0)));
+    new DataView(b.buffer).setUint32(8, version, true);
+    return b.buffer;
+  };
+  const refused = (version: number): boolean => {
+    try {
+      parseJww(headOnly(version));
+      return false;
+    } catch (err) {
+      return /未対応の JWW バージョン/.test((err as Error).message);
+    }
+  };
+  for (const v of [0, 100, 223, 229]) if (!refused(v)) fail('2.30 より前のバージョンを断らない', { v });
+  // ヘッダだけの短いデータなので先で止まるが、バージョンでは断らない
+  for (const v of [230, 231, 252, 299, 300, 351, 420, 700]) if (refused(v)) fail('読めるはずのバージョンを断る', { v });
+  const expect: Array<[number, string | null]> = [
+    [230, null], [231, 'Ver.2.31'], [252, 'Ver.2.52'], [299, 'Ver.2.99'], [300, null], [700, null],
+  ];
+  for (const [v, want] of expect) {
+    const got = versionWarning(v);
+    if (want === null ? got !== null : !(got && got.includes(want) && got.includes('確認'))) fail('古い形式の注意の出し方が違う', { v, got });
+  }
+  console.log(`\n内部バージョンの扱い（2.30 未満は断る・2.31〜2.99 は注意）: ${failures === before ? 'OK' : 'NG'}`);
 }
 
 console.log(failures ? `\n失敗 ${failures} 件` : '\nすべて合格');

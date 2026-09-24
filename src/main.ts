@@ -18,6 +18,7 @@ import { LayerVisibility, renderLayerList, type LayerSnapshot } from './ui/layer
 import { describeEntity, entityShape, pickEntity } from './ui/inspect.ts';
 import { KIND, fitScene, type Bounds } from './render/geometry.ts';
 import { hex1, layerTag } from './jww/names.ts';
+import { versionWarning } from './jww/header.ts';
 
 /** 吸着先を探す半径（CSS ピクセル） */
 const SNAP_RADIUS = 22;
@@ -284,9 +285,15 @@ class App {
     this.buildInfoPanel();
     this.fit();
     const hiddenLayers = this.layers.hiddenCount(scene.layerCounts);
-    this.hint(hiddenLayers > 0
-      ? `読み込みました。${hiddenLayers} 個のレイヤが非表示です`
-      : `${info.counts.lines.toLocaleString()} 本の線を ${Math.round(info.parseMs)}ms で読み込みました`);
+    // 資料どおりに読んでいるが実物で確かめていない古い形式は、ほかの知らせより優先して長めに出す
+    const old = versionWarning(info.version);
+    if (old) {
+      this.hint(old, 6000);
+    } else {
+      this.hint(hiddenLayers > 0
+        ? `読み込みました。${hiddenLayers} 個のレイヤが非表示です`
+        : `${info.counts.lines.toLocaleString()} 本の線を ${Math.round(info.parseMs)}ms で読み込みました`);
+    }
   }
 
   // ---------- ビュー ----------
@@ -1038,7 +1045,7 @@ class App {
     return open;
   }
 
-  private hint(text: string): void {
+  private hint(text: string, ms = 2600): void {
     const node = el('hint');
     node.textContent = text;
     node.classList.remove('hidden');
@@ -1049,7 +1056,7 @@ class App {
     this.hintTimer = window.setTimeout(() => {
       node.style.opacity = '0';
       this.hintHideTimer = window.setTimeout(() => node.classList.add('hidden'), 260);
-    }, 2600);
+    }, ms);
   }
 
   // ---------- UI ----------

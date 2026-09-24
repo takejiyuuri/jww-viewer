@@ -4,10 +4,25 @@ import type { JwwHeader, JwwLayerGroup } from './types.ts';
 /** SXF 拡張色の色番号オフセット */
 const SXCOL_EXT = 100;
 
+/** 読める最も古い内部バージョン（Jw_cad Ver.2.30）。これより前はヘッダの項目の並びが違う */
+export const OLDEST_VERSION = 230;
+
+/**
+ * 内部バージョン 231〜299（Ver.2.31〜2.99）の図面への注意。
+ * Jw_cad 作者の「Jw_cad のデータ形式」では Ver.2.30 と同じ並びなのでそのとおりに読むが、
+ * 実物の図面で確かめられていないので、開いたときに表示を確かめてもらう。
+ */
+export function versionWarning(version: number): string | null {
+  if (version > OLDEST_VERSION && version < 300) {
+    return `古い形式（Jw_cad Ver.${(version / 100).toFixed(2)}）の図面です。\n表示が正しいか確認してください`;
+  }
+  return null;
+}
+
 /**
  * JWW ヘッダを読む。
  * 図形データの開始位置を正しく決めるため、使わない項目も全て読み進める必要がある。
- * バージョン分岐は jwwlib (LibreCAD) の実装および Jw_cad 公開データ形式に準拠。
+ * バージョン分岐は Jw_cad 作者が公開している「Jw_cad のデータ形式」（jwdatafmt.txt）に従う。
  */
 export function parseHeader(r: Reader): JwwHeader {
   const magic = r.ascii(8);
@@ -15,7 +30,7 @@ export function parseHeader(r: Reader): JwwHeader {
     throw new Error(`JWW ファイルではありません (先頭 8 バイトが "${magic}")`);
   }
   const version = r.u32();
-  if (version !== 230 && version < 300) {
+  if (version < OLDEST_VERSION) {
     throw new Error(`未対応の JWW バージョンです (内部バージョン ${version})`);
   }
 

@@ -1,5 +1,5 @@
 import { Reader } from './reader.ts';
-import { parseHeader } from './header.ts';
+import { parseHeader, versionWarning } from './header.ts';
 import type {
   JwwArc, JwwBlockDef, JwwBlockRef, JwwCommon, JwwDim, JwwDocument,
   JwwEntities, JwwLine, JwwPoint, JwwSolid, JwwText,
@@ -192,6 +192,8 @@ export function parseJww(buffer: ArrayBuffer): JwwDocument {
     mapCount: 1,
     warnings: [],
   };
+  const old = versionWarning(header.version);
+  if (old) ctx.warnings.push(old);
 
   const entities = emptyEntities();
   const blockDefs = new Map<number, JwwBlockDef>();
