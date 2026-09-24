@@ -86,7 +86,7 @@ await page.waitForTimeout(1500);
 
 const stored = await page.evaluate(async () => {
   const db = await new Promise((res, rej) => {
-    const r = indexedDB.open('jww-viewer', 1);
+    const r = indexedDB.open('jww-viewer');
     r.onsuccess = () => res(r.result);
     r.onerror = () => rej(r.error);
   });
@@ -154,7 +154,7 @@ if (offlineLoaded) {
       let idb = null;
       try {
         const db = await new Promise((res, rej) => {
-          const r = indexedDB.open('jww-viewer', 1);
+          const r = indexedDB.open('jww-viewer');
           r.onsuccess = () => res(r.result);
           r.onerror = () => rej(r.error);
           r.onblocked = () => rej(new Error('blocked'));

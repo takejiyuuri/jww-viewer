@@ -10,9 +10,10 @@ import {
 } from './measure/measure.ts';
 import { MEASURE_COLORS, measureColor, measureInk } from './measure/colors.ts';
 import {
-  loadDisplay, loadLast, loadMeasurePrefs, loadViewState, saveDisplay, saveLast, saveMeasurePrefs, saveViewState,
-  type MeasurePrefs,
+  listRecent, loadDisplay, loadLast, loadMeasurePrefs, loadRecent, loadViewState, removeRecent, saveDisplay, saveLast,
+  saveMeasurePrefs, saveRecent, saveViewState, type MeasurePrefs, type RecentFile,
 } from './storage.ts';
+import { isNative, listenForFiles, statusBarFor, tapFeedback } from './native.ts';
 import {
   BACKGROUND_RGB, buildPalette, displayColor, type DisplaySettings,
 } from './render/theme.ts';
@@ -48,8 +49,8 @@ interface Insets {
   /** 右に寄せたパネルの上端（CSS ピクセル）。無ければ画面の高さ */
   rightTop: number;
 }
-type Sheet = 'info-panel' | 'display-panel' | 'layer-panel';
-const SHEETS: Sheet[] = ['info-panel', 'display-panel', 'layer-panel'];
+type Sheet = 'info-panel' | 'display-panel' | 'layer-panel' | 'files-panel';
+const SHEETS: Sheet[] = ['info-panel', 'display-panel', 'layer-panel', 'files-panel'];
 
 /** レイヤの表示の変更の履歴の 1 段。そのときのレイヤの状態と、見ていた図形 */
 interface LayerStep {
@@ -76,6 +77,11 @@ class App {
 
   private scene: Scene | null = null;
   private info: LoadedInfo | null = null;
+  /**
+   * 最近開いた図面（新しい順）。「ファイル」を押したその場でファイルの選択を出せるよう（iOS は押した直後でないと出せない）、
+   * 読み込み・保存のたびに先に読んでおく
+   */
+  private recent: RecentFile[] = [];
   private snapIndex: SnapIndex | null = null;
 
   private view: View = { cx: 0, cy: 0, zoom: 1 };
@@ -217,7 +223,7 @@ class App {
 
     this.applyDisplay();
     this.buildMeasureControls();
-    void this.restoreLast();
+    void this.start();
   }
 
   // ---------- 座標変換 ----------
@@ -241,6 +247,31 @@ class App {
 
   // ---------- 読み込み ----------
 
+  /**
+   * 起動したとき。iOS アプリで「ファイル」アプリや共有メニューから図面を渡されて起動したらそれを開き、
+   * そうでなければ前回の図面を出し直す。以後に渡された図面も開けるようにしておく
+   */
+  private async start(): Promise<void> {
+    void this.refreshRecent();
+    let launched = false;
+    try {
+      launched = await listenForFiles({ open: (buffer, name) => this.load(buffer, name), fail: (m) => this.fail(m) });
+    } catch {
+      // 受け取れなくても起動は続ける
+    }
+    if (!launched) await this.restoreLast();
+  }
+
+  /** 最近開いた図面の一覧を読み直す（開いていれば一覧の表示も） */
+  private async refreshRecent(): Promise<void> {
+    try {
+      this.recent = await listRecent();
+    } catch {
+      this.recent = [];
+    }
+    if (!el('files-panel').classList.contains('hidden')) this.renderRecent();
+  }
+
   private async restoreLast(): Promise<void> {
     try {
       const last = await loadLast();
@@ -261,6 +292,8 @@ class App {
       saveLast(name, copy).catch(() => {
         // 保存できなくても閲覧には支障がないので黙って続ける
       });
+      // 最近開いた図面にも取っておく（一覧から開き直せるように）
+      saveRecent(name, copy).then(() => this.refreshRecent()).catch(() => {});
     }
 
     this.worker?.terminate();
@@ -895,9 +928,11 @@ class App {
       this.cancelHold();
       if (inspecting) {
         this.select(entity);
+        if (entity >= 0) tapFeedback();
       } else if (hit) {
         if (index !== null) this.movePoint(index, hit);
         else this.addPoint(hit);
+        tapFeedback();
       }
       this.finishStroke();
       this.requestDraw(true);
@@ -910,9 +945,13 @@ class App {
     if (this.pointers.size === 0 && this.maxPointers === 1 && quick && this.moved < 9 && !this.swallowTap) {
       if (this.tool === 'inspect') {
         this.select(this.pickAt(e.clientX, e.clientY));
+        if (this.selected >= 0) tapFeedback();
       } else {
         const hit = this.snapFor(e.clientX, e.clientY, null);
-        if (hit) this.addPoint(hit);
+        if (hit) {
+          this.addPoint(hit);
+          tapFeedback();
+        }
       }
     }
     this.finishStroke();
@@ -1594,12 +1633,79 @@ class App {
     for (const s of SHEETS) el(s).classList.toggle('hidden', s !== id);
     el('btn-layers').setAttribute('aria-expanded', String(id === 'layer-panel'));
     el('btn-display').setAttribute('aria-expanded', String(id === 'display-panel'));
+    el('btn-open').setAttribute('aria-expanded', String(id === 'files-panel'));
   }
 
   private toggleSheet(id: Sheet): boolean {
     const open = el(id).classList.contains('hidden');
     this.openSheet(open ? id : null);
     return open;
+  }
+
+  /**
+   * 「ファイル」：最近開いた図面があれば一覧を出し、なければそのままファイルを選ぶ。
+   * ファイルの選択は押したその場で出す（iOS は待ったあとでは出せない）ので、一覧は先に読んでおいたものを使う
+   */
+  private openFiles(): void {
+    if (this.recent.length === 0) {
+      this.openSheet(null);
+      el<HTMLInputElement>('file').click();
+      return;
+    }
+    this.renderRecent();
+    this.openSheet('files-panel');
+  }
+
+  private renderRecent(): void {
+    const list = el('recent-list');
+    const current = this.info?.name ?? null;
+    const pad = (n: number): string => String(n).padStart(2, '0');
+    const when = (t: number): string => {
+      const d = new Date(t);
+      return `${d.getMonth() + 1}/${d.getDate()} ${d.getHours()}:${pad(d.getMinutes())}`;
+    };
+    const size = (b: number): string => (b >= 1024 * 1024 ? `${(b / 1024 / 1024).toFixed(1)}MB` : `${Math.max(1, Math.round(b / 1024))}KB`);
+    list.innerHTML = this.recent.length === 0
+      ? '<p class="sub">最近開いた図面はありません</p>'
+      : this.recent.map((r) => {
+        const name = escapeHtml(r.name);
+        const now = r.name === current;
+        return `<div class="recent-row${now ? ' current' : ''}">`
+          + `<button class="recent-open" data-open="${name}">`
+          + `<span class="recent-name">${name}</span>`
+          + `<span class="recent-meta">${when(r.openedAt)}・${size(r.size)}${now ? '・表示中' : ''}</span>`
+          + '</button>'
+          + `<button class="icon-btn recent-remove" data-remove="${name}" aria-label="${name} を一覧から外す">×</button>`
+          + '</div>';
+      }).join('');
+  }
+
+  /** 最近開いた図面を開き直す */
+  private async openRecent(name: string): Promise<void> {
+    let buffer: ArrayBuffer | null = null;
+    try {
+      buffer = await loadRecent(name);
+    } catch {
+      buffer = null;
+    }
+    if (!buffer) {
+      this.hint('図面が見つからなかったので、一覧から外しました');
+      await this.forgetRecent(name);
+      return;
+    }
+    this.openSheet(null);
+    this.load(buffer, name);
+  }
+
+  /** 最近開いた図面の一覧から外す */
+  private async forgetRecent(name: string): Promise<void> {
+    try {
+      await removeRecent(name);
+    } catch {
+      // 外せなくても一覧の表示は読み直す
+    }
+    await this.refreshRecent();
+    this.renderRecent();
   }
 
   private hint(text: string): void {
@@ -1620,9 +1726,22 @@ class App {
 
   private bindUI(): void {
     const file = el<HTMLInputElement>('file');
-    const pick = (): void => file.click();
-    el('btn-open').addEventListener('click', pick);
-    el('btn-open-2').addEventListener('click', pick);
+    // iOS アプリでは、写真の選び方を挟まずに「ファイル」の選択を出す（.jww と、念のためどのファイルも選べるように）
+    if (isNative) file.accept = '.jww,application/octet-stream';
+    el('btn-open').addEventListener('click', () => this.openFiles());
+    el('btn-open-2').addEventListener('click', () => this.openFiles());
+    el('btn-files-close').addEventListener('click', () => this.openSheet(null));
+    el('btn-pick-file').addEventListener('click', () => {
+      this.openSheet(null);
+      file.click();
+    });
+    el('recent-list').addEventListener('click', (e) => {
+      const target = e.target as HTMLElement;
+      const remove = target.closest<HTMLElement>('[data-remove]');
+      const open = target.closest<HTMLElement>('[data-open]');
+      if (remove?.dataset.remove !== undefined) void this.forgetRecent(remove.dataset.remove);
+      else if (open?.dataset.open !== undefined) void this.openRecent(open.dataset.open);
+    });
 
     file.addEventListener('change', () => {
       const f = file.files?.[0];
@@ -2004,6 +2123,7 @@ class App {
     this.renderer.setBackground(BACKGROUND_RGB[s.background]);
     this.overlay.background = s.background;
     document.body.dataset.bg = s.background;
+    statusBarFor(s.background);
 
     const scene = this.scene;
     if (scene) {
@@ -2170,8 +2290,9 @@ if (import.meta.env.DEV) {
   (window as unknown as Record<string, unknown>).__jww = app;
 }
 
-// 開発中はキャッシュが邪魔になるだけなので、本番ビルドでのみ登録する
-if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+// 開発中はキャッシュが邪魔になるだけなので、本番ビルドでのみ登録する。
+// iOS アプリでは本体をアプリに同梱していて、はじめから電波なしで動くので登録しない
+if (import.meta.env.PROD && 'serviceWorker' in navigator && !isNative) {
   window.addEventListener('load', () => {
     void navigator.serviceWorker.register('./sw.js', { scope: './' });
   });

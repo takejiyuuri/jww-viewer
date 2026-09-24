@@ -989,6 +989,63 @@ body[data-bg="light"] .panel {
   left: 3px;
 }
 
+/* ---- 図面を開くシート（最近開いた図面） ---- */
+.recent-caption {
+  margin: 16px 0 6px;
+}
+
+.recent-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.recent-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.recent-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  padding: 11px 0;
+  text-align: left;
+}
+
+.recent-name {
+  max-width: 100%;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.recent-meta {
+  font-size: 12px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.recent-row.current .recent-name {
+  color: var(--accent);
+}
+
+.recent-remove {
+  flex-shrink: 0;
+  font-size: 16px;
+  color: var(--dim);
+}
+
 /* ---- レイヤシート ---- */
 #layer-panel {
   max-height: 70%;

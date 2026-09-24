@@ -2,17 +2,30 @@ import { DEFAULT_DISPLAY, type DisplaySettings } from './render/theme.ts';
 import { DEFAULT_MEASURE_COLOR, MEASURE_COLORS } from './measure/colors.ts';
 import { MEASURE_MODES, type MeasureMode } from './measure/measure.ts';
 
-/** 直近に開いた図面を IndexedDB に置いておき、次に開いたときすぐ表示する */
+/**
+ * 直近に開いた図面を IndexedDB に置いておき、次に開いたときすぐ表示する。
+ * あわせて、最近開いた図面をいくつか取っておき、一覧から開き直せるようにする
+ */
 
 const DB_NAME = 'jww-viewer';
 const STORE = 'last';
 const KEY = 'file';
+/** 最近開いた図面の名前・大きさ・日時（一覧を出すたびに中身まで読まないよう、中身とは分けて置く） */
+const RECENT_META = 'recent-meta';
+/** 最近開いた図面の中身。名前を鍵にして RECENT_META と対にする */
+const RECENT_DATA = 'recent-data';
+/** 最近開いた図面を取っておく数 */
+export const RECENT_MAX = 10;
 
 function open(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1);
+    // 版 2 で最近開いた図面の置き場を足した（版 1 の直近の図面はそのまま残る）
+    const req = indexedDB.open(DB_NAME, 2);
     req.onupgradeneeded = () => {
-      if (!req.result.objectStoreNames.contains(STORE)) req.result.createObjectStore(STORE);
+      const db = req.result;
+      for (const name of [STORE, RECENT_META, RECENT_DATA]) {
+        if (!db.objectStoreNames.contains(name)) db.createObjectStore(name);
+      }
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -46,6 +59,93 @@ export async function loadLast(): Promise<StoredFile | null> {
   });
   db.close();
   return result;
+}
+
+// ---------- 最近開いた図面 ----------
+
+export interface RecentFile {
+  name: string;
+  /** バイト数 */
+  size: number;
+  /** 最後に開いた日時（ミリ秒） */
+  openedAt: number;
+}
+
+function done(tx: IDBTransaction): Promise<void> {
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+}
+
+function allMeta(store: IDBObjectStore): Promise<RecentFile[]> {
+  return new Promise((resolve, reject) => {
+    const req = store.getAll();
+    req.onsuccess = () => resolve((req.result as RecentFile[]).filter((r) => r && typeof r.name === 'string'));
+    req.onerror = () => reject(req.error);
+  });
+}
+
+/** 図面を最近開いたものとして取っておく。同じ名前なら入れ替えて先頭へ。古いものから RECENT_MAX を超えた分を消す */
+export async function saveRecent(name: string, buffer: ArrayBuffer): Promise<void> {
+  const db = await open();
+  try {
+    const tx = db.transaction([RECENT_META, RECENT_DATA], 'readwrite');
+    const meta = tx.objectStore(RECENT_META);
+    const data = tx.objectStore(RECENT_DATA);
+    meta.put({ name, size: buffer.byteLength, openedAt: Date.now() } satisfies RecentFile, name);
+    data.put(buffer, name);
+    const list = await allMeta(meta);
+    list.sort((a, b) => b.openedAt - a.openedAt);
+    for (const old of list.slice(RECENT_MAX)) {
+      meta.delete(old.name);
+      data.delete(old.name);
+    }
+    await done(tx);
+  } finally {
+    db.close();
+  }
+}
+
+/** 最近開いた図面（新しい順） */
+export async function listRecent(): Promise<RecentFile[]> {
+  const db = await open();
+  try {
+    const tx = db.transaction(RECENT_META, 'readonly');
+    const list = await allMeta(tx.objectStore(RECENT_META));
+    return list.sort((a, b) => b.openedAt - a.openedAt);
+  } finally {
+    db.close();
+  }
+}
+
+/** 最近開いた図面の中身。無ければ null */
+export async function loadRecent(name: string): Promise<ArrayBuffer | null> {
+  const db = await open();
+  try {
+    const tx = db.transaction(RECENT_DATA, 'readonly');
+    return await new Promise<ArrayBuffer | null>((resolve, reject) => {
+      const req = tx.objectStore(RECENT_DATA).get(name);
+      req.onsuccess = () => resolve(req.result instanceof ArrayBuffer ? req.result : null);
+      req.onerror = () => reject(req.error);
+    });
+  } finally {
+    db.close();
+  }
+}
+
+/** 最近開いた図面の一覧から外す */
+export async function removeRecent(name: string): Promise<void> {
+  const db = await open();
+  try {
+    const tx = db.transaction([RECENT_META, RECENT_DATA], 'readwrite');
+    tx.objectStore(RECENT_META).delete(name);
+    tx.objectStore(RECENT_DATA).delete(name);
+    await done(tx);
+  } finally {
+    db.close();
+  }
 }
 
 // ---------- 表示設定 ----------

@@ -26,6 +26,7 @@
     "verify:area": "node tools/verify-area.ts",
     "e2e:modes": "node tools/e2e-modes.mjs",
     "e2e:fit": "node tools/e2e-fit.mjs",
+    "e2e:files": "node tools/e2e-files.mjs",
     "ios:sync": "npm run build && cap sync ios"
   },
   "devDependencies": {

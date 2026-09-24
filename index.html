@@ -18,6 +18,10 @@
   if (navigator.standalone === true || (window.matchMedia && matchMedia('(display-mode: standalone)').matches)) {
     document.documentElement.classList.add('standalone');
   }
+  // iOS アプリ（Capacitor）でも、ブラウザのバーがないのでホーム画面から開いたときと同じ決め方にする
+  if (window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()) {
+    document.documentElement.classList.add('standalone', 'native');
+  }
   // 横向きでツールバーを縦に並べる側（縦向きで下だった側）。main.ts の railSide と同じ決め方で、
   // 描き始める前に決めておく（端末を左に回すと右、右に回すと左）
   (function () {
@@ -55,7 +59,7 @@
 <!-- 画面の枠。ホーム画面から開いたときは高さを 100vh にした固定レイヤーで、下端を本当の画面の下端に合わせる -->
 <div id="shell">
 <div id="topbar">
-  <button id="btn-open" class="chip">ファイル</button>
+  <button id="btn-open" class="chip" aria-haspopup="true" aria-expanded="false">ファイル</button>
   <div id="title" class="title">図面を開いてください</div>
   <button id="btn-info" class="chip icon" aria-label="図面情報">i</button>
 </div>
@@ -148,6 +152,19 @@
     <button id="btn-info-close" class="chip">閉じる</button>
   </div>
   <div id="info-body" class="sheet-body"></div>
+</div>
+
+<!-- 図面を開く：最近開いた図面の一覧と、ファイルから選ぶボタン -->
+<div id="files-panel" class="overlay-panel sheet hidden">
+  <div class="sheet-head">
+    <strong>図面を開く</strong>
+    <button id="btn-files-close" class="chip">閉じる</button>
+  </div>
+  <div class="sheet-body">
+    <button id="btn-pick-file" class="primary">ファイルから選ぶ</button>
+    <div class="recent-caption sub">最近開いた図面</div>
+    <div id="recent-list" class="recent-list"></div>
+  </div>
 </div>
 
 <div id="layer-panel" class="overlay-panel sheet hidden">
