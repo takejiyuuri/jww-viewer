@@ -12,6 +12,12 @@
   --safe-left: env(safe-area-inset-left, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
   /*
+   * iOS 26 の WebKit では、ホーム画面から開いてステータスバーを透過させていると、画面の高さが
+   * 上のセーフエリアの分だけ短く扱われ、画面の下に隙間が残る。その分をここに入れて（main.ts が測る）、
+   * 画面の下端に付くもの（図面、ツールバー、パネル、シート）を本当の下端まで下げる。普段は 0
+   */
+  --ios-gap: 0px;
+  /*
    * ツールバーの下の余白。ホームインジケータのある iPhone でも、
    * ボタンがインジケータに掛からない範囲で詰める（34px → 26px）
    */
@@ -40,8 +46,22 @@ html, body {
 
 #stage {
   position: fixed;
-  inset: 0;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: calc(0px - var(--ios-gap));
   touch-action: none;
+}
+
+/* 上のセーフエリアの高さを測るための見えない要素（env() は JavaScript から直接読めないため） */
+#safe-probe {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: var(--safe-top);
+  visibility: hidden;
+  pointer-events: none;
 }
 
 #stage canvas {
@@ -121,7 +141,7 @@ html, body {
   position: fixed;
   left: calc(var(--safe-left) + 10px);
   right: calc(var(--safe-right) + 10px);
-  bottom: calc(var(--bar-height) + 6px);
+  bottom: calc(var(--bar-height) + 6px - var(--ios-gap));
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 16px;
@@ -455,7 +475,7 @@ body[data-bg="light"] #inspect-panel {
   position: fixed;
   left: 0;
   right: 0;
-  bottom: 0;
+  bottom: calc(0px - var(--ios-gap));
   padding: 6px calc(var(--safe-right) + 8px) var(--bar-bottom) calc(var(--safe-left) + 8px);
   display: flex;
   gap: 5px;
@@ -523,7 +543,10 @@ body[data-bg="light"] #inspect-panel {
 }
 
 #loading {
-  inset: 0;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: calc(0px - var(--ios-gap));
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -552,7 +575,7 @@ body[data-bg="light"] #inspect-panel {
 .sheet {
   left: 0;
   right: 0;
-  bottom: 0;
+  bottom: calc(0px - var(--ios-gap));
   max-height: 84%;
   background: var(--panel-solid);
   border-top: 1px solid var(--line);

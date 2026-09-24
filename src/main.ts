@@ -18,7 +18,6 @@ import { LayerVisibility, renderLayerList, type LayerSnapshot } from './ui/layer
 import { describeEntity, entityShape, pickEntity } from './ui/inspect.ts';
 import { KIND, fitScene, type Bounds } from './render/geometry.ts';
 import { hex1, layerTag } from './jww/names.ts';
-import { versionWarning } from './jww/header.ts';
 
 /** 吸着先を探す半径（CSS ピクセル） */
 const SNAP_RADIUS = 22;
@@ -285,15 +284,9 @@ class App {
     this.buildInfoPanel();
     this.fit();
     const hiddenLayers = this.layers.hiddenCount(scene.layerCounts);
-    // 資料どおりに読んでいるが実物で確かめていない古い形式は、ほかの知らせより優先して長めに出す
-    const old = versionWarning(info.version);
-    if (old) {
-      this.hint(old, 6000);
-    } else {
-      this.hint(hiddenLayers > 0
-        ? `読み込みました。${hiddenLayers} 個のレイヤが非表示です`
-        : `${info.counts.lines.toLocaleString()} 本の線を ${Math.round(info.parseMs)}ms で読み込みました`);
-    }
+    this.hint(hiddenLayers > 0
+      ? `読み込みました。${hiddenLayers} 個のレイヤが非表示です`
+      : `${info.counts.lines.toLocaleString()} 本の線を ${Math.round(info.parseMs)}ms で読み込みました`);
   }
 
   // ---------- ビュー ----------
@@ -340,10 +333,30 @@ class App {
     this.requestDraw(true);
   }
 
+  /**
+   * iOS 26 の WebKit の不具合への手当て。ホーム画面から開いてステータスバーを透過させていると、
+   * 画面の高さ（innerHeight など）が上のセーフエリアの分だけ短く報告され、画面の下に隙間が残る。
+   * 本当の高さとの差がちょうど上のセーフエリアと同じときだけ、その差を返す（不具合が直れば 0 になる）。
+   */
+  private bottomGap(): number {
+    const nav = navigator as Navigator & { standalone?: boolean };
+    const standalone = nav.standalone === true || window.matchMedia?.('(display-mode: standalone)').matches;
+    if (!standalone) return 0;
+    const safeTop = el('safe-probe').getBoundingClientRect().height;
+    if (!(safeTop > 0)) return 0;
+    // iOS の screen の縦横は、画面を回しても縦向きのまま
+    const landscape = window.innerWidth > window.innerHeight;
+    const full = landscape ? Math.min(screen.width, screen.height) : Math.max(screen.width, screen.height);
+    const gap = Math.round(full - window.innerHeight);
+    return gap > 0 && Math.abs(gap - safeTop) <= 2 ? gap : 0;
+  }
+
   private resize(): void {
     this.dpr = Math.min(window.devicePixelRatio || 1, 3);
     this.cssW = window.innerWidth;
-    this.cssH = window.innerHeight;
+    const gap = this.bottomGap();
+    document.documentElement.style.setProperty('--ios-gap', `${gap}px`);
+    this.cssH = window.innerHeight + gap;
     this.renderer.resize(this.cssW, this.cssH, this.dpr);
     this.textLayer.resize(this.cssW, this.cssH, this.dpr);
     this.overlay.resize(this.cssW, this.cssH, this.dpr);
@@ -1045,7 +1058,7 @@ class App {
     return open;
   }
 
-  private hint(text: string, ms = 2600): void {
+  private hint(text: string): void {
     const node = el('hint');
     node.textContent = text;
     node.classList.remove('hidden');
@@ -1056,7 +1069,7 @@ class App {
     this.hintTimer = window.setTimeout(() => {
       node.style.opacity = '0';
       this.hintHideTimer = window.setTimeout(() => node.classList.add('hidden'), 260);
-    }, ms);
+    }, 2600);
   }
 
   // ---------- UI ----------
