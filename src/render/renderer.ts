@@ -16,11 +16,26 @@ bool layerVisible(uint layer) {
   return (uLayerMask[layer >> 5u] & (1u << (layer & 31u))) != 0u;
 }`;
 
+/**
+ * つながった線分どうしを、継ぎ目の二等分線（マイター）で突き合わせる曲がりの上限。
+ * 円弧を折った継ぎ目（最大 90°）はすべて入り、鋭く折り返す所は今までどおり端を張り出す
+ */
+const JOIN_MAX_TURN = (100 * Math.PI) / 180;
+/** 突き合わせる曲がりの、角度の半分の tan の上限 */
+const JOIN_TAN = Math.tan(JOIN_MAX_TURN / 2);
+/** 前後の線分とつながっていない端の印 */
+const NOT_JOINED = -32768;
+
 const LINE_VS = `#version 300 es
 layout(location = 0) in vec2 aCorner;
 layout(location = 1) in vec4 aSeg;
 layout(location = 2) in uint aColorIndex;
 layout(location = 3) in uint aLayer;
+// 前後の線分とのつながり（x = 始点の側、y = 終点の側）。${NOT_JOINED} はつながっていない。
+// ほかは継ぎ目で曲がる角度の半分の tan を、JOIN_TAN を 32767 として表したもの（左へ曲がるとき正）
+layout(location = 4) in ivec2 aJoin;
+
+const float JOIN_TAN = ${JOIN_TAN.toFixed(9)};
 
 uniform vec2 uCenter;
 uniform vec2 uScale;
@@ -53,11 +68,23 @@ void main() {
   // 端をぼかすぶんだけ外側に広げる。線そのものの太さは変えない
   float halfW = uHalfWidth + 0.5;
 
-  vec2 base = mix(p1, p2, aCorner.x);
+  // 端点は補間せずにそのまま使う。mix だと GPU によっては p2 からわずかにずれ、
+  // 突き合わせた継ぎ目が大きく拡大したときに割れて見える
+  vec2 base = aCorner.x < 0.5 ? p1 : p2;
   vec2 clip = (base - uCenter) * uScale;
   // 線幅ぶんの押し出しと、継ぎ目を埋めるための端の張り出し
   vec2 side = nrm * aCorner.y * halfW * uPixel;
-  vec2 cap = dir * (aCorner.x * 2.0 - 1.0) * halfW * uPixel;
+  int join = aCorner.x < 0.5 ? aJoin.x : aJoin.y;
+  float ext = halfW;
+  if (join != ${NOT_JOINED}) {
+    // 前後の線分とつながる端（細かく折った円弧の継ぎ目など）は、継ぎ目の二等分線で突き合わせる。
+    // 曲がりの外側は伸ばし、内側は縮めるので、隙間も重なりもできない。
+    // 重なると縁のぼかしが塗り重なり、短い線分の続く曲線ほど太って見える
+    ext = -aCorner.y * halfW * float(join) / 32767.0 * JOIN_TAN;
+    // 画面の上でとても短い線分では、内側を縮めすぎて形が裏返らないようにする
+    ext = max(ext, -0.5 * len * uScale.x / uPixel.x);
+  }
+  vec2 cap = dir * (aCorner.x * 2.0 - 1.0) * ext * uPixel;
 
   gl_Position = vec4(clip + side + cap, 0.0, 1.0);
   vEdge = aCorner.y * halfW;
@@ -110,6 +137,60 @@ void main() {
 
 /** パレットのテクスチャ 1 行に並べる色数 */
 const PALETTE_ROW = 256;
+
+/** 拡大して見ているときの線の太さ（CSS ピクセル） */
+const LINE_WIDTH_MAX = 1.15;
+/** 縮小して見ているときの線の太さ（CSS ピクセル）。ただし端末の 1 ピクセルより細くはしない */
+const LINE_WIDTH_MIN = 0.55;
+/**
+ * 線の太さを変える倍率の範囲（用紙 1mm が画面で何 CSS ピクセルになるか）。
+ * これより縮小していれば最も細く、拡大していれば最も太くし、あいだは倍率の対数に比例して太らせる。
+ * iPhone の縦向きで用紙全体を表示すると、A1 でおよそ 0.45、A3 でおよそ 0.9 になる
+ */
+const WIDTH_ZOOM_LO = 0.5;
+const WIDTH_ZOOM_HI = 4;
+
+/**
+ * 表示の倍率に合わせた線の太さ（CSS ピクセル）。
+ * 画面の上で同じ太さのままだと、縮小して図面が小さくなるほど線が図面に対して太り、
+ * 間の狭い線どうしがつぶれて重く見えるので、縮小するほど細くする。
+ */
+export function lineWidthAt(zoom: number, dpr: number): number {
+  // 図面の座標は用紙上の mm なので、zoom / dpr が用紙 1mm あたりの CSS ピクセル
+  const perMm = zoom / dpr;
+  const t = perMm > 0 && Number.isFinite(perMm)
+    ? Math.min(1, Math.max(0, Math.log(perMm / WIDTH_ZOOM_LO) / Math.log(WIDTH_ZOOM_HI / WIDTH_ZOOM_LO)))
+    : 1;
+  return Math.max(LINE_WIDTH_MIN * Math.pow(LINE_WIDTH_MAX / LINE_WIDTH_MIN, t), 1 / dpr);
+}
+
+/**
+ * 線分ごとに、直前・直後の線分とのつながりを調べる（始点の側・終点の側の 2 つずつ）。
+ * 端点が一致し、色とレイヤも同じ（表示・非表示がそろう）で、曲がりが JOIN_MAX_TURN 以下のものだけをつながりとみなし、
+ * 継ぎ目で曲がる角度の半分の tan（左へ曲がるとき正）を、JOIN_TAN を 32767 とした整数で入れる。
+ */
+function joinTangents(pos: Float32Array, color: Uint16Array, layer: Uint8Array): Int16Array {
+  const n = Math.floor(pos.length / 4);
+  const out = new Int16Array(n * 2).fill(NOT_JOINED);
+  const minCos = Math.cos(JOIN_MAX_TURN);
+  for (let i = 1; i < n; i++) {
+    const a = (i - 1) * 4;
+    const b = i * 4;
+    if (pos[a + 2] !== pos[b] || pos[a + 3] !== pos[b + 1]) continue;
+    if (color[i - 1] !== color[i] || layer[i - 1] !== layer[i]) continue;
+    const ux = pos[a + 2] - pos[a], uy = pos[a + 3] - pos[a + 1];
+    const vx = pos[b + 2] - pos[b], vy = pos[b + 3] - pos[b + 1];
+    const lu = Math.hypot(ux, uy), lv = Math.hypot(vx, vy);
+    const dot = ux * vx + uy * vy;
+    if (!(lu > 0 && lv > 0) || dot / (lu * lv) < minCos) continue;
+    // tan(θ/2) = sinθ / (1 + cosθ)
+    const tan = (ux * vy - uy * vx) / (lu * lv + dot);
+    const q = Math.max(-32767, Math.min(32767, Math.round((tan / JOIN_TAN) * 32767)));
+    out[(i - 1) * 2 + 1] = q;
+    out[i * 2] = q;
+  }
+  return out;
+}
 
 function compile(gl: WebGL2RenderingContext, type: number, src: string): WebGLShader {
   const sh = gl.createShader(type)!;
@@ -170,8 +251,6 @@ export class Renderer {
   private uLine!: LineUniforms;
   private uTri!: TriUniforms;
 
-  /** 線の太さ（CSS ピクセル） */
-  lineWidth = 1.15;
   /** 背景色（0〜1） */
   private background: [number, number, number] = [0.043, 0.047, 0.063];
 
@@ -345,6 +424,11 @@ export class Renderer {
     gl.vertexAttribIPointer(3, 1, gl.UNSIGNED_BYTE, 0, 0);
     gl.vertexAttribDivisor(3, 1);
 
+    this.newBuffer(gl.ARRAY_BUFFER, joinTangents(scene.linePos, scene.lineColor, scene.lineLayer));
+    gl.enableVertexAttribArray(4);
+    gl.vertexAttribIPointer(4, 2, gl.SHORT, 0, 0);
+    gl.vertexAttribDivisor(4, 1);
+
     // --- 塗り三角形 ---
     this.triCount = scene.triPos.length / 2;
     this.triVao = gl.createVertexArray();
@@ -427,7 +511,7 @@ export class Renderer {
       gl.uniform2f(this.uLine.center, view.cx, view.cy);
       gl.uniform2f(this.uLine.scale, sx, sy);
       gl.uniform2f(this.uLine.pixel, 2 / w, 2 / h);
-      gl.uniform1f(this.uLine.hw, (this.lineWidth * widthScale * dpr) / 2);
+      gl.uniform1f(this.uLine.hw, (lineWidthAt(view.zoom, dpr) * widthScale * dpr) / 2);
       gl.bindVertexArray(this.lineVao);
       gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, this.lineCount);
     }

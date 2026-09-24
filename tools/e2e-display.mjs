@@ -199,6 +199,144 @@ const restored = await page.evaluate((g) => ({
 check('再読み込み後も白背景のまま', restored.bg === 'light', { bg: restored.bg });
 check('同じ図面なら隠した色が戻る', restored.hidden.length === 1, restored);
 
+// ---------- 7. 線の太さ ----------
+// 白い線だけの図形を黒地に描き、画素の明るさの合計から線の実際の太さ（デバイスピクセル）を求める
+const widths = await page.evaluate(async () => {
+  const { lineWidthAt } = await import('/src/render/renderer.ts');
+  const a = window.__jww;
+  const r = a.renderer;
+  const gl = r.gl;
+  const W = r.canvas.width, H = r.canvas.height, dpr = a.dpr;
+  const scene = (lines) => {
+    const n = lines.length / 4;
+    return {
+      linePos: new Float32Array(lines), lineColor: new Uint16Array(n), lineLayer: new Uint8Array(n),
+      triPos: new Float32Array(0), triColor: new Uint16Array(0), triLayer: new Uint8Array(0),
+    };
+  };
+  r.setPalette(new Uint8Array([255, 255, 255, 255]));
+  r.setLayerVisibility(new Uint8Array(256).fill(1));
+  r.setBackground([0, 0, 0]);
+  const shot = (view) => {
+    r.draw(view, dpr);
+    const px = new Uint8Array(W * H * 4);
+    gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    return px;
+  };
+  // 横線を 1 列だけ縦に見て、明るさを足す
+  const across = (px, x) => { let s = 0; for (let y = 0; y < H; y++) s += px[(y * W + x) * 4] / 255; return s; };
+  // 円の周りの輪の明るさを足して、周の長さで割る
+  const ring = (px, rad) => {
+    let s = 0;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      if (Math.abs(Math.hypot(x + 0.5 - W / 2, y + 0.5 - H / 2) - rad) < 12) s += px[(y * W + x) * 4] / 255;
+    }
+    return s / (2 * Math.PI * rad);
+  };
+
+  // 用紙 1mm が 0.3 CSS ピクセル（A1 の全体表示より引いた所）と 6 CSS ピクセル（大きく拡大した所）
+  const far = 0.3 * dpr, near = 6 * dpr;
+  r.setScene(scene([-1e5, 0, 1e5, 0]));
+  const lineFar = across(shot({ cx: 0, cy: 0, zoom: far }), W >> 1);
+  const lineNear = across(shot({ cx: 0, cy: 0, zoom: near }), W >> 1);
+
+  // 図面と同じ細かさ（弦と弧の隔たり 0.02mm。geometry.ts の arcSegments と同じ式）で折った円
+  const polygon = (R) => {
+    const n = Math.max(4, Math.ceil((2 * Math.PI) / (2 * Math.acos(1 - 0.02 / R))));
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      const t0 = (2 * Math.PI * i) / n, t1 = (2 * Math.PI * (i + 1)) / n;
+      out.push(R * Math.cos(t0), R * Math.sin(t0), R * Math.cos(t1), R * Math.sin(t1));
+    }
+    return out;
+  };
+  // 半径 1000mm の円を、線分が 1 ピクセルより短くなるまで縮小して描く
+  const R = 1000, rad = 40;
+  const arc = polygon(R);
+  const n = arc.length / 4;
+  r.setScene(scene(arc));
+  const circleFar = ring(shot({ cx: 0, cy: 0, zoom: rad / R }), rad);
+  r.setScene(scene([-1e5, 0, 1e5, 0]));
+  const lineAtCircle = across(shot({ cx: 0, cy: 0, zoom: rad / R }), W >> 1);
+
+  // 直角に折れる 2 本の線分：角の外側の四角（どちらの線分の先でもない所）が埋まっているか。
+  // 継ぎ目は画面の中央に来るので、そこから外側へ線の太さの半分の半分ほど離れた画素を見る
+  r.setScene(scene([0, 0, 100, 0, 100, 0, 100, 100]));
+  const cornerPx = shot({ cx: 100, cy: 0, zoom: near });
+  const hw = (lineWidthAt(near, dpr) * dpr) / 2;
+  const cx0 = Math.floor(W / 2 + hw / 2), cy0 = Math.floor(H / 2 - hw / 2);
+  const corner = cornerPx[(cy0 * W + cx0) * 4];
+
+  // 粗く折られる小さな円（半径 2mm）を拡大して、継ぎ目の外側に欠けがないか。
+  // 折れ線を理想どおりに太らせた形（各線分からの距離）と比べ、足りない明るさの最大を見る。拡大鏡の太さ（1.6 倍）でも見る
+  const small = polygon(2);
+  r.setScene(scene(small));
+  const deficit = (px, zoom, scale) => {
+    const hwPx = (lineWidthAt(zoom, dpr) * dpr * scale) / 2;
+    const P = [];
+    for (let i = 0; i < small.length; i += 2) P.push([W / 2 + small[i] * zoom, H / 2 + small[i + 1] * zoom]);
+    let worst = 0;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const cx = x + 0.5, cy = y + 0.5;
+      if (Math.abs(Math.hypot(cx - W / 2, cy - H / 2) - 2 * zoom) > hwPx + 3) continue;
+      let d = Infinity;
+      for (let k = 0; k < P.length; k += 2) {
+        const [ax, ay] = P[k], [bx, by] = P[k + 1];
+        const vx = bx - ax, vy = by - ay;
+        const t = Math.max(0, Math.min(1, ((cx - ax) * vx + (cy - ay) * vy) / (vx * vx + vy * vy)));
+        d = Math.min(d, Math.hypot(cx - ax - vx * t, cy - ay - vy * t));
+      }
+      const want = Math.max(0, Math.min(1, hwPx + 0.5 - d));
+      worst = Math.max(worst, want - px[(y * W + x) * 4] / 255);
+    }
+    return worst;
+  };
+  const zSmall = 100;
+  const smallMain = deficit(shot({ cx: 0, cy: 0, zoom: zSmall }), zSmall, 1);
+  r.drawInset({ cx: 0, cy: 0, zoom: zSmall }, 0, 0, W, H, dpr);
+  const insetPx = new Uint8Array(W * H * 4);
+  gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, insetPx);
+  const smallInset = deficit(insetPx, zSmall, 1.6);
+
+  // 半端な座標で一直線につながる 2 本の線分を、いちばん大きく拡大して継ぎ目を見る（拡大鏡でも）。
+  // 継ぎ目の端点が補間の誤差でずれると、線の真ん中に割れ目が出る
+  const f32 = Math.fround;
+  const yy = f32(37.13), jx = f32(-257.65);
+  r.setScene(scene([f32(115.39), yy, jx, yy, jx, yy, f32(-300), yy]));
+  let seam = 255;
+  for (const zoom of [3000, 20000, 58000]) {
+    for (const inset of [false, true]) {
+      const v = { cx: jx, cy: yy, zoom };
+      if (inset) r.drawInset({ ...v, zoom: zoom * 3.5 }, 0, 0, W, H, dpr);
+      else r.draw(v, dpr);
+      const px = new Uint8Array(W * H * 4);
+      gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      for (let x = (W >> 1) - 20; x < (W >> 1) + 20; x++) seam = Math.min(seam, px[((H >> 1) * W + x) * 4]);
+    }
+  }
+
+  // 図面の表示に戻す
+  r.setScene(a.scene);
+  a.applyDisplay?.();
+  a.requestDraw?.(true);
+  return {
+    dpr,
+    far: { 実測: +lineFar.toFixed(2), 狙い: +(lineWidthAt(far, dpr) * dpr).toFixed(2) },
+    near: { 実測: +lineNear.toFixed(2), 狙い: +(lineWidthAt(near, dpr) * dpr).toFixed(2) },
+    circle: { 円: +circleFar.toFixed(2), 直線: +lineAtCircle.toFixed(2), 線分の長さ: +((2 * Math.PI * rad) / n).toFixed(2) },
+    corner: { 明るさ: corner, 継ぎ目からのずれ: [cx0 + 0.5 - W / 2, cy0 + 0.5 - H / 2], 半幅: +hw.toFixed(2) },
+    seam,
+    small: { 分割: small.length / 4, 通常: +smallMain.toFixed(2), 拡大鏡: +smallInset.toFixed(2) },
+  };
+});
+const near = (v, want) => Math.abs(v - want) <= want * 0.05;
+check('拡大しているときの線は 1.15 CSS ピクセル', near(widths.near.実測, 1.15 * widths.dpr) && near(widths.near.実測, widths.near.狙い), widths.near);
+check('縮小すると線が細くなる（0.55 CSS ピクセル）', near(widths.far.実測, 0.55 * widths.dpr) && near(widths.far.実測, widths.far.狙い), widths.far);
+check('細かく折った円も、線分が 1 ピクセルより短くなるまで縮小して直線と同じ太さ', widths.circle.線分の長さ < 1 && near(widths.circle.円, widths.circle.直線), widths.circle);
+check('直角に折れる角の外側が欠けない', widths.corner.明るさ > 230, widths.corner);
+check('一直線につながる線分の継ぎ目が、いちばん大きく拡大しても割れない（拡大鏡でも）', widths.seam === 255, { 継ぎ目の最小の明るさ: widths.seam });
+check('粗く折られる小さな円を拡大しても、継ぎ目の外側が欠けない（拡大鏡でも）', widths.small.通常 < 0.2 && widths.small.拡大鏡 < 0.2, widths.small);
+
 // 後片付け（次の検証に響かないよう既定に戻す）
 await page.evaluate(() => localStorage.clear());
 
