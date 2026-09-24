@@ -1,0 +1,99 @@
+# Codemagic（クラウドの Mac）で iOS アプリ「JWWミテハカール」をビルドし、TestFlight へ送る設定。
+# Mac がなくても、Windows のブラウザから Codemagic と App Store Connect を操作するだけで進められる。
+# 手順と、Apple 側で用意するものは docs/ios-release.md を参照。
+#
+# どちらのワークフローも、Codemagic の画面から手動で始める（push のたびにビルド時間を使わないように）。
+
+workflows:
+  # ---- 1. 署名なしでシミュレータ向けにビルドして、iOS プロジェクトが通るかだけを確かめる ----
+  # Apple Developer Program の登録や署名の準備が済む前から使える
+  ios-check:
+    name: iOS ビルド確認（署名なし）
+    instance_type: mac_mini_m2
+    max_build_duration: 30
+    environment:
+      node: 22
+      xcode: latest
+    scripts:
+      - name: npm の依存を入れる
+        script: npm ci
+      - name: 型チェックと Web のビルド
+        script: |
+          npm run check
+          npm run build
+      - name: Web を iOS プロジェクトへ写す
+        script: npx cap sync ios
+      - name: シミュレータ向けにビルドする（署名なし）
+        script: |
+          set -o pipefail
+          xcodebuild \
+            -project ios/App/App.xcodeproj \
+            -scheme App \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/derived \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+    artifacts:
+      - build/derived/Logs/**/*.xcactivitylog
+
+  # ---- 2. 署名して ipa を作り、App Store Connect（TestFlight）へ送る ----
+  ios-testflight:
+    name: iOS → TestFlight
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    integrations:
+      # Codemagic の Team settings → Integrations → Developer Portal に登録した
+      # App Store Connect API キーの名前（登録するときにこの名前にする）
+      app_store_connect: codemagic-asc
+    environment:
+      ios_signing:
+        # Codemagic の Code signing identities に、配布用の証明書と App Store 用のプロファイルを用意しておく
+        distribution_type: app_store
+        bundle_identifier: io.github.takejiyuuri.mitehakaru
+      vars:
+        XCODE_PROJECT: ios/App/App.xcodeproj
+        XCODE_SCHEME: App
+        # App Store Connect でアプリを作ったあとに「App 情報」に出る Apple ID（数字）。
+        # 入れておくと、TestFlight にある最新のビルド番号の次を使う。空のあいだは Codemagic の通し番号を使う
+        APP_STORE_APPLE_ID: ""
+      node: 22
+      xcode: latest
+    scripts:
+      - name: npm の依存を入れる
+        script: npm ci
+      - name: 型チェックと Web のビルド
+        script: |
+          npm run check
+          npm run build
+      - name: Web を iOS プロジェクトへ写す
+        script: npx cap sync ios
+      - name: 署名の設定を Xcode プロジェクトに入れる
+        script: xcode-project use-profiles
+      - name: ビルド番号を決める
+        script: |
+          NEXT=${BUILD_NUMBER:-1}
+          if [ -n "$APP_STORE_APPLE_ID" ]; then
+            LATEST=$(app-store-connect get-latest-testflight-build-number "$APP_STORE_APPLE_ID" 2>/dev/null || echo 0)
+            case "$LATEST" in ''|*[!0-9]*) LATEST=0 ;; esac
+            if [ $((LATEST + 1)) -gt "$NEXT" ]; then NEXT=$((LATEST + 1)); fi
+          fi
+          echo "ビルド番号: $NEXT"
+          echo "IOS_BUILD_NUMBER=$NEXT" >> "$CM_ENV"
+      - name: ipa を作る
+        script: |
+          xcode-project build-ipa \
+            --project "$XCODE_PROJECT" \
+            --scheme "$XCODE_SCHEME" \
+            --archive-xcargs "COMPILER_INDEX_STORE_ENABLE=NO CURRENT_PROJECT_VERSION=$IOS_BUILD_NUMBER"
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+    publishing:
+      app_store_connect:
+        auth: integration
+        # App Store Connect での処理が済むと、社内テスター（App Store Connect のユーザ）はそのまま TestFlight で入れられる。
+        # 社外のテスターにも配るときだけ、App Store Connect の TestFlight → テスト情報（説明・連絡先など）を入れてから
+        # true にして beta_groups を足す（社外向けは毎回 Beta App Review の審査がある）
+        submit_to_testflight: false
