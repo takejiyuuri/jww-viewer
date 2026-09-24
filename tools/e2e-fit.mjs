@@ -146,7 +146,7 @@ const orangeOn = (pg, box) => pg.evaluate((box) => {
     orange({ x0: edge.x0 + 60, x1: edge.x1 - 10, y0: edge.y0 - 5, y1: edge.y0 + 5 }),
     orange({ x0: edge.x0 + 10, x1: edge.x1 - 10, y0: edge.y1 - 5, y1: edge.y1 + 5 }),
   ]);
-  check('全体を見ているあいだ、押す前に見えていた範囲を橙の点線で囲う（4 辺とも押す前の見えていた範囲に一致）',
+  check('全体を見ているあいだ、押す前に見えていた範囲を橙の線で囲う（4 辺とも押す前の見えていた範囲に一致）',
     none0 < 10 && all > 200 && sides.every((n) => n > 5) && !!edge.kept, { none0, all, sides, edge: { x0: Math.round(edge.x0), x1: Math.round(edge.x1), y0: Math.round(edge.y0), y1: Math.round(edge.y1) } });
   await page.screenshot({ path: path.join(outDir, 'e2e-fit-back.png') });
   // 白い背景でも見える
