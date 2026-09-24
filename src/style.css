@@ -323,7 +323,7 @@ html.standalone #shell {
   box-shadow: 0 0 0 2px var(--panel-solid), 0 0 0 4px var(--fg);
 }
 
-/* 距離・面積・体積。操作の段の残りの幅いっぱいに広げる */
+/* 距離・面積・体積・角度。操作の段の残りの幅いっぱいに広げる */
 .readout-bar .mode-seg {
   flex: 1 1 auto;
   min-width: 0;
@@ -1173,6 +1173,11 @@ body[data-bg="light"] .panel {
     width: 38px;
     height: 36px;
     padding: 0;
+  }
+
+  /* 距離・面積・体積・角度の 4 つが収まるよう、文字を少し小さくする */
+  .readout-bar .mode-seg button {
+    font-size: 12px;
   }
 
   /* 値の段も詰めて、内訳の幅を空ける */

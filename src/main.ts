@@ -5,8 +5,8 @@ import type { Scene } from './render/geometry.ts';
 import type { LoadResponse, LoadedInfo } from './jww/worker.ts';
 import { SnapIndex, type Axis, type SnapResult } from './measure/snap.ts';
 import {
-  MEASURE_MODES, SNAP_LABEL, formatArea, formatLength, formatVolume, measureArea, measureLengths, parseLength,
-  type MeasureMode, type MeasurePoint,
+  MEASURE_MODES, SNAP_LABEL, formatAngle, formatArea, formatLength, formatVolume, inclination, measureAngles, measureArea,
+  measureLengths, parseLength, type MeasureMode, type MeasurePoint,
 } from './measure/measure.ts';
 import { MEASURE_COLORS, measureColor, measureInk } from './measure/colors.ts';
 import {
@@ -82,6 +82,8 @@ class App {
    * 読み込み・保存のたびに先に読んでおく
    */
   private recent: RecentFile[] = [];
+  /** 図面を読み込み始めた回数。前回の図面を出し直す前に、ほかの図面が開かれていないかを見る */
+  private loadSeq = 0;
   private snapIndex: SnapIndex | null = null;
 
   private view: View = { cx: 0, cy: 0, zoom: 1 };
@@ -273,28 +275,25 @@ class App {
   }
 
   private async restoreLast(): Promise<void> {
+    // 読み出しを待つあいだに、渡された図面や選んだ図面を開き始めていたら、そちらを優先する
+    const seq = this.loadSeq;
     try {
       const last = await loadLast();
-      if (last) this.load(last.buffer, last.name, false);
+      if (last && this.loadSeq === seq) this.load(last.buffer, last.name, false);
     } catch {
       // 復元できなくても起動は続ける
     }
   }
 
   private load(buffer: ArrayBuffer, name: string, persist = true): void {
+    this.loadSeq++;
     el('welcome').classList.add('hidden');
     el('loading').classList.remove('hidden');
     el('loading-text').textContent = `${name} を読み込み中…`;
 
-    if (persist) {
-      // 転送で中身が失われる前に保存用の複製を取る
-      const copy = buffer.slice(0);
-      saveLast(name, copy).catch(() => {
-        // 保存できなくても閲覧には支障がないので黙って続ける
-      });
-      // 最近開いた図面にも取っておく（一覧から開き直せるように）
-      saveRecent(name, copy).then(() => this.refreshRecent()).catch(() => {});
-    }
+    // 転送で中身が失われる前に保存用の複製を取る。保存は読み込めたときだけにする
+    // （読めないファイルを最近の一覧に入れたり、次に起動したとき出し直そうとしたりしないように）
+    const copy = persist ? buffer.slice(0) : null;
 
     this.worker?.terminate();
     clearTimeout(this.loadTimer);
@@ -313,6 +312,13 @@ class App {
       if (!res.ok) {
         this.fail(res.error);
         return;
+      }
+      if (copy) {
+        saveLast(name, copy).catch(() => {
+          // 保存できなくても閲覧には支障がないので黙って続ける
+        });
+        // 最近開いた図面にも取っておく（一覧から開き直せるように）
+        saveRecent(name, copy).then(() => this.refreshRecent()).catch(() => {});
       }
       this.onLoaded(res.scene, res.info);
     };
@@ -1154,7 +1160,8 @@ class App {
     const w = this.toWorld(cssX, cssY);
     const radius = radiusCssPx * this.worldPerCssPx();
 
-    const anchor = this.ortho ? this.anchorFor(index) : null;
+    // 角度は好きな向きの 2 辺でなす角を測るので、水平・垂直の拘束は掛けない
+    const anchor = this.ortho && this.measurePrefs.mode !== 'angle' ? this.anchorFor(index) : null;
     if (!anchor) {
       this.constraint = null;
       return this.snapIndex.query(w.x, w.y, radius);
@@ -1203,7 +1210,8 @@ class App {
     const p = this.toMeasurePoint(hit);
     // 面積・体積は最後の点から最初の点へ自動でつなぐので、最初の点に戻ってきた点は足さない
     const first = this.points[0];
-    if (this.measurePrefs.mode !== 'length' && this.points.length >= 3 && first
+    const encloses = this.measurePrefs.mode === 'area' || this.measurePrefs.mode === 'volume';
+    if (encloses && this.points.length >= 3 && first
       && Math.hypot(p.x - first.x, p.y - first.y) <= 1e-9 * Math.max(1, Math.abs(first.x), Math.abs(first.y))) {
       this.hint('最初の点に戻ったので、ここで囲みます');
       return;
@@ -1283,6 +1291,10 @@ class App {
     this.setIdle(n === 0, fromButton);
     detail.classList.remove('compact');
 
+    if (this.measurePrefs.mode === 'angle') {
+      this.updateAngleReadout();
+      return;
+    }
     if (this.measurePrefs.mode !== 'length') {
       this.updateAreaReadout();
       return;
@@ -1320,6 +1332,43 @@ class App {
         : `${SNAP_LABEL[a.kind]} → ${SNAP_LABEL[b.kind]}`;
     }
     detail.textContent = warn + text;
+  }
+
+  /**
+   * 角度のときの計測パネル。1 点目（一方の辺の上）→ 2 点目（頂点）→ 3 点目（もう一方の辺の上）の順に置き、
+   * 頂点の角を出す。4 点以上つないだときは、最後の頂点の角を大きく出し、途中の頂点の角も添える
+   */
+  private updateAngleReadout(): void {
+    const value = el('readout-value');
+    const detail = el('readout-detail');
+    const n = this.points.length;
+    // 角度は縮尺によらないが、縮尺のボタンはいつもの表示のままにする
+    el('btn-scale').textContent = `1/${formatScale(this.measureScale)}`;
+    if (n < 3) {
+      value.textContent = '—';
+      if (n === 0) {
+        detail.textContent = '';
+      } else if (n === 1) {
+        detail.textContent = `1 点目は${SNAP_LABEL[this.points[0].kind]}。次に角の頂点をタップしてください`;
+      } else {
+        const t = inclination(this.points[0], this.points[1]);
+        detail.textContent = `あと 1 点で角度を出します${t === null ? '' : `（この線の傾き ${formatAngle(t)}）`}`;
+      }
+      return;
+    }
+    const angles = measureAngles(this.points);
+    const last = angles[angles.length - 1];
+    const vertex = this.points[n - 2];
+    if (last === null) {
+      value.textContent = '—';
+      detail.textContent = '頂点と同じ所に点があるので、角度を出せません';
+      return;
+    }
+    value.textContent = formatAngle(last);
+    const others = angles.slice(0, -1).map((a) => (a === null ? '—' : formatAngle(a)));
+    detail.textContent = others.length === 0
+      ? `外側 ${formatAngle(360 - last)} ／ 頂点は${SNAP_LABEL[vertex.kind]}`
+      : `外側 ${formatAngle(360 - last)} ／ 前の頂点 ${others.join('・')}`;
   }
 
   /** 面積・体積のときの計測パネル */
@@ -1408,6 +1457,8 @@ class App {
       b.classList.toggle('on', on);
       b.setAttribute('aria-pressed', String(on));
     }
+    // 角度では水平・垂直の拘束を掛けないので、直交は押せなくする（入り切りの状態は残し、ほかの種類に戻れば効く）
+    el<HTMLButtonElement>('btn-ortho').disabled = p.mode === 'angle';
   }
 
   private setMeasurePrefs(next: MeasurePrefs): void {
@@ -1438,7 +1489,11 @@ class App {
     if (mode === 'volume') {
       this.openHeightDialog();
     } else if (changed) {
-      this.hint(mode === 'area' ? '囲む範囲の角を順にタップすると面積を出します' : 'タップした点を結んだ長さを出します');
+      this.hint(
+        mode === 'area' ? '囲む範囲の角を順にタップすると面積を出します'
+          : mode === 'angle' ? '一方の辺の点、角の頂点、もう一方の辺の点の順にタップすると角度を出します'
+            : 'タップした点を結んだ長さを出します',
+      );
     }
   }
 
@@ -1653,7 +1708,15 @@ class App {
       return;
     }
     this.renderRecent();
+    // 最初の画面（読み込めなかったときの知らせも）は、一覧を出しているあいだしまう（一覧が下に隠れないように）
+    el('welcome').classList.add('hidden');
     this.openSheet('files-panel');
+  }
+
+  /** 図面を開くシートを閉じる。図面をまだ開いていなければ、最初の画面に戻す */
+  private closeFiles(): void {
+    this.openSheet(null);
+    if (!this.scene) el('welcome').classList.remove('hidden');
   }
 
   private renderRecent(): void {
@@ -1730,9 +1793,10 @@ class App {
     if (isNative) file.accept = '.jww,application/octet-stream';
     el('btn-open').addEventListener('click', () => this.openFiles());
     el('btn-open-2').addEventListener('click', () => this.openFiles());
-    el('btn-files-close').addEventListener('click', () => this.openSheet(null));
+    el('btn-files-close').addEventListener('click', () => this.closeFiles());
     el('btn-pick-file').addEventListener('click', () => {
-      this.openSheet(null);
+      // 選ばずにやめたときに、図面がなければ最初の画面が見えているように
+      this.closeFiles();
       file.click();
     });
     el('recent-list').addEventListener('click', (e) => {

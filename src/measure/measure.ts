@@ -81,10 +81,51 @@ export function measureLengths(points: MeasurePoint[], fallback: number, fixed =
   return { segments, scales, total: segments.reduce((x, y) => x + y, 0), mixed };
 }
 
-/** 計測の種類。距離は点を結んだ長さ、面積は点で囲んだ範囲、体積はその面積に高さを掛けたもの */
-export type MeasureMode = 'length' | 'area' | 'volume';
+/**
+ * 計測の種類。距離は点を結んだ長さ、面積は点で囲んだ範囲、体積はその面積に高さを掛けたもの、
+ * 角度は結んだ線が頂点（途中の点）でなす角
+ */
+export type MeasureMode = 'length' | 'area' | 'volume' | 'angle';
 
-export const MEASURE_MODES: MeasureMode[] = ['length', 'area', 'volume'];
+export const MEASURE_MODES: MeasureMode[] = ['length', 'area', 'volume', 'angle'];
+
+/**
+ * 頂点 v で、v→a と v→b のなす角（度、0〜180）。どちらかの辺の長さが 0 なら null。
+ * 角度は縮尺によらない（図面の縮尺は縦横同じ倍率なので）
+ */
+export function angleAt(a: { x: number; y: number }, v: { x: number; y: number }, b: { x: number; y: number }): number | null {
+  const ux = a.x - v.x, uy = a.y - v.y;
+  const wx = b.x - v.x, wy = b.y - v.y;
+  const lu = Math.hypot(ux, uy), lw = Math.hypot(wx, wy);
+  const tiny = 1e-12 * Math.max(1, Math.abs(v.x), Math.abs(v.y));
+  if (!(lu > tiny && lw > tiny)) return null;
+  // 小さな角でも崩れないよう、外積と内積から求める
+  return (Math.atan2(Math.abs(ux * wy - uy * wx), ux * wx + uy * wy) * 180) / Math.PI;
+}
+
+/** 点を結んだ線の、途中の点（頂点）ごとの角（度）。1 番目の頂点は 2 点目 */
+export function measureAngles(points: ReadonlyArray<{ x: number; y: number }>): Array<number | null> {
+  const out: Array<number | null> = [];
+  for (let i = 1; i + 1 < points.length; i++) out.push(angleAt(points[i - 1], points[i], points[i + 1]));
+  return out;
+}
+
+/** 線 a–b の傾き（水平から左回りの角度、0 以上 180 未満）。長さが 0 なら null */
+export function inclination(a: { x: number; y: number }, b: { x: number; y: number }): number | null {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  if (!(Math.hypot(dx, dy) > 1e-12 * Math.max(1, Math.abs(a.x), Math.abs(a.y)))) return null;
+  let deg = (Math.atan2(dy, dx) * 180) / Math.PI;
+  if (deg < 0) deg += 180;
+  if (deg >= 180) deg -= 180;
+  // 丸めると 180 になる（ほぼ水平で左向き）ものは 0 とする
+  return Math.round(deg * 100) / 100 >= 180 ? 0 : deg;
+}
+
+/** 角度を読みやすい文字列にする（0.01° まで。末尾の 0 は付けない） */
+export function formatAngle(deg: number): string {
+  const v = Math.round(deg * 100) / 100;
+  return `${Object.is(v, -0) ? 0 : v}°`;
+}
 
 export interface AreaMeasured {
   /** 実寸の面積(mm²)。3 点未満なら 0 */

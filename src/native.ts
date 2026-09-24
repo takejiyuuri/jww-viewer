@@ -31,27 +31,41 @@ export function fileNameOf(url: string): string {
   }
 }
 
+/** 同じ URL が続けて届いたとき、同じ受け渡しとみなす間（ミリ秒） */
+const DUPLICATE_MS = 5000;
+
 /**
- * 「ファイル」アプリや共有メニューから渡された URL を受け取る口を作る。
- * 起動時の URL（getLaunchUrl）と、動いている間に届く URL（appUrlOpen）で同じものが二度来ても、一度だけ開く。
- * 開いたら true
+ * 「ファイル」アプリや共有メニューから渡された URL を受け取る口を作る。開いたら true。
+ * 起動したときは、同じ URL が起動時の URL（getLaunchUrl）と動いている間の URL（appUrlOpen）の両方からほぼ同時に届くので、
+ * 一度だけ開き、どちらにも同じ結果を返す。少し経ってから同じ URL が届いたときは（同じ名前の図面をまた渡されると、
+ * iOS は消した写しと同じ場所に写す）、新しく渡されたものとして開き直す
  */
-export function incomingHandler(reader: IncomingReader, h: OpenHandlers): (url: string | undefined) => Promise<boolean> {
-  const seen = new Set<string>();
-  return async (url) => {
-    if (!url || !/^file:/i.test(url) || seen.has(url)) return false;
-    seen.add(url);
-    let buffer: ArrayBuffer;
-    try {
-      buffer = await reader.read(url);
-    } catch {
-      h.fail('ファイルを読み取れませんでした');
-      return false;
-    }
-    h.open(buffer, fileNameOf(url));
-    // 最近の図面としてはアプリの中に取っておくので、渡されたときの写しは消してよい
-    if (/\/Inbox\//.test(url)) reader.remove(url).catch(() => {});
-    return true;
+export function incomingHandler(
+  reader: IncomingReader,
+  h: OpenHandlers,
+  now: () => number = Date.now,
+): (url: string | undefined) => Promise<boolean> {
+  const recent = new Map<string, { at: number; result: Promise<boolean> }>();
+  return (url) => {
+    if (!url || !/^file:/i.test(url)) return Promise.resolve(false);
+    const t = now();
+    const prev = recent.get(url);
+    if (prev && t - prev.at < DUPLICATE_MS) return prev.result;
+    const result = (async () => {
+      let buffer: ArrayBuffer;
+      try {
+        buffer = await reader.read(url);
+      } catch {
+        h.fail('ファイルを読み取れませんでした');
+        return false;
+      }
+      h.open(buffer, fileNameOf(url));
+      // 最近の図面としてはアプリの中に取っておくので、渡されたときの写しは消してよい
+      if (/\/Inbox\//.test(url)) reader.remove(url).catch(() => {});
+      return true;
+    })();
+    recent.set(url, { at: t, result });
+    return result;
   };
 }
 

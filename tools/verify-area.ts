@@ -1,7 +1,7 @@
-// 面積・体積の計算と、高さの入力の読み取りを確かめる（図面は使わない）。
+// 面積・体積・角度の計算と、高さの入力の読み取りを確かめる（図面は使わない）。
 import {
-  formatArea, formatVolume, measureArea, parseLength, polygonCenter,
-  type MeasurePoint,
+  MEASURE_MODES, angleAt, formatAngle, formatArea, formatVolume, inclination, measureAngles, measureArea, parseLength,
+  polygonCenter, type MeasurePoint,
 } from '../src/measure/measure.ts';
 import { MEASURE_COLORS, measureInk } from '../src/measure/colors.ts';
 
@@ -160,6 +160,49 @@ const pt = (x: number, y: number, scale: number | null = null): MeasurePoint => 
   // 知らない名前は最初の色
   if (measureInk('nothing', 'dark').stroke !== MEASURE_COLORS[0].hex) fail('知らない色の名前');
   console.log(`計測の色: ${failures === before ? 'OK' : 'NG'}`);
+}
+
+// ---------- 9. 角度 ----------
+{
+  const before = failures;
+  const cases: Array<[MeasurePoint, MeasurePoint, MeasurePoint, number]> = [
+    [pt(10, 0), pt(0, 0), pt(0, 10), 90],
+    [pt(10, 0), pt(0, 0), pt(10, 10), 45],
+    [pt(10, 0), pt(0, 0), pt(-10, 0), 180],
+    [pt(10, 0), pt(0, 0), pt(5, 0), 0],
+    [pt(1, 0), pt(0, 0), pt(-1, Math.sqrt(3)), 120],
+    // 向きを入れ替えても同じ角（0〜180）
+    [pt(0, 10), pt(0, 0), pt(10, 0), 90],
+    [pt(-10, -10), pt(0, 0), pt(10, -10), 90],
+    // 大きな座標と、とても小さな角
+    [pt(100000 + 1000, 50000), pt(100000, 50000), pt(100000 + 1000, 50000 + 0.001), (Math.atan2(0.001, 1000) * 180) / Math.PI],
+  ];
+  for (const [a, v, b, want] of cases) {
+    const got = angleAt(a, v, b);
+    if (got === null || !near(got, want, 1e-9)) fail('角度', { a, v, b, got, want });
+  }
+  // 頂点と同じ所の点では角度を出さない
+  if (angleAt(pt(0, 0), pt(0, 0), pt(1, 0)) !== null || angleAt(pt(1, 0), pt(0, 0), pt(0, 0)) !== null) fail('長さ 0 の辺の角');
+  // 途中の頂点ごとの角
+  const zig = measureAngles([pt(0, 0), pt(10, 0), pt(10, 10), pt(20, 20)]);
+  if (zig.length !== 2 || !near(zig[0]!, 90) || !near(zig[1]!, 135)) fail('頂点ごとの角', zig);
+  if (measureAngles([pt(0, 0), pt(1, 1)]).length !== 0) fail('2 点では頂点がない');
+  // 線の傾き（水平から左回り、0 以上 180 未満。向きによらない）
+  const incl: Array<[MeasurePoint, MeasurePoint, number]> = [
+    [pt(0, 0), pt(10, 0), 0], [pt(10, 0), pt(0, 0), 0], [pt(0, 0), pt(10, 10), 45], [pt(10, 10), pt(0, 0), 45],
+    [pt(0, 0), pt(0, 10), 90], [pt(0, 0), pt(-10, 10), 135], [pt(0, 0), pt(10, -10), 135],
+    [pt(0, 0), pt(-10, -1e-9), 0],
+  ];
+  for (const [a, b, want] of incl) {
+    const got = inclination(a, b);
+    if (got === null || !near(got, want, 1e-6) || got < 0 || got >= 180) fail('線の傾き', { a, b, got, want });
+  }
+  if (inclination(pt(3, 3), pt(3, 3)) !== null) fail('長さ 0 の線の傾き');
+  // 表示：0.01° まで、末尾の 0 は付けない
+  const fmt: Array<[number, string]> = [[90, '90°'], [45.000001, '45°'], [33.6900675, '33.69°'], [12.5, '12.5°'], [0, '0°'], [-0.001, '0°'], [179.999, '180°']];
+  for (const [v, want] of fmt) if (formatAngle(v) !== want) fail('角度の表示', { v, got: formatAngle(v), want });
+  if (!MEASURE_MODES.includes('angle')) fail('角度が計測の種類にない');
+  console.log(`角度: ${failures === before ? 'OK' : 'NG'}`);
 }
 
 console.log(failures === 0 ? 'すべて合格' : `${failures} 件の不合格`);

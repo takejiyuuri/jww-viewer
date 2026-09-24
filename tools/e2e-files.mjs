@@ -95,6 +95,9 @@ await recentHas(1);
 {
   const r = await page.evaluate(async () => {
     const st = await import('/src/storage.ts');
+    // 今の一覧（本物の図面）を控えておき、検査のあとに戻す（12 件入れると上限で押し出されるため）
+    const keep = [];
+    for (const r of await st.listRecent()) keep.push([r.name, await st.loadRecent(r.name)]);
     for (let i = 0; i < 12; i++) {
       await st.saveRecent(`t${i}.jww`, new Uint8Array([i, 1, 2, 3]).buffer);
       await new Promise((res) => setTimeout(res, 3));
@@ -103,6 +106,11 @@ await recentHas(1);
     const oldest = await st.loadRecent('t0.jww');
     const newest = await st.loadRecent('t11.jww');
     for (const x of list) if (x.name.startsWith('t')) await st.removeRecent(x.name);
+    for (const [name, buf] of keep.reverse()) {
+      if (buf) await st.saveRecent(name, buf);
+      await new Promise((res) => setTimeout(res, 3));
+    }
+    await window.__jww.refreshRecent();
     return { n: list.length, max: st.RECENT_MAX, first: list[0]?.name, oldest, newest: newest ? [...new Uint8Array(newest)] : null };
   });
   check('最近の図面は 10 件まで取っておき、古いものから消える', r.n === r.max && r.max === 10 && r.first === 't11.jww' && r.oldest === null && r.newest?.[0] === 11, r);
@@ -120,32 +128,75 @@ await recentHas(1);
       },
       remove: async (url) => { log.removed.push(url); },
     };
+    let clock = 1000;
     const handle = nat.incomingHandler(reader, {
       open: (buf, name) => log.opened.push({ name, bytes: buf.byteLength }),
       fail: (m) => log.failed.push(m),
-    });
+    }, () => clock);
     const inbox = 'file:///private/var/mobile/Containers/Data/Application/X/Documents/Inbox/%E5%B9%B3%E9%9D%A2%E5%9B%B3%201.jww';
-    const a = await handle(inbox);
-    // 起動時の URL と、動いている間の URL で同じものが二度来ても一度だけ開く
-    const b = await handle(inbox);
+    // 起動したとき：起動時の URL と、動いている間の URL で同じものがほぼ同時に届く。一度だけ開き、どちらも「開いた」を返す
+    const [a, b] = await Promise.all([handle(inbox), (clock += 30, handle(inbox))]);
+    const openedAtLaunch = log.opened.length;
+    // 少し経ってから同じ名前の図面をまた渡された（iOS は同じ場所に写す）：改めて開く
+    clock += 60000;
+    const again = await handle(inbox);
     const c = await handle('https://example.com/x.jww');
     const d = await handle(undefined);
     const e = await handle('file:///tmp/broken.jww');
     await new Promise((res) => setTimeout(res, 10));
     return {
-      a, b, c, d, e, log,
+      a, b, again, openedAtLaunch, c, d, e, log,
       isNative: nat.isNative,
       names: [nat.fileNameOf('file:///a/b/%E5%9B%B3%E9%9D%A2.JWW'), nat.fileNameOf('file:///a/b/%E0%A4%A.jww'), nat.fileNameOf('file:///')],
     };
   });
   check('渡された図面は、ファイルの名前（日本語も）で開き、Inbox の写しは読み終えたら消す',
-    r.a && r.log.opened.length === 1 && r.log.opened[0].name === '平面図 1.jww' && r.log.opened[0].bytes === 3
-      && r.log.removed.length === 1, r);
-  check('同じ図面が二度渡されても一度だけ開き、ファイル以外の URL は無視する', !r.b && !r.c && !r.d, r);
+    r.a && r.log.opened[0]?.name === '平面図 1.jww' && r.log.opened[0]?.bytes === 3 && r.log.removed.length >= 1, r);
+  check('起動時に同じ図面が二か所から届いても一度だけ開き、どちらにも「開いた」を返す（前回の図面を出し直さない）',
+    r.a && r.b && r.openedAtLaunch === 1, r);
+  check('少し経ってから同じ名前の図面をまた渡されたら、改めて開く', r.again && r.log.opened.length === 2, r);
+  check('ファイル以外の URL は無視する', !r.c && !r.d, r);
   check('読めないファイルは「読み取れませんでした」と知らせる', !r.e && r.log.failed.length === 1 && /読み取れません/.test(r.log.failed[0]), r);
   check('名前が崩れていても落ちない（崩れたままの名前か「図面.jww」）',
     r.names[0] === '図面.JWW' && r.names[1] === '%E0%A4%A.jww' && r.names[2] === '図面.jww', { names: r.names });
   check('Web 版では iOS アプリとして扱わない', r.isNative === false, { isNative: r.isNative });
+}
+
+// ---------- 7b. 読めないファイルは最近の一覧に入れず、一覧を出しても最初の画面の下に隠れない ----------
+{
+  const bad = path.join(root, 'package.json');
+  const before = await page.evaluate(() => window.__jww.recent.length);
+  await page.setInputFiles('#file', bad);
+  await page.waitForFunction(() => !document.getElementById('welcome').classList.contains('hidden'), null, { timeout: 30000 });
+  await page.waitForTimeout(300);
+  const after = await page.evaluate(async () => {
+    const st = await import('/src/storage.ts');
+    return { recent: window.__jww.recent.length, names: (await st.listRecent()).map((r) => r.name), last: (await st.loadLast())?.name };
+  });
+  check('読めなかったファイルは、最近の一覧にも「前回の図面」にも入れない',
+    after.recent === before && !after.names.includes('package.json') && after.last !== 'package.json', { before, ...after });
+  await page.click('#btn-open-2');
+  const shown = await page.evaluate(() => {
+    const panel = document.getElementById('files-panel').getBoundingClientRect();
+    const top = document.elementFromPoint(panel.left + panel.width / 2, panel.top + 20);
+    return {
+      open: !document.getElementById('files-panel').classList.contains('hidden'),
+      welcomeHidden: document.getElementById('welcome').classList.contains('hidden'),
+      onTop: !!top?.closest('#files-panel'),
+    };
+  });
+  check('読み込めなかったあとに「図面を開く」を押すと、一覧が最初の画面に隠れずに出る', shown.open && shown.welcomeHidden && shown.onTop, shown);
+  // 一覧から開き直せば、また図面が出る
+  await page.click(`#recent-list .recent-open[data-open="${nameA}"]`);
+  // 見出しは読み込めなかったあとも前の図面の名前のままなので、読み込み中の画面が消えるのを待つ
+  await page.waitForFunction(() => document.getElementById('loading').classList.contains('hidden')
+    && document.getElementById('welcome').classList.contains('hidden'), null, { timeout: 60000 });
+  await page.waitForFunction((n) => window.__jww.recent[0]?.name === n, nameA, { timeout: 10000 });
+  const re = await page.evaluate(() => ({
+    title: document.getElementById('title').textContent, scene: !!window.__jww.scene,
+    recent: window.__jww.recent.map((r) => r.name), hint: document.getElementById('hint').textContent,
+  }));
+  check('そのまま一覧から図面を開き直せる', re.title === nameA && re.scene && re.recent.includes(nameA) && !/見つからなかった/.test(re.hint), re);
 }
 
 // ---------- 8. 横向きでは、図面を開くシートも右側に縦長に出る ----------
@@ -155,10 +206,13 @@ await recentHas(1);
   await page.click('#btn-open');
   const r = await page.evaluate(() => {
     const b = document.getElementById('files-panel').getBoundingClientRect();
-    return { left: b.left, top: b.top, bottom: b.bottom, w: innerWidth, h: innerHeight };
+    return {
+      open: !document.getElementById('files-panel').classList.contains('hidden'), recent: window.__jww.recent.length,
+      left: b.left, top: b.top, bottom: b.bottom, w: innerWidth, h: innerHeight,
+    };
   });
-  check('横向きでは、図面を開くシートが右側に縦長に出る', r.left >= r.w / 2 - 90 && r.bottom - r.top > r.h * 0.6, r);
-  await page.click('#btn-files-close');
+  check('横向きでは、図面を開くシートが右側に縦長に出る', r.open && r.left >= r.w / 2 - 90 && r.bottom - r.top > r.h * 0.6, r);
+  if (r.open) await page.click('#btn-files-close');
 }
 
 check('コンソールにエラーがない', errors.length === 0, { errors: errors.slice(0, 5) });

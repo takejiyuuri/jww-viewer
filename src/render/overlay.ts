@@ -2,7 +2,7 @@ import type { View } from './renderer.ts';
 import type { MeasureMode, MeasurePoint } from '../measure/measure.ts';
 import type { Axis, SnapResult } from '../measure/snap.ts';
 import {
-  SNAP_LABEL, formatArea, formatLength, formatVolume, measureArea, measureLengths, polygonCenter,
+  SNAP_LABEL, formatAngle, formatArea, formatLength, formatVolume, measureAngles, measureArea, measureLengths, polygonCenter,
 } from '../measure/measure.ts';
 import type { MeasureInk } from '../measure/colors.ts';
 import type { Background } from './theme.ts';
@@ -178,7 +178,7 @@ export class Overlay {
 
     const ink = s.ink;
     // 面積・体積では、3 点以上で最後の点から最初の点へ戻して囲む
-    const closed = s.mode !== 'length' && pts.length >= 3;
+    const closed = (s.mode === 'area' || s.mode === 'volume') && pts.length >= 3;
 
     // 直交拘束の基準線。この線の上だけを動くことを示す
     if (s.constraint) {
@@ -227,9 +227,12 @@ export class Overlay {
       }
     }
 
+    // 角度は、頂点ごとに 2 辺のあいだへ弧を描き、角度の札を添える（辺の長さは出さず、角度を読みやすくする）
+    if (s.mode === 'angle' && pts.length >= 3) this.drawAngles(s.points, pts, k, ink);
+
     // 辺の長さ。下の計測結果と同じ縮尺で実寸に直す
     // （距離は区間ごとに両端が乗っている図の縮尺、面積・体積は囲んだ範囲全体で一つの縮尺）
-    if (pts.length >= 2) {
+    if (pts.length >= 2 && s.mode !== 'angle') {
       const n = pts.length;
       const edges = s.mode === 'length'
         ? measureLengths(s.points, s.scale, s.fixedScale).segments
@@ -518,13 +521,59 @@ export class Overlay {
    * 数字などのラベル。ink が null なら控えめな色（吸着先の種類）。
    * big は面積・体積の値で、辺の長さより大きく太く、縁も付けて目立たせる
    */
-  private pill(x: number, y: number, text: string, k: number, ink: MeasureInk | null, big = false): void {
+  /**
+   * 角度の弧と札。頂点ごとに、狭い側（180° 以下）の 2 辺のあいだへ弧を描き、その真ん中の向きの少し外に角度を出す。
+   * 弧の半径は、短い方の辺の長さに合わせて小さくする（隣の頂点の弧と重ならないように）
+   */
+  private drawAngles(points: MeasurePoint[], pts: Array<[number, number]>, k: number, ink: MeasureInk): void {
+    const ctx = this.ctx;
+    const angles = measureAngles(points);
+    for (let i = 1; i + 1 < pts.length; i++) {
+      const deg = angles[i - 1];
+      if (deg === null) continue;
+      const [vx, vy] = pts[i];
+      const la = Math.hypot(pts[i - 1][0] - vx, pts[i - 1][1] - vy);
+      const lb = Math.hypot(pts[i + 1][0] - vx, pts[i + 1][1] - vy);
+      const r = Math.min(30 * k, 0.45 * Math.min(la, lb));
+      if (!(r > 3 * k)) continue;
+      // 画面の座標（下向きが正）での 2 辺の向き。狭い側を回るよう、始めと終わりを決める
+      const a0 = Math.atan2(pts[i - 1][1] - vy, pts[i - 1][0] - vx);
+      const a1 = Math.atan2(pts[i + 1][1] - vy, pts[i + 1][0] - vx);
+      let d = a1 - a0;
+      while (d <= -Math.PI) d += 2 * Math.PI;
+      while (d > Math.PI) d -= 2 * Math.PI;
+      ctx.strokeStyle = INK[this.background].halo;
+      ctx.lineWidth = 4 * k;
+      ctx.beginPath();
+      ctx.arc(vx, vy, r, a0, a0 + d, d < 0);
+      ctx.stroke();
+      ctx.strokeStyle = ink.line;
+      ctx.lineWidth = 2 * k;
+      ctx.stroke();
+      // 札は弧の外側へ、札の端が弧から少し離れる所まで出す（札で弧を隠さないように）
+      const mid = a0 + d / 2;
+      const text = formatAngle(deg);
+      const big = i === pts.length - 2;
+      const { w, h } = this.pillSize(text, k, big);
+      const c = Math.abs(Math.cos(mid)), sn = Math.abs(Math.sin(mid));
+      const reach = Math.min(c > 1e-6 ? w / 2 / c : Infinity, sn > 1e-6 ? h / 2 / sn : Infinity);
+      const off = r + 6 * k + reach;
+      this.pill(vx + Math.cos(mid) * off, vy + Math.sin(mid) * off, text, k, ink, big);
+    }
+  }
+
+  /** 札の大きさ（デバイスピクセル）。札の字体もここで決める */
+  private pillSize(text: string, k: number, big: boolean): { w: number; h: number } {
     const ctx = this.ctx;
     ctx.font = big
       ? `600 ${14 * k}px -apple-system, "Hiragino Sans", system-ui, sans-serif`
       : `${12 * k}px -apple-system, "Hiragino Sans", system-ui, sans-serif`;
-    const w = ctx.measureText(text).width + (big ? 18 : 12) * k;
-    const h = (big ? 26 : 20) * k;
+    return { w: ctx.measureText(text).width + (big ? 18 : 12) * k, h: (big ? 26 : 20) * k };
+  }
+
+  private pill(x: number, y: number, text: string, k: number, ink: MeasureInk | null, big = false): void {
+    const ctx = this.ctx;
+    const { w, h } = this.pillSize(text, k, big);
     ctx.fillStyle = ink ? ink.label : 'rgba(0,0,0,0.7)';
     this.roundRect(x - w / 2, y - h / 2, w, h, h / 2);
     ctx.fill();

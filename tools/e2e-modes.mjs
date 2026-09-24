@@ -52,10 +52,11 @@ for (const [name, opts] of [
       tall: segs.filter((b) => b.getBoundingClientRect().height > 36).map((b) => b.textContent),
       panelH: Math.round(panel.height),
       segWidth: Math.round(rects[3].width),
+      count: segs.length,
     };
   });
-  check(`${name}：縮尺・直交・色・距離／面積／体積が 1 行に並び、折り返さず、パネルからはみ出さない`,
-    bar.oneRow && bar.inside && bar.ordered && bar.overflow.length === 0 && bar.tall.length === 0 && bar.panelH < 70 && bar.segWidth >= 96, bar);
+  check(`${name}：縮尺・直交・色・距離／面積／体積／角度が 1 行に並び、折り返さず、パネルからはみ出さない`,
+    bar.count === 4 && bar.oneRow && bar.inside && bar.ordered && bar.overflow.length === 0 && bar.tall.length === 0 && bar.panelH < 70 && bar.segWidth >= 96, bar);
   // 大きな体積（1/100 の図で 514 m² × 3 m）でも、値と内訳（底面と高さ）が切れない
   const fits = await page.evaluate(() => {
     const a = window.__jww;
@@ -375,6 +376,62 @@ const overlayAt = (x, y) => page.evaluate(([x, y]) => {
   });
   const white = await colorPixels([0xff, 0xff, 0xff], 30);
   check('黒い背景では白で描く', white > 100, { white });
+}
+
+// ---------- 8. 角度：3 点で頂点の角を出し、水平・垂直の拘束は掛けない ----------
+{
+  const { ctx, page } = await open({ ...devices['iPhone 14 Pro'], hasTouch: true });
+  await page.click('#seg-mode button[data-mode="angle"]');
+  const s = await page.evaluate(async () => {
+    const a = window.__jww;
+    const c = a.toWorld(a.cssW / 2, a.cssH * 0.4);
+    const at = (list, kind = 'intersection') => list.map(([x, y]) => ({ x: c.x + x, y: c.y + y, glayer: 0, kind, scale: 100 }));
+    const read = () => ({ value: document.getElementById('readout-value').textContent, detail: document.getElementById('readout-detail').textContent });
+    // 直交が入っていても、角度では拘束しない
+    a.points = at([[0, 0]], 'endpoint');
+    a.snapFor(a.cssW / 2 + 40, a.cssH * 0.4 - 30, null);
+    const constraint = a.constraint;
+    // 2 点では、あと 1 点で出すことと線の傾きを知らせる
+    a.points = at([[20, 0], [0, 0]]);
+    a.updateReadout();
+    const two = read();
+    // 3 点：頂点 (0,0) の角
+    a.points = at([[20, 0], [0, 0], [20, 20]]);
+    a.updateReadout();
+    const three = read();
+    // 図面の上に角度の札を描く
+    const texts = [];
+    const g = a.overlay.ctx;
+    const fillText = g.fillText;
+    g.fillText = function (t, ...rest) { texts.push(String(t)); return fillText.call(this, t, ...rest); };
+    a.requestDraw(true);
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    g.fillText = fillText;
+    // 4 点目：最後の頂点の角を大きく、前の頂点の角も添える
+    a.points = at([[20, 0], [0, 0], [20, 20], [40, 0]]);
+    a.updateReadout();
+    const four = read();
+    const out = {
+      pressed: document.querySelector('#seg-mode button[data-mode="angle"]').getAttribute('aria-pressed'),
+      orthoDisabled: document.getElementById('btn-ortho').disabled,
+      orthoOn: a.ortho,
+      constraint, two, three, four, texts: texts.filter((t) => t.includes('°')),
+    };
+    a.points = [];
+    a.updateReadout();
+    return out;
+  });
+  check('角度に切り替えると、直交は押せなくなり（入り切りは残る）、水平・垂直の拘束も掛からない',
+    s.pressed === 'true' && s.orthoDisabled && s.orthoOn && s.constraint === null, s);
+  check('2 点では、あと 1 点で角度を出すことと、線の傾きを知らせる', s.two.value === '—' && /あと 1 点/.test(s.two.detail) && /傾き 0°/.test(s.two.detail), s.two);
+  check('3 点で頂点の角と外側の角を出す', s.three.value === '45°' && /外側 315°/.test(s.three.detail) && /頂点は交点/.test(s.three.detail), s.three);
+  check('図面の上にも、頂点に角度の札を出す', s.texts.includes('45°'), { texts: s.texts });
+  check('4 点目を置くと、最後の頂点の角を出し、前の頂点の角も添える', s.four.value === '90°' && /前の頂点 45°/.test(s.four.detail), s.four);
+  await page.click('#seg-mode button[data-mode="length"]');
+  const back = await page.evaluate(() => ({ disabled: document.getElementById('btn-ortho').disabled, ortho: window.__jww.ortho }));
+  check('距離に戻すと、直交がまた押せて効く', !back.disabled && back.ortho, back);
+  await page.evaluate(() => localStorage.removeItem('jww-viewer:measure'));
+  await ctx.close();
 }
 
 // ---------- 横向きではツールバーを縦に並べ、縦向きで下だった側に置く ----------
