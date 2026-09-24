@@ -225,6 +225,7 @@ tools/           検証・開発用のスクリプト
 | `node tools/inspect.ts samples/*.jww` | 解析結果の要約 |
 | `node tools/render-png.ts <file.jww> out.png` | 描画結果を PNG に焼く（ブラウザ不要）。`--light` `--mono` `--hide=2,7` も使える |
 | `npm run probe:magnifier` | 拡大鏡がドラッグ中にどう動くかを 1 フレームずつ計測 |
+| `python tools/make_icons.py` | 元の絵 `tools/icon-source.webp` からアイコン PNG を作り直す（Pillow と numpy を使う） |
 
 手元のサンプル 3 点での結果:
 
