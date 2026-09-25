@@ -2,9 +2,10 @@
 import { chromium, devices } from 'playwright';
 import path from 'node:path';
 import { startServer, projectRoot as root } from './serve.mjs';
+import { defaultSample } from './samples.mjs';
 
 const srv = await startServer({ port: 5313, host: false, quiet: true });
-const sample = process.argv[2] || path.join(root, 'samples', 'A棟 11階躯体図2026.5.12提出スリーブ.jww');
+const sample = process.argv[2] || defaultSample();
 const outDir = process.argv[3] || '.';
 
 const browser = await chromium.launch({

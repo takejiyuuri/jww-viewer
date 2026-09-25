@@ -17,9 +17,10 @@ workflows:
     scripts:
       - name: npm の依存を入れる
         script: npm ci
-      - name: 型チェックと Web のビルド
+      - name: 型チェックと計算の検査と Web のビルド
         script: |
           npm run check
+          npm run verify:area
           npm run build
       - name: Web を iOS プロジェクトへ写す
         script: npx cap sync ios
@@ -64,9 +65,10 @@ workflows:
     scripts:
       - name: npm の依存を入れる
         script: npm ci
-      - name: 型チェックと Web のビルド
+      - name: 型チェックと計算の検査と Web のビルド
         script: |
           npm run check
+          npm run verify:area
           npm run build
       - name: Web を iOS プロジェクトへ写す
         script: npx cap sync ios
@@ -76,8 +78,18 @@ workflows:
         script: |
           NEXT=${BUILD_NUMBER:-1}
           if [ -n "$APP_STORE_APPLE_ID" ]; then
-            LATEST=$(app-store-connect get-latest-testflight-build-number "$APP_STORE_APPLE_ID" 2>/dev/null || echo 0)
-            case "$LATEST" in ''|*[!0-9]*) LATEST=0 ;; esac
+            # 取れないまま進めると、TestFlight にある番号以下で 1 時間近くビルドしてから送信で断られるので、ここで止める
+            if ! LATEST=$(app-store-connect get-latest-testflight-build-number "$APP_STORE_APPLE_ID"); then
+              echo "TestFlight の最新のビルド番号を取れませんでした。App Store Connect の API キー（codemagic-asc）と APP_STORE_APPLE_ID を確かめてください。"
+              echo "TestFlight にまだ 1 つもビルドがないときは、APP_STORE_APPLE_ID の行を消すと Codemagic の通し番号で進めます。"
+              exit 1
+            fi
+            case "$LATEST" in
+              ''|*[!0-9]*)
+                echo "TestFlight の最新のビルド番号が数ではありません: $LATEST"
+                exit 1
+                ;;
+            esac
             if [ $((LATEST + 1)) -gt "$NEXT" ]; then NEXT=$((LATEST + 1)); fi
           fi
           echo "ビルド番号: $NEXT"

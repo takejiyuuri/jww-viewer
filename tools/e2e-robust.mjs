@@ -2,8 +2,9 @@
 import { chromium } from 'playwright';
 import path from 'node:path';
 import { startServer, projectRoot as root } from './serve.mjs';
+import { defaultSample } from './samples.mjs';
 
-const sample = process.argv[2] ?? path.join(root, 'samples', 'A棟 11階躯体図2026.5.12提出スリーブ.jww');
+const sample = process.argv[2] ?? defaultSample();
 const outDir = process.argv[3] ?? '.';
 
 const srv = await startServer({ port: 5303, host: false, quiet: true });
@@ -124,8 +125,10 @@ for (const s of SCREENS) {
 
   await page.waitForTimeout(600);
   const after = await colorsOf();
+  // ブラウザの状態だけでなく、アプリの描画側が組み直して描ける状態に戻ったかを見る
+  const appBack = await page.evaluate(() => window.__jww.renderer?.isLost === false);
 
-  check('コンテキスト消失を扱える', lostState.supported !== true || lostState.lost === true, lostState);
+  check('コンテキスト消失を扱える', !lostState.supported || (lostState.lost === true && lostState.restored === true && appBack), { ...lostState, appBack });
   check('復帰後に描画が戻る', !lostState.supported || after >= Math.max(2, before - 4), {
     前: before, 後: after,
   });

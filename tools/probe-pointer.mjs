@@ -2,10 +2,11 @@
 import { chromium, devices } from 'playwright';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { defaultSample } from './samples.mjs';
 
 const root = path.dirname(fileURLToPath(new URL('../package.json', import.meta.url)));
 const url = process.argv[2] ?? 'http://localhost:5199/';
-const sample = path.join(root, 'samples', 'A棟 11階躯体図2026.5.12提出スリーブ.jww');
+const sample = process.argv[3] ?? defaultSample();
 
 const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
 const context = await browser.newContext({ ...devices['iPhone 14 Pro'], hasTouch: true });

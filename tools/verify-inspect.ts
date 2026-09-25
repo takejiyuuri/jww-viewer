@@ -12,12 +12,10 @@ import { buildInfo } from '../src/jww/info.ts';
 import { SnapIndex } from '../src/measure/snap.ts';
 import { describeEntity, entityShape, pickEntity, textContains } from '../src/ui/inspect.ts';
 import { LayerVisibility } from '../src/ui/layers.ts';
+import { sampleFiles } from './samples.mjs';
 
-const files = process.argv.slice(2);
-if (files.length === 0) {
-  console.error('使い方: node tools/verify-inspect.ts samples/*.jww');
-  process.exit(1);
-}
+// 引数がなければ samples/ の .jww すべて
+const files = sampleFiles();
 
 let failures = 0;
 const fail = (msg: string, detail?: unknown): void => {

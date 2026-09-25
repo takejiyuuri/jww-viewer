@@ -1,6 +1,7 @@
 // スナップが「半径内で本当に一番近い候補」を選べているかを、総当たりと突き合わせて確かめる。
 // グリッド索引の走査順に引きずられて遠い図形へ吸着していないかを見るためのもの。
 import { readFileSync } from 'node:fs';
+import { sampleFiles } from './samples.mjs';
 import { parseJww } from '../src/jww/parser.ts';
 import { buildScene } from '../src/render/geometry.ts';
 import { SnapIndex } from '../src/measure/snap.ts';
@@ -70,7 +71,7 @@ let totalTrials = 0;
 let worstGap = 0;
 let worstWhere = '';
 
-for (const file of process.argv.slice(2)) {
+for (const file of sampleFiles()) {
   const raw = readFileSync(file);
   const ab = raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength) as ArrayBuffer;
   const scene = buildScene(parseJww(ab));

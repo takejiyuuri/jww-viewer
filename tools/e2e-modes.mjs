@@ -3,9 +3,10 @@ import { chromium, devices } from 'playwright';
 import path from 'node:path';
 import fs from 'node:fs';
 import { startServer, projectRoot as root } from './serve.mjs';
+import { defaultSample } from './samples.mjs';
 
 const srv = await startServer({ port: 5312, host: false, quiet: true });
-const sample = process.argv[2] || path.join(root, 'samples', fs.readdirSync(path.join(root, 'samples')).find((f) => f.endsWith('.jww')));
+const sample = process.argv[2] || defaultSample();
 const outDir = process.argv[3] || '.';
 
 const browser = await chromium.launch({

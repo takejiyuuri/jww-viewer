@@ -4,8 +4,11 @@ import { readFileSync } from 'node:fs';
 import { parseJww } from '../src/jww/parser.ts';
 import { buildScene } from '../src/render/geometry.ts';
 import { SnapIndex } from '../src/measure/snap.ts';
+import { sampleFiles } from './samples.mjs';
 
-for (const file of process.argv.slice(2)) {
+let failedFiles = 0;
+
+for (const file of sampleFiles()) {
   const raw = readFileSync(file);
   const ab = raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength) as ArrayBuffer;
   const doc = parseJww(ab);
@@ -67,4 +70,9 @@ for (const file of process.argv.slice(2)) {
   for (const s of misses) console.log(`    ・${s}`);
   console.log(`  スナップ索引: ${buildMs.toFixed(0)}ms で構築、1 回あたり ${(queryMs / trials).toFixed(2)}ms`);
   console.log(`  端点吸着: ${snapped}/${trials}`);
+  // 寸法値と合わないものが 1 つでもあれば、縮尺の解釈か計測がずれている
+  if (hit !== checked) failedFiles++;
 }
+
+console.log(failedFiles ? `\n寸法値と合わない図面が ${failedFiles} 件` : '\nすべての図面で寸法値と一致');
+process.exit(failedFiles ? 1 : 0);

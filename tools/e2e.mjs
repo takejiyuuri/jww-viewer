@@ -2,10 +2,11 @@
 import { chromium, devices } from 'playwright';
 import path from 'node:path';
 import { startServer, projectRoot as root } from './serve.mjs';
+import { defaultSample } from './samples.mjs';
 
 const srv = await startServer({ port: 5301, host: false, quiet: true });
 const url = srv.url;
-const sample = process.argv[2] ?? path.join(root, 'samples', 'A棟 11階躯体図2026.5.12提出スリーブ.jww');
+const sample = process.argv[2] ?? defaultSample();
 const outDir = process.argv[3] ?? '.';
 
 const browser = await chromium.launch({
@@ -78,7 +79,8 @@ const held = await page.evaluate(async ([x, y]) => {
   await new Promise((r) => setTimeout(r, 450));
   stage.dispatchEvent(new PointerEvent('pointermove', { ...opts, clientX: x + 2, clientY: y + 2 }));
   await new Promise((r) => setTimeout(r, 250));
-  return true;
+  // 長押しのあいだ拡大鏡が出ているか
+  return !!window.__jww.magnifier;
 }, [cx - box.x, cy - box.y]);
 await page.waitForTimeout(300);
 await page.screenshot({ path: path.join(outDir, 'e2e-4-magnifier.png') });
@@ -112,12 +114,22 @@ const fps = await page.evaluate(async () => {
   return frames;
 });
 
+// 描画・距離・拡大鏡のどれかが出ない、またはエラーが出たら不合格
+const failed = Object.entries({
+  描画: painted > 1,
+  距離: /\d/.test(readout ?? ''),
+  拡大鏡: held,
+  エラーなし: errors.length === 0,
+}).filter(([, ok]) => !ok).map(([name]) => name);
+
 console.log(JSON.stringify({
   title, gl, distinctColorsInCenter: painted, held,
   距離: readout, 内訳: detail, 連続計測: multiDetail,
   秒間フレーム: fps,
   errors,
+  不合格: failed,
 }, null, 2));
 
 await browser.close();
 await srv.close();
+process.exit(failed.length ? 1 : 0);

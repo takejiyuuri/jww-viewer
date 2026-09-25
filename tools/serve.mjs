@@ -1,12 +1,29 @@
 // 開発サーバー / プレビューサーバーの起動をひとまとめにする。
 // 検証スクリプトから使うと、サーバーの起動と後片付けをテスト側で完結できる。
 import { createServer, preview } from 'vite';
-import { readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ensureCert } from './make-cert.mjs';
 
 export const projectRoot = path.dirname(fileURLToPath(new URL('../package.json', import.meta.url)));
+
+/**
+ * preview は dist をそのまま配信するので、ないときは止め、ソースより古いときは知らせる。
+ * 古いビルドを検査して合格にしたり、直したはずの動きを確かめ損ねたりしないため。
+ */
+function checkDist() {
+  const built = path.join(projectRoot, 'dist', 'index.html');
+  if (!existsSync(built)) throw new Error('dist がありません。先に npm run build を実行してください');
+  const sources = ['index.html', 'vite.config.ts'];
+  for (const d of ['src', 'public']) {
+    for (const f of readdirSync(path.join(projectRoot, d), { recursive: true })) sources.push(path.join(d, f));
+  }
+  const newest = Math.max(...sources.map((f) => statSync(path.join(projectRoot, f)).mtimeMs));
+  if (newest > statSync(built).mtimeMs) {
+    console.warn('※ dist が src などの変更より古いままです。今のソースで確かめるなら先に npm run build を実行してください');
+  }
+}
 
 /**
  * @param {{ port?: number, https?: boolean, preview?: boolean, host?: boolean }} opts
@@ -17,6 +34,7 @@ export async function startServer(opts = {}) {
   const usePreview = opts.preview ?? false;
   const host = opts.host ?? true;
 
+  if (usePreview) checkDist();
   const cert = useHttps ? ensureCert() : null;
 
   const caPlugin = {

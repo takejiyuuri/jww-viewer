@@ -3,11 +3,12 @@
 import { chromium, devices } from 'playwright';
 import path from 'node:path';
 import { startServer, projectRoot as root } from './serve.mjs';
+import { defaultSample } from './samples.mjs';
 
 // 第 1 引数が URL なら、そこを検査対象にする（公開済みのサイトを確かめるとき）
 const remote = process.argv[2]?.startsWith('http') ? process.argv[2] : null;
 const rest = remote ? process.argv.slice(3) : process.argv.slice(2);
-const sample = rest[0] ?? path.join(root, 'samples', 'A棟 11階躯体図2026.5.12提出スリーブ.jww');
+const sample = rest[0] ?? defaultSample();
 const outDir = rest[1] ?? '.';
 
 // 本番ビルドを HTTPS で配信する。Service Worker は安全なコンテキストでしか動かない

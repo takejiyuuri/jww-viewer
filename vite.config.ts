@@ -48,4 +48,11 @@ export default defineConfig({
   },
   worker: { format: 'es' },
   plugins: [serviceWorkerPlugin()],
+  server: {
+    fs: {
+      // 開発サーバは iPhone から開くために LAN へ出すので、証明書の鍵・実務の図面・検証の画面写しを配らない。
+      // 指定すると Vite の既定（.env・*.crt・*.pem・.git）が置き換わるため、既定の分も並べる
+      deny: ['.env', '.env.*', '*.{crt,pem,key}', '**/.git/**', '**/certs/**', '**/samples/**', '*.jww', 'e2e-*.png'],
+    },
+  },
 });

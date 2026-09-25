@@ -2,10 +2,11 @@
 import { chromium, devices } from 'playwright';
 import path from 'node:path';
 import { startServer, projectRoot as root } from './serve.mjs';
+import { defaultSample } from './samples.mjs';
 
 const srv = await startServer({ port: 5304, host: false, quiet: true });
 const url = srv.url;
-const sample = process.argv[2] ?? path.join(root, 'samples', 'A棟 11階躯体図2026.5.12提出スリーブ.jww');
+const sample = process.argv[2] ?? defaultSample();
 const outDir = process.argv[3] ?? '.';
 
 const browser = await chromium.launch({
@@ -179,7 +180,7 @@ const tapAt = async (x, y) => {
   const spot = await page.evaluate(() => ({ x: 200, y: document.getElementById('readout').getBoundingClientRect().top - 60 }));
   await holdDrag(spot, { x: spot.x + 10, y: spot.y + 10 }, 60);
   const after = await points();
-  check('短いドラッグでは点が増えない', after.length === before.length + 0 || after.length === before.length + 1, {
+  check('短いドラッグでは点が増えない', after.length === before.length, {
     前: before.length, 後: after.length,
   });
 }

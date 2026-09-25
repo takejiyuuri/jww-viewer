@@ -1,7 +1,7 @@
 // 面積・体積・角度の計算と、高さの入力の読み取りを確かめる（図面は使わない）。
 import {
-  MEASURE_MODES, angleAt, formatAngle, formatArea, formatVolume, inclination, measureAngles, measureArea, parseLength,
-  polygonCenter, type MeasurePoint,
+  MEASURE_MODES, angleAt, formatAngle, formatArea, formatVolume, inclination, measureAngles, measureArea, measureLengths,
+  parseLength, polygonCenter, type MeasurePoint,
 } from '../src/measure/measure.ts';
 import { MEASURE_COLORS, measureInk } from '../src/measure/colors.ts';
 
@@ -203,6 +203,29 @@ const pt = (x: number, y: number, scale: number | null = null): MeasurePoint => 
   for (const [v, want] of fmt) if (formatAngle(v) !== want) fail('角度の表示', { v, got: formatAngle(v), want });
   if (!MEASURE_MODES.includes('angle')) fail('角度が計測の種類にない');
   console.log(`角度: ${failures === before ? 'OK' : 'NG'}`);
+}
+
+// ---------- 10. 距離の縮尺の決め方（区間ごと） ----------
+{
+  const before = failures;
+  // 図面上 10 の区間を、両端の縮尺と既定の縮尺でどう実寸に直すか
+  const cases: Array<[string, number | null, number | null, number, boolean, number, boolean]> = [
+    ['両端が同じ縮尺', 50, 50, 100, false, 500, false],
+    ['縮尺の違う点をまたぐと既定の縮尺で、注意を出す', 50, 20, 100, false, 1000, true],
+    ['始点だけ分からなければ終点の縮尺', null, 20, 100, false, 200, false],
+    ['終点だけ分からなければ始点の縮尺', 50, null, 100, false, 500, false],
+    ['どちらも分からなければ既定の縮尺', null, null, 100, false, 1000, false],
+    ['選んだ縮尺ならすべてそれで、混じっていても注意しない', 50, 20, 30, true, 300, false],
+  ];
+  for (const [name, a, b, fallback, fixed, want, mixed] of cases) {
+    const m = measureLengths([pt(0, 0, a), pt(10, 0, b)], fallback, fixed);
+    if (m.segments.length !== 1 || !near(m.segments[0], want) || !near(m.total, want) || m.mixed !== mixed) fail(name, m);
+  }
+  // 区間ごとに縮尺を決め、合計はその和
+  const run = measureLengths([pt(0, 0, 50), pt(10, 0, 50), pt(10, 10, 20), pt(10, 20, 20)], 100);
+  if (!near(run.total, 500 + 1000 + 200) || run.scales.join() !== '50,100,20' || !run.mixed) fail('区間ごとの縮尺と合計', run);
+  if (measureLengths([pt(0, 0, 50)], 100).segments.length !== 0) fail('1 点では区間がない');
+  console.log(`距離の縮尺の決め方: ${failures === before ? 'OK' : 'NG'}`);
 }
 
 console.log(failures === 0 ? 'すべて合格' : `${failures} 件の不合格`);
