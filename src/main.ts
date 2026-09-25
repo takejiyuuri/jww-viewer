@@ -10,8 +10,8 @@ import {
 } from './measure/measure.ts';
 import { MEASURE_COLORS, measureColor, measureInk } from './measure/colors.ts';
 import {
-  listRecent, loadDisplay, loadLast, loadMeasurePrefs, loadRecent, loadViewState, removeRecent, saveDisplay, saveLast,
-  saveMeasurePrefs, saveRecent, saveViewState, type MeasurePrefs, type RecentFile,
+  listRecent, loadDisplay, loadLast, loadMeasurePrefs, loadRecent, loadViewState, recentKey, removeRecent, restoreRecent,
+  saveDisplay, saveMeasurePrefs, saveOpened, saveViewState, type MeasurePrefs, type RecentFile, type RemovedRecent,
 } from './storage.ts';
 import { isNative, listenForFiles, statusBarFor, tapFeedback } from './native.ts';
 import {
@@ -82,8 +82,14 @@ class App {
    * 読み込み・保存のたびに先に読んでおく
    */
   private recent: RecentFile[] = [];
+  /** 表示している図面の、最近の一覧での鍵（名前と中身から作る）。同じ名前の別の図面と取り違えずに「表示中」を付ける */
+  private shownKey: string | null = null;
+  /** 一覧から外した直後の図面と、外す前の行の位置。一覧を閉じるまで「元に戻す」で戻せる */
+  private undoRemove: { removed: RemovedRecent; index: number } | null = null;
   /** 図面を読み込み始めた回数。前回の図面を出し直す前に、ほかの図面が開かれていないかを見る */
   private loadSeq = 0;
+  /** 読み込み中の図面の決着を、待っている側（渡された図面の写しの片付け）へ知らせる */
+  private loadSettle: () => void = () => {};
   private snapIndex: SnapIndex | null = null;
 
   private view: View = { cx: 0, cy: 0, zoom: 1 };
@@ -278,7 +284,7 @@ class App {
     try {
       this.recent = await listRecent();
     } catch {
-      this.recent = [];
+      // 一時的に読めないだけで一覧が空に見えないよう、前に読んだものを使い続ける
     }
     if (!el('files-panel').classList.contains('hidden')) this.renderRecent();
   }
@@ -308,13 +314,24 @@ class App {
     el('loading-text').textContent = `${name} を読み込み中…`;
   }
 
-  private load(buffer: ArrayBuffer, name: string, persist = true): void {
+  /**
+   * 図面を読み込む。返す Promise は、読み込みと端末への保存が済むか、失敗・中止したときに決着する
+   * （渡された図面の写しを、保存が済むまで消さないために使う）
+   */
+  private load(buffer: ArrayBuffer, name: string, persist = true): Promise<void> {
     this.loadSeq++;
     this.showLoading(name);
+    // 前の図面の読み込みはここで打ち切るので、待っている側には終わったと知らせる
+    this.loadSettle();
+    let settle = (): void => {};
+    const settled = new Promise<void>((r) => { settle = r; });
+    this.loadSettle = settle;
 
     // 転送で中身が失われる前に保存用の複製を取る。保存は読み込めたときだけにする
     // （読めないファイルを最近の一覧に入れたり、次に起動したとき出し直そうとしたりしないように）
     const copy = persist ? buffer.slice(0) : null;
+    // 最近の一覧で表示中の図面を見分ける鍵も、転送の前に作っておく
+    const key = recentKey(name, buffer);
 
     this.worker?.terminate();
     clearTimeout(this.loadTimer);
@@ -325,6 +342,7 @@ class App {
       this.worker = null;
       el('loading').classList.add('hidden');
       this.fail('解析に時間がかかりすぎたため中止しました');
+      settle();
     }, 60000);
     this.worker.onmessage = (ev: MessageEvent<LoadResponse>) => {
       clearTimeout(this.loadTimer);
@@ -332,23 +350,36 @@ class App {
       const res = ev.data;
       if (!res.ok) {
         this.fail(res.error);
+        settle();
         return;
       }
-      if (copy) {
-        saveLast(name, copy).catch(() => {
-          // 保存できなくても閲覧には支障がないので黙って続ける
-        });
-        // 最近開いた図面にも取っておく（一覧から開き直せるように）
-        saveRecent(name, copy).then(() => this.refreshRecent()).catch(() => {});
-      }
+      this.shownKey = key;
+      if (copy) void this.remember(name, copy, key).then(settle);
+      else settle();
       this.onLoaded(res.scene, res.info);
     };
     this.worker.onerror = (ev) => {
       clearTimeout(this.loadTimer);
       el('loading').classList.add('hidden');
       this.fail(ev.message || '読み込みに失敗しました');
+      settle();
     };
     this.worker.postMessage({ buffer, name }, [buffer]);
+    return settled;
+  }
+
+  /**
+   * 読み込めた図面を端末に取っておく（次に起動したときの復元と、最近の一覧）。
+   * 保存できなくても閲覧は続けられるが、次の起動や圏外で一覧から開けると思わないよう知らせる
+   */
+  private async remember(name: string, buffer: ArrayBuffer, key: string): Promise<void> {
+    try {
+      const dropped = await saveOpened(name, buffer, key);
+      if (dropped > 0) this.hint('端末の空きが少ないため、最近の図面の古いものを一覧から外しました');
+    } catch {
+      this.hint('端末に保存できませんでした（空き容量をご確認ください）。\n次に起動したときの表示と最近の一覧には入りません');
+    }
+    await this.refreshRecent();
   }
 
   private fail(message: string): void {
@@ -1808,6 +1839,8 @@ class App {
    * ファイルの選択は押したその場で出す（iOS は待ったあとでは出せない）ので、一覧は先に読んでおいたものを使う
    */
   private openFiles(): void {
+    // 前に外した図面の「元に戻す」は、一覧を出し直したら出さない
+    this.undoRemove = null;
     if (this.recent.length === 0) {
       this.openSheet(null);
       el<HTMLInputElement>('file').click();
@@ -1821,6 +1854,7 @@ class App {
 
   /** 図面を開くシートを閉じる。図面をまだ開いていなければ、最初の画面に戻す */
   private closeFiles(): void {
+    this.undoRemove = null;
     this.openSheet(null);
     if (!this.scene) el('welcome').classList.remove('hidden');
   }
@@ -1834,44 +1868,76 @@ class App {
       return `${d.getMonth() + 1}/${d.getDate()} ${d.getHours()}:${pad(d.getMinutes())}`;
     };
     const size = (b: number): string => (b >= 1024 * 1024 ? `${(b / 1024 / 1024).toFixed(1)}MB` : `${Math.max(1, Math.round(b / 1024))}KB`);
-    list.innerHTML = this.recent.length === 0
-      ? '<p class="sub">最近開いた図面はありません</p>'
-      : this.recent.map((r) => {
-        const name = escapeHtml(r.name);
-        const now = r.name === current;
-        return `<div class="recent-row${now ? ' current' : ''}">`
-          + `<button class="recent-open" data-open="${name}">`
-          + `<span class="recent-name">${name}</span>`
-          + `<span class="recent-meta">${when(r.openedAt)}・${size(r.size)}${now ? '・表示中' : ''}</span>`
-          + '</button>'
-          + `<button class="icon-btn recent-remove" data-remove="${name}" aria-label="${name} を一覧から外す">×</button>`
-          + '</div>';
-      }).join('');
+    const rows = this.recent.map((r) => {
+      const name = escapeHtml(r.name);
+      const key = escapeHtml(r.key);
+      // 名前だけを鍵にしていたころのものは、名前で比べる
+      const now = r.key === this.shownKey || (r.key === r.name && r.name === current);
+      return `<div class="recent-row${now ? ' current' : ''}">`
+        + `<button class="recent-open" data-open="${key}">`
+        + `<span class="recent-name">${name}</span>`
+        + `<span class="recent-meta">${when(r.openedAt)}・${size(r.size)}${now ? '・表示中' : ''}</span>`
+        + '</button>'
+        + `<button class="icon-btn recent-remove" data-remove="${key}" aria-label="${name} を一覧から外す">×</button>`
+        + '</div>';
+    });
+    // 外した直後は、その行の場所に「元に戻す」を出す
+    const undo = this.undoRemove;
+    if (undo) {
+      const name = escapeHtml(undo.removed.meta.name);
+      rows.splice(Math.min(undo.index, rows.length), 0, '<div class="recent-row recent-undo">'
+        + `<div class="recent-open"><span class="recent-name">${name}</span>`
+        + '<span class="recent-meta">一覧から外し、端末からも消しました</span></div>'
+        + `<button class="chip small" data-undo aria-label="${name} を一覧に戻す">元に戻す</button>`
+        + '</div>');
+    }
+    list.innerHTML = rows.join('') + (this.recent.length === 0 ? '<p class="sub">最近開いた図面はありません</p>' : '');
   }
 
   /** 最近開いた図面を開き直す */
-  private async openRecent(name: string): Promise<void> {
-    let buffer: ArrayBuffer | null = null;
+  private async openRecent(key: string): Promise<void> {
+    const entry = this.recent.find((r) => r.key === key);
+    if (!entry) return;
+    let buffer: ArrayBuffer | null;
     try {
-      buffer = await loadRecent(name);
+      buffer = await loadRecent(key);
     } catch {
-      buffer = null;
+      // 読み出しが一時的に失敗しただけかもしれないので、一覧からは外さない
+      this.hint('図面を読み出せませんでした。もう一度お試しください');
+      return;
     }
     if (!buffer) {
       this.hint('図面が見つからなかったので、一覧から外しました');
-      await this.forgetRecent(name);
+      await this.forgetRecent(key);
       return;
     }
+    this.undoRemove = null;
     this.openSheet(null);
-    this.load(buffer, name);
+    void this.load(buffer, entry.name);
   }
 
-  /** 最近開いた図面の一覧から外す */
-  private async forgetRecent(name: string): Promise<void> {
+  /** 最近開いた図面の一覧から外し、端末に取っておいた中身も消す。一覧を閉じるまでは元に戻せる */
+  private async forgetRecent(key: string): Promise<void> {
+    const index = this.recent.findIndex((r) => r.key === key);
     try {
-      await removeRecent(name);
+      const removed = await removeRecent(key);
+      this.undoRemove = removed ? { removed, index } : null;
     } catch {
-      // 外せなくても一覧の表示は読み直す
+      this.hint('一覧から外せませんでした。もう一度お試しください');
+    }
+    await this.refreshRecent();
+    this.renderRecent();
+  }
+
+  /** 外した図面を一覧に戻す */
+  private async undoForget(): Promise<void> {
+    const undo = this.undoRemove;
+    if (!undo) return;
+    this.undoRemove = null;
+    try {
+      await restoreRecent(undo.removed);
+    } catch {
+      this.hint('元に戻せませんでした');
     }
     await this.refreshRecent();
     this.renderRecent();
@@ -1911,6 +1977,7 @@ class App {
       const open = target.closest<HTMLElement>('[data-open]');
       if (remove?.dataset.remove !== undefined) void this.forgetRecent(remove.dataset.remove);
       else if (open?.dataset.open !== undefined) void this.openRecent(open.dataset.open);
+      else if (target.closest('[data-undo]')) void this.undoForget();
     });
 
     file.addEventListener('change', () => {

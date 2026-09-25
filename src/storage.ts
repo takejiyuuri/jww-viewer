@@ -8,11 +8,12 @@ import { MEASURE_MODES, type MeasureMode } from './measure/measure.ts';
  */
 
 const DB_NAME = 'jww-viewer';
+/** 直近に開いた図面（次に起動したとき出し直す）。KEY の 1 件だけ */
 const STORE = 'last';
 const KEY = 'file';
 /** 最近開いた図面の名前・大きさ・日時（一覧を出すたびに中身まで読まないよう、中身とは分けて置く） */
 const RECENT_META = 'recent-meta';
-/** 最近開いた図面の中身。名前を鍵にして RECENT_META と対にする */
+/** 最近開いた図面の中身。recentKey の鍵で RECENT_META と対にする（名前だけを鍵にしていたころのものは名前が鍵） */
 const RECENT_DATA = 'recent-data';
 /** 最近開いた図面を取っておく数 */
 export const RECENT_MAX = 10;
@@ -27,7 +28,12 @@ function open(): Promise<IDBDatabase> {
         if (!db.objectStoreNames.contains(name)) db.createObjectStore(name);
       }
     };
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => {
+      const db = req.result;
+      // 新しい版のページが版を上げようとしたら、待たせないようにすぐ閉じる
+      db.onversionchange = () => db.close();
+      resolve(db);
+    };
     req.onerror = () => reject(req.error);
   });
 }
@@ -36,17 +42,8 @@ export interface StoredFile {
   name: string;
   buffer: ArrayBuffer;
   savedAt: number;
-}
-
-export async function saveLast(name: string, buffer: ArrayBuffer): Promise<void> {
-  const db = await open();
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(STORE, 'readwrite');
-    tx.objectStore(STORE).put({ name, buffer, savedAt: Date.now() } satisfies StoredFile, KEY);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-  db.close();
+  /** 最近の一覧での鍵（recentKey）。これを入れる前に保存したものには無い */
+  key?: string;
 }
 
 export async function loadLast(): Promise<StoredFile | null> {
@@ -64,6 +61,8 @@ export async function loadLast(): Promise<StoredFile | null> {
 // ---------- 最近開いた図面 ----------
 
 export interface RecentFile {
+  /** 一覧での鍵（recentKey）。開く・外すときはこれで指す */
+  key: string;
   name: string;
   /** バイト数 */
   size: number;
@@ -71,41 +70,156 @@ export interface RecentFile {
   openedAt: number;
 }
 
+/** FNV-1a（32 ビット）。取り違えを見分けるための短い指紋で、暗号には使わない */
+export function fnv1a(bytes: Uint8Array): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < bytes.length; i++) h = Math.imul(h ^ bytes[i], 0x01000193);
+  return h >>> 0;
+}
+
+/**
+ * 最近の一覧での鍵。別の現場の同じ名前の図面を黙って入れ替えないよう、名前に大きさと中身の指紋を足す。
+ * 同じ図面を開き直したときは同じ鍵になるので、一覧では 1 件のまま先頭に来る
+ */
+export function recentKey(name: string, buffer: ArrayBuffer): string {
+  return `${name}#${buffer.byteLength}-${fnv1a(new Uint8Array(buffer)).toString(16).padStart(8, '0')}`;
+}
+
 function done(tx: IDBTransaction): Promise<void> {
   return new Promise((resolve, reject) => {
     tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-    tx.onabort = () => reject(tx.error);
+    // 要求の失敗（容量不足など）は取り消しより先に届き、そのときは tx.error がまだ空のことがあるので、要求の側のものを渡す
+    tx.onerror = (ev) => reject((ev.target as IDBRequest | null)?.error ?? tx.error);
+    tx.onabort = () => reject(tx.error ?? new DOMException('保存を取り消しました', 'AbortError'));
+  });
+}
+
+/**
+ * 書き込みを一つのトランザクションで行い、fn の結果を返す。
+ * 途中で失敗したら全体を取り消し、取り消しの元になった理由（容量不足など）を投げる
+ */
+async function write<T>(stores: string[], fn: (tx: IDBTransaction) => Promise<T>): Promise<T> {
+  const db = await open();
+  try {
+    const tx = db.transaction(stores, 'readwrite');
+    const finished = done(tx);
+    // 失敗は下で受け取る（受け取るまでのあいだに、受け手のない失敗として報告されないように）
+    finished.catch(() => {});
+    let result: T;
+    try {
+      result = await fn(tx);
+    } catch (e) {
+      try {
+        tx.abort();
+      } catch {
+        // もう取り消されている
+      }
+      const reason = await finished.then(() => null, (r: unknown) => r);
+      throw reason instanceof DOMException && reason.name !== 'AbortError' ? reason : e;
+    }
+    await finished;
+    return result;
+  } finally {
+    db.close();
+  }
+}
+
+function get<T>(store: IDBObjectStore, key: IDBValidKey): Promise<T | undefined> {
+  return new Promise((resolve, reject) => {
+    const req = store.get(key);
+    req.onsuccess = () => resolve(req.result as T | undefined);
+    req.onerror = () => reject(req.error);
   });
 }
 
 function allMeta(store: IDBObjectStore): Promise<RecentFile[]> {
   return new Promise((resolve, reject) => {
     const req = store.getAll();
-    req.onsuccess = () => resolve((req.result as RecentFile[]).filter((r) => r && typeof r.name === 'string'));
+    req.onsuccess = () => resolve((req.result as Array<Partial<RecentFile> | null>)
+      .filter((r): r is Partial<RecentFile> & { name: string } => !!r && typeof r.name === 'string')
+      // 名前だけを鍵にしていたころのものは、名前を鍵とみなす
+      .map((r) => ({ ...r, key: typeof r.key === 'string' ? r.key : r.name }) as RecentFile));
     req.onerror = () => reject(req.error);
   });
 }
 
-/** 図面を最近開いたものとして取っておく。同じ名前なら入れ替えて先頭へ。古いものから RECENT_MAX を超えた分を消す */
-export async function saveRecent(name: string, buffer: ArrayBuffer): Promise<void> {
-  const db = await open();
-  try {
-    const tx = db.transaction([RECENT_META, RECENT_DATA], 'readwrite');
+/** 新しい順に並べて、RECENT_MAX を超えた古いものを消す */
+function trim(meta: IDBObjectStore, data: IDBObjectStore, list: RecentFile[]): void {
+  list.sort((a, b) => b.openedAt - a.openedAt);
+  for (const old of list.slice(RECENT_MAX)) {
+    meta.delete(old.key);
+    data.delete(old.key);
+  }
+}
+
+function isQuota(e: unknown): boolean {
+  return e instanceof DOMException && e.name === 'QuotaExceededError';
+}
+
+/** 最近開いた図面として取っておく。last なら、次に起動したとき出し直す図面にもする */
+async function putFile(name: string, buffer: ArrayBuffer, key: string, last: boolean): Promise<void> {
+  const openedAt = Date.now();
+  await write(last ? [STORE, RECENT_META, RECENT_DATA] : [RECENT_META, RECENT_DATA], async (tx) => {
+    if (last) tx.objectStore(STORE).put({ name, buffer, savedAt: openedAt, key } satisfies StoredFile, KEY);
     const meta = tx.objectStore(RECENT_META);
     const data = tx.objectStore(RECENT_DATA);
-    meta.put({ name, size: buffer.byteLength, openedAt: Date.now() } satisfies RecentFile, name);
-    data.put(buffer, name);
-    const list = await allMeta(meta);
-    list.sort((a, b) => b.openedAt - a.openedAt);
-    for (const old of list.slice(RECENT_MAX)) {
-      meta.delete(old.name);
-      data.delete(old.name);
+    meta.put({ key, name, size: buffer.byteLength, openedAt } satisfies RecentFile, key);
+    data.put(buffer, key);
+    let list = await allMeta(meta);
+    // 名前だけを鍵にしていたころに取っておいた同じ図面は、入れ替える（中身が違えば別の図面として残す）
+    const legacy = list.find((r) => r.key === name && r.size === buffer.byteLength);
+    if (legacy) {
+      const old = await get<unknown>(data, name);
+      if (old instanceof ArrayBuffer && recentKey(name, old) === key) {
+        meta.delete(name);
+        data.delete(name);
+        list = list.filter((r) => r !== legacy);
+      }
     }
-    await done(tx);
-  } finally {
-    db.close();
+    trim(meta, data, list);
+  });
+}
+
+/** 容量を空けるため、最近の一覧のいちばん古いもの（keep 以外）を外す。外した中身の大きさを返す。外せるものがなければ null */
+async function dropOldest(keep: string): Promise<number | null> {
+  return write([RECENT_META, RECENT_DATA], async (tx) => {
+    const meta = tx.objectStore(RECENT_META);
+    const list = (await allMeta(meta)).filter((r) => r.key !== keep).sort((a, b) => a.openedAt - b.openedAt);
+    const old = list[0];
+    if (!old) return null;
+    meta.delete(old.key);
+    tx.objectStore(RECENT_DATA).delete(old.key);
+    return old.size;
+  });
+}
+
+/**
+ * 開けた図面を取っておく。次に起動したとき出し直す図面にし、最近の一覧の先頭にも入れる（同じ図面なら入れ替える）。
+ * 容量が足りないときは、一覧の古いものから外して空け、やり直す。外した数を返す。それでも入らなければ投げる
+ */
+export async function saveOpened(name: string, buffer: ArrayBuffer, key = recentKey(name, buffer)): Promise<number> {
+  // 別の図面（か、外したあとに開き直した同じ図面）を表示したので、表示の状態をまた記録する
+  forgottenView = null;
+  let freed = 0;
+  let dropped = 0;
+  for (;;) {
+    try {
+      await putFile(name, buffer, key, true);
+      return dropped;
+    } catch (e) {
+      // 図面 2 つ分（直近の図面と一覧の中身）を空けても入らないなら、足りないのはほかの理由なので、それ以上は外さない
+      if (!isQuota(e) || freed >= 2 * buffer.byteLength) throw e;
+      const size = await dropOldest(key);
+      if (size === null) throw e;
+      freed += size;
+      dropped++;
+    }
   }
+}
+
+/** 図面を最近開いたものとして取っておく（次に起動したとき出し直す図面は変えない）。同じ図面なら入れ替えて先頭へ */
+export async function saveRecent(name: string, buffer: ArrayBuffer): Promise<void> {
+  await putFile(name, buffer, recentKey(name, buffer), false);
 }
 
 /** 最近開いた図面（新しい順） */
@@ -120,13 +234,13 @@ export async function listRecent(): Promise<RecentFile[]> {
   }
 }
 
-/** 最近開いた図面の中身。無ければ null */
-export async function loadRecent(name: string): Promise<ArrayBuffer | null> {
+/** 最近開いた図面の中身（鍵は RecentFile.key）。無ければ null */
+export async function loadRecent(key: string): Promise<ArrayBuffer | null> {
   const db = await open();
   try {
     const tx = db.transaction(RECENT_DATA, 'readonly');
     return await new Promise<ArrayBuffer | null>((resolve, reject) => {
-      const req = tx.objectStore(RECENT_DATA).get(name);
+      const req = tx.objectStore(RECENT_DATA).get(key);
       req.onsuccess = () => resolve(req.result instanceof ArrayBuffer ? req.result : null);
       req.onerror = () => reject(req.error);
     });
@@ -135,16 +249,61 @@ export async function loadRecent(name: string): Promise<ArrayBuffer | null> {
   }
 }
 
-/** 最近開いた図面の一覧から外す */
-export async function removeRecent(name: string): Promise<void> {
-  const db = await open();
+/** 一覧から外した図面を元に戻すための控え */
+export interface RemovedRecent {
+  meta: RecentFile;
+  buffer: ArrayBuffer;
+  /** 次に起動したとき出し直す図面でもあったら、その記録 */
+  last: StoredFile | null;
+  /** 消した表示の状態の記録（localStorage の中身そのまま） */
+  view: string | null;
+}
+
+/**
+ * 最近開いた図面の一覧から外し、端末に取っておいた中身も消す。
+ * 次に起動したとき出し直す図面も同じ図面なら、それと表示の状態の記録も消す（外した図面が端末に残らないように）。
+ * 元に戻すための控えを返す（中身がもう無かったときは null）
+ */
+export async function removeRecent(key: string): Promise<RemovedRecent | null> {
+  const removed = await write([STORE, RECENT_META, RECENT_DATA], async (tx): Promise<RemovedRecent | null> => {
+    const metaStore = tx.objectStore(RECENT_META);
+    const dataStore = tx.objectStore(RECENT_DATA);
+    const lastStore = tx.objectStore(STORE);
+    const [meta, buffer, last] = await Promise.all([
+      get<Partial<RecentFile>>(metaStore, key), get<unknown>(dataStore, key), get<StoredFile>(lastStore, KEY),
+    ]);
+    metaStore.delete(key);
+    dataStore.delete(key);
+    if (!meta || typeof meta.name !== 'string' || !(buffer instanceof ArrayBuffer)) return null;
+    // 名前だけを鍵にしていたころのものや、鍵を持たない直近の図面は、中身から鍵を作って比べる
+    const content = key === meta.name ? recentKey(meta.name, buffer) : key;
+    const lastKey = last && last.buffer instanceof ArrayBuffer ? (last.key ?? recentKey(last.name, last.buffer)) : null;
+    const same = lastKey === content;
+    if (same) lastStore.delete(KEY);
+    return { meta: { ...meta, key } as RecentFile, buffer, last: same ? last ?? null : null, view: null };
+  });
+  if (removed?.last) removed.view = forgetView(removed.meta.name);
+  return removed;
+}
+
+/** removeRecent で外した図面を元に戻す */
+export async function restoreRecent(r: RemovedRecent): Promise<void> {
+  await write([STORE, RECENT_META, RECENT_DATA], async (tx) => {
+    const meta = tx.objectStore(RECENT_META);
+    const data = tx.objectStore(RECENT_DATA);
+    const lastStore = tx.objectStore(STORE);
+    meta.put(r.meta, r.meta.key);
+    data.put(r.buffer, r.meta.key);
+    // 次に起動したとき出し直す図面は、外したあとにほかの図面を開いていなければ戻す
+    if (r.last && !(await get(lastStore, KEY))) lastStore.put(r.last, KEY);
+    trim(meta, data, await allMeta(meta));
+  });
+  if (!r.last) return;
+  if (forgottenView === r.meta.name) forgottenView = null;
   try {
-    const tx = db.transaction([RECENT_META, RECENT_DATA], 'readwrite');
-    tx.objectStore(RECENT_META).delete(name);
-    tx.objectStore(RECENT_DATA).delete(name);
-    await done(tx);
-  } finally {
-    db.close();
+    if (r.view && localStorage.getItem(HIDDEN_KEY) === null) localStorage.setItem(HIDDEN_KEY, r.view);
+  } catch {
+    // 表示の状態が戻らなくても、図面は戻る
   }
 }
 
@@ -270,7 +429,27 @@ export function loadViewState(name: string): ViewState {
   }
 }
 
+/**
+ * 一覧から外した直近の図面の名前。表示し続けていても、その図面の表示の状態は記録しない
+ * （外した図面の名前が端末に残らないように）。ほかの図面を開いて保存したら戻す
+ */
+let forgottenView: string | null = null;
+
+/** 表示の状態の記録が name の図面のものなら消し、この後も記録しないようにする。消した記録を返す */
+function forgetView(name: string): string | null {
+  forgottenView = name;
+  try {
+    const raw = localStorage.getItem(HIDDEN_KEY);
+    if (!raw || (JSON.parse(raw) as { name?: unknown } | null)?.name !== name) return null;
+    localStorage.removeItem(HIDDEN_KEY);
+    return raw;
+  } catch {
+    return null;
+  }
+}
+
 export function saveViewState(name: string, state: ViewState): void {
+  if (name === forgottenView) return;
   try {
     localStorage.setItem(HIDDEN_KEY, JSON.stringify({ name, ...state }));
   } catch {
