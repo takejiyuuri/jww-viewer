@@ -9,7 +9,12 @@ import { startServer, projectRoot as root } from './serve.mjs';
 // 第 1 引数が URL なら、そこを検査対象にする（公開済みのサイトを確かめるとき）
 const remote = process.argv[2]?.startsWith('http') ? process.argv[2] : null;
 const rest = remote ? process.argv.slice(3) : process.argv.slice(2);
-const sample = rest[0] ?? path.join(root, 'samples', 'A棟 11階躯体図2026.5.12提出スリーブ.jww');
+// 既定は samples/ のいちばん小さい .jww（図面の名前はスクリプトに書かない）
+const sample = rest[0] ?? fs.readdirSync(path.join(root, 'samples'))
+  .filter((f) => f.endsWith('.jww'))
+  .map((f) => path.join(root, 'samples', f))
+  .sort((a, b) => fs.statSync(a).size - fs.statSync(b).size)[0];
+if (!sample) throw new Error('samples/ に .jww が必要です');
 const outDir = rest[1] ?? '.';
 
 // 本番ビルドを HTTPS で配信する。Service Worker は安全なコンテキストでしか動かない
@@ -162,7 +167,7 @@ const manifest = await page.evaluate(async () => {
   );
   return { m, icons };
 });
-check('manifest が読める', !!manifest, { name: manifest?.m?.name });
+check('manifest が読める', !!manifest, { アプリ名: manifest?.m?.name });
 check('アイコンがすべて取得できる', manifest?.icons.every((i) => i.status === 200), {
   結果: manifest?.icons.map((i) => `${i.src}:${i.status}`).join(' '),
 });
@@ -189,7 +194,8 @@ const stored = await page.evaluate(async () => {
   db.close();
   return rec ? { name: rec.name, bytes: rec.buffer?.byteLength ?? 0 } : null;
 });
-check('直近の図面が保存される', !!stored && stored.bytes > 1000, stored ?? {});
+// 図面の名前は出さない（検査の名前を上書きし、結果に図面の名前が出てしまうため）
+check('直近の図面が保存される', !!stored && stored.bytes > 1000, { bytes: stored?.bytes ?? 0 });
 
 // ---------- 4. キャッシュに主要アセットが入っているか ----------
 const cached = await page.evaluate(async () => {
