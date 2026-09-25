@@ -1219,8 +1219,21 @@ class App {
   private movePoint(index: number, hit: SnapResult): void {
     if (index < 0 || index >= this.points.length) return;
     this.points[index] = this.toMeasurePoint(hit);
+    if (index === 0) this.syncAutoScale();
     this.updateReadout();
     if (navigator.vibrate) navigator.vibrate(4);
+  }
+
+  /**
+   * 「自動」のときの既定の縮尺（両端とも決め手のない区間などに使う）を、1 点目が乗った図形の縮尺にそろえる。
+   * 点がない、または 1 点目の縮尺が分からないときは、図面を開いたときの既定に戻す（前の計測の縮尺を引き継がない）
+   */
+  private syncAutoScale(): void {
+    if (this.manualScale) return;
+    const scale = this.points[0]?.scale ?? this.defaultScale;
+    if (scale === this.measureScale) return;
+    this.measureScale = scale;
+    this.buildInfoPanel();
   }
 
   private toMeasurePoint(hit: SnapResult): MeasurePoint {
@@ -1242,12 +1255,9 @@ class App {
       return;
     }
 
-    // 最初の点が乗ったレイヤグループの縮尺を既定にする
-    if (!this.manualScale && this.points.length === 0 && p.scale != null) {
-      this.measureScale = p.scale;
-      this.buildInfoPanel();
-    }
     this.points.push(p);
+    // 最初の点が乗ったレイヤグループの縮尺を既定にする
+    if (this.points.length === 1) this.syncAutoScale();
     this.updateReadout();
     // 1 点目を置くと計測パネルが 2 段に伸びる。置いた点がその下に隠れたら、図面をずらす
     if (this.points.length === 1) this.keepClearOfPanel(p.x, p.y);
@@ -1934,6 +1944,7 @@ class App {
     el('btn-undo').addEventListener('click', () => {
       if (this.topJustShown()) return;
       this.points.pop();
+      this.syncAutoScale();
       this.updateReadout(true);
       this.requestDraw();
     });
@@ -1941,6 +1952,7 @@ class App {
     el('btn-clear').addEventListener('click', () => {
       if (this.topJustShown()) return;
       this.points = [];
+      this.syncAutoScale();
       this.updateReadout(true);
       this.requestDraw();
     });

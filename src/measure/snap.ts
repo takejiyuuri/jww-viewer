@@ -1,4 +1,4 @@
-import type { Scene } from '../render/geometry.ts';
+import { CURVE_STRIDE, KIND, SNAP_FLAG, type Scene } from '../render/geometry.ts';
 
 export type SnapKind = 'endpoint' | 'center' | 'intersection' | 'midpoint' | 'online' | 'free';
 
@@ -30,8 +30,15 @@ const WEIGHT: Record<SnapKind, number> = {
 /** 1 セルにまたがりすぎる線分は個別に持たず全件走査に回す */
 const BIG_SPAN = 24;
 
-/** 1 回のタップで見る線分の上限。これを超える密度は現実の図面では起きない */
-const SCAN_MAX = 20000;
+/** 交点を求めるために掛け合わせる線分の数（指に近い順の先頭から） */
+const CROSS_MAX = 60;
+
+/**
+ * 線分の端や円弧の範囲に「乗っている」とみなす隔たり（図面上の mm）。
+ * 線分の座標は 32 ビットの浮動小数で持つので、ちょうど端に乗っているはずの交点もわずかにはみ出す
+ * （A0 の用紙の中なら丸めはこれより小さい）。はみ出して外れても、そこには端点の候補がある
+ */
+const LEN_EPS = 1e-4;
 
 /** 点と線分の距離の 2 乗 */
 function segDist2(pos: Float32Array, i: number, x: number, y: number): number {
@@ -44,6 +51,263 @@ function segDist2(pos: Float32Array, i: number, x: number, y: number): number {
   const px = ax + dx * t - x;
   const py = ay + dy * t - y;
   return px * px + py * py;
+}
+
+/**
+ * 円・円弧・楕円（弧）の元の式。曲線上の点は (cx, cy) + (ux, uy)·cosθ + (vx, vy)·sinθ で、
+ * θ は start から sweep ぶん（sweep が 2π なら一周）
+ */
+interface Curve {
+  cx: number; cy: number;
+  ux: number; uy: number;
+  vx: number; vy: number;
+  start: number;
+  sweep: number;
+}
+
+const TAU = Math.PI * 2;
+
+function curveAt(curves: Float64Array, k: number): Curve {
+  const o = k * CURVE_STRIDE;
+  return {
+    cx: curves[o + 1], cy: curves[o + 2],
+    ux: curves[o + 3], uy: curves[o + 4],
+    vx: curves[o + 5], vy: curves[o + 6],
+    start: curves[o + 7], sweep: curves[o + 8],
+  };
+}
+
+function curvePoint(c: Curve, th: number): [number, number] {
+  const co = Math.cos(th), si = Math.sin(th);
+  return [c.cx + c.ux * co + c.vx * si, c.cy + c.uy * co + c.vy * si];
+}
+
+/**
+ * 点 (x, y) を表す θ。曲線から外れた点なら、中心から見て同じ向きにある曲線上の点の θ
+ * （楕円は、真円に引き伸ばしたときに同じ向きになる点）
+ */
+function curveAngle(c: Curve, x: number, y: number): number {
+  const px = x - c.cx, py = y - c.cy;
+  const det = c.ux * c.vy - c.uy * c.vx;
+  return Math.atan2((c.ux * py - c.uy * px) / det, (c.vy * px - c.vx * py) / det);
+}
+
+/** 曲線の大きさ（長いほうの半径） */
+function curveSize(c: Curve): number {
+  return Math.max(Math.hypot(c.ux, c.uy), Math.hypot(c.vx, c.vy));
+}
+
+function isRound(c: Curve): boolean {
+  const ul = Math.hypot(c.ux, c.uy), vl = Math.hypot(c.vx, c.vy);
+  return Math.abs(ul - vl) <= ul * 1e-9 && Math.abs(c.ux * c.vx + c.uy * c.vy) <= ul * vl * 1e-9;
+}
+
+/**
+ * θ が円弧の範囲に入っていれば、start から数えた表し方に直して返す。入っていなければ NaN。
+ * 端から tol（角度）以内なら入っているとみなす
+ */
+function inArc(c: Curve, th: number, tol: number): number {
+  const span = Math.abs(c.sweep);
+  if (span >= TAU - 1e-12) return th;
+  const dir = c.sweep >= 0 ? 1 : -1;
+  let d = (dir * (th - c.start)) % TAU;
+  if (d < 0) d += TAU;
+  if (d <= span + tol) return c.start + dir * d;
+  if (d >= TAU - tol) return c.start + dir * (d - TAU);
+  return NaN;
+}
+
+/** θ を円弧の範囲に収める（外れていれば近いほうの端） */
+function clampArc(c: Curve, th: number): number {
+  const t = inArc(c, th, 0);
+  if (!Number.isNaN(t)) return t;
+  const dir = c.sweep >= 0 ? 1 : -1;
+  let d = (dir * (th - c.start)) % TAU;
+  if (d < 0) d += TAU;
+  return d - Math.abs(c.sweep) < TAU - d ? c.start + c.sweep : c.start;
+}
+
+/** p·cosθ + q·sinθ = w を満たす θ（0〜2 個）を out に積む */
+function solveTrig(p: number, q: number, w: number, out: number[]): void {
+  const r = Math.hypot(p, q);
+  if (!(r > 0)) return;
+  let k = w / r;
+  if (Math.abs(k) > 1) {
+    // 接している所は、丸めの誤差でわずかに届かないことがある
+    if (Math.abs(k) - 1 > 1e-9) return;
+    k = Math.sign(k);
+  }
+  const phi = Math.atan2(q, p);
+  const a = Math.acos(k);
+  out.push(phi + a);
+  if (a > 0) out.push(phi - a);
+}
+
+/** 線分 a→b と曲線の交点を out に [x, y, ...] で積む（折れ線ではなく元の曲線との交点） */
+function lineCurve(ax: number, ay: number, bx: number, by: number, c: Curve, out: number[]): void {
+  const dx = bx - ax, dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  if (!(len2 > 1e-24)) return;
+  // 線の法線との内積が 0 になる θ
+  const nx = -dy, ny = dx;
+  const ths: number[] = [];
+  solveTrig(nx * c.ux + ny * c.uy, nx * c.vx + ny * c.vy, nx * (ax - c.cx) + ny * (ay - c.cy), ths);
+  const len = Math.sqrt(len2);
+  const tol = LEN_EPS / curveSize(c);
+  for (const t of ths) {
+    const th = inArc(c, t, tol);
+    if (Number.isNaN(th)) continue;
+    const [x, y] = curvePoint(c, th);
+    const s = ((x - ax) * dx + (y - ay) * dy) / len2;
+    if (s * len < -LEN_EPS || (s - 1) * len > LEN_EPS) continue;
+    out.push(x, y);
+  }
+}
+
+/**
+ * 水平線 y = v（horizontal でなければ垂直線 x = v）と曲線の交点の、線に沿った座標（x または y）を out に積む
+ */
+function axisCurve(c: Curve, horizontal: boolean, v: number, out: number[]): void {
+  const ths: number[] = [];
+  if (horizontal) solveTrig(c.uy, c.vy, v - c.cy, ths);
+  else solveTrig(c.ux, c.vx, v - c.cx, ths);
+  const tol = LEN_EPS / curveSize(c);
+  for (const t of ths) {
+    const th = inArc(c, t, tol);
+    if (Number.isNaN(th)) continue;
+    const [x, y] = curvePoint(c, th);
+    out.push(horizontal ? x : y);
+  }
+}
+
+/**
+ * 2 つの曲線の交点を、弦どうしの交点 (x, y) から詰めて求める（ニュートン法）。
+ * 収まらない、どちらかの範囲から外れる、弦の交点から reach より離れる、のどれかなら null
+ */
+function curveCurve(c1: Curve, c2: Curve, x: number, y: number, reach: number): [number, number] | null {
+  let t1 = curveAngle(c1, x, y);
+  let t2 = curveAngle(c2, x, y);
+  const size = Math.max(curveSize(c1), curveSize(c2));
+  // 座標の桁に見合った丸めの誤差より小さくなれば収まったとみなす
+  const tiny = Math.max(size, Math.abs(c1.cx), Math.abs(c1.cy), Math.abs(c2.cx), Math.abs(c2.cy)) * 1e-12;
+  for (let n = 0; ; n++) {
+    const co1 = Math.cos(t1), si1 = Math.sin(t1);
+    const co2 = Math.cos(t2), si2 = Math.sin(t2);
+    const fx = c1.cx + c1.ux * co1 + c1.vx * si1 - (c2.cx + c2.ux * co2 + c2.vx * si2);
+    const fy = c1.cy + c1.uy * co1 + c1.vy * si1 - (c2.cy + c2.uy * co2 + c2.vy * si2);
+    if (Math.hypot(fx, fy) <= tiny) break;
+    if (n >= 20) return null;
+    // 接線の向き
+    const d1x = -c1.ux * si1 + c1.vx * co1, d1y = -c1.uy * si1 + c1.vy * co1;
+    const d2x = -c2.ux * si2 + c2.vx * co2, d2y = -c2.uy * si2 + c2.vy * co2;
+    const det = d2x * d1y - d1x * d2y;
+    if (!(Math.abs(det) > size * size * 1e-12)) return null;
+    t1 += (fx * d2y - d2x * fy) / det;
+    t2 += (fx * d1y - d1x * fy) / det;
+  }
+  if (Number.isNaN(inArc(c1, t1, LEN_EPS / curveSize(c1))) || Number.isNaN(inArc(c2, t2, LEN_EPS / curveSize(c2)))) return null;
+  const p = curvePoint(c1, t1);
+  return Math.hypot(p[0] - x, p[1] - y) <= reach ? p : null;
+}
+
+/** 円弧の中点（長さで二等分する点）の θ */
+function arcMidAngle(c: Curve): number {
+  // 真円なら角度の真ん中。楕円は細かく刻んで長さを足し、半分になる所を探す
+  if (isRound(c)) return c.start + c.sweep / 2;
+  const steps = 512;
+  const acc = new Float64Array(steps + 1);
+  let [px, py] = curvePoint(c, c.start);
+  for (let k = 1; k <= steps; k++) {
+    const [x, y] = curvePoint(c, c.start + (c.sweep * k) / steps);
+    acc[k] = acc[k - 1] + Math.hypot(x - px, y - py);
+    px = x;
+    py = y;
+  }
+  const half = acc[steps] / 2;
+  let k = 1;
+  while (k < steps && acc[k] < half) k++;
+  const f = acc[k] > acc[k - 1] ? (half - acc[k - 1]) / (acc[k] - acc[k - 1]) : 0;
+  return c.start + (c.sweep * (k - 1 + f)) / steps;
+}
+
+/** 図形ごとの元の式の番号（Scene.curves の何件目か）。円・円弧・楕円でなければ -1 */
+export function curveIndex(scene: Scene): Int32Array {
+  const out = new Int32Array(scene.entities.count).fill(-1);
+  const curves = scene.curves;
+  for (let k = 0; k < curves.length / CURVE_STRIDE; k++) out[curves[k * CURVE_STRIDE]] = k;
+  return out;
+}
+
+/**
+ * 線分 i の上で (x, y) にいちばん近い点。円・円弧を折った線分なら、元の曲線の上に移した点。
+ * 長さのない線分なら null
+ */
+export function onlinePoint(scene: Scene, curveOf: Int32Array, i: number, x: number, y: number): [number, number] | null {
+  const pos = scene.linePos;
+  const ax = pos[i * 4], ay = pos[i * 4 + 1];
+  const dx = pos[i * 4 + 2] - ax, dy = pos[i * 4 + 3] - ay;
+  const len2 = dx * dx + dy * dy;
+  if (!(len2 > 1e-12)) return null;
+  let t = ((x - ax) * dx + (y - ay) * dy) / len2;
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  const qx = ax + dx * t, qy = ay + dy * t;
+  const k = curveOf[scene.lineEntity[i]];
+  if (k < 0) return [qx, qy];
+  // 弦は曲線より内側を通るので、弦の上の点を曲線の上へ移す
+  const c = curveAt(scene.curves, k);
+  return curvePoint(c, clampArc(c, curveAngle(c, qx, qy)));
+}
+
+/** 線分 i が円弧（両端のある曲線）の一部なら、その円弧の中点。そうでなければ null */
+export function arcMidpoint(scene: Scene, curveOf: Int32Array, i: number): [number, number] | null {
+  const e = scene.lineEntity[i];
+  const k = curveOf[e];
+  if (k < 0 || scene.entities.kind[e] !== KIND.arc) return null;
+  const c = curveAt(scene.curves, k);
+  if (Math.abs(c.sweep) >= TAU - 1e-12) return null;
+  return curvePoint(c, arcMidAngle(c));
+}
+
+/**
+ * 線分 i と j の交点を out に [x, y, ...] で積む。
+ * 円・円弧・楕円を折った線分は、折れ線ではなく元の曲線との交点にする。
+ * 同じ図形の線分どうし（円を折った継ぎ目）は交点にしない。
+ * solved を渡すと、同じ直線と曲線の組は二度解かない（どの弦から辿っても答えは同じなので）
+ */
+export function segmentCrossings(
+  scene: Scene, curveOf: Int32Array, i: number, j: number, out: number[], solved?: Set<number>,
+): void {
+  const ei = scene.lineEntity[i], ej = scene.lineEntity[j];
+  if (ei === ej) return;
+  const pos = scene.linePos;
+  const ci = curveOf[ei], cj = curveOf[ej];
+  if (ci < 0 && cj < 0) {
+    const p = intersect(
+      pos[i * 4], pos[i * 4 + 1], pos[i * 4 + 2], pos[i * 4 + 3],
+      pos[j * 4], pos[j * 4 + 1], pos[j * 4 + 2], pos[j * 4 + 3],
+    );
+    if (p) out.push(p[0], p[1]);
+    return;
+  }
+  if (ci < 0 || cj < 0) {
+    const line = ci < 0 ? i : j;
+    const k = ci < 0 ? cj : ci;
+    if (solved) {
+      const key = line * (curveOf.length + 1) + k;
+      if (solved.has(key)) return;
+      solved.add(key);
+    }
+    lineCurve(pos[line * 4], pos[line * 4 + 1], pos[line * 4 + 2], pos[line * 4 + 3], curveAt(scene.curves, k), out);
+    return;
+  }
+  // 曲線どうし：弦の交点を手がかりに、両方の曲線の上に乗るまで詰める。詰められなければ弦の交点のまま
+  const ax = pos[i * 4], ay = pos[i * 4 + 1], bx = pos[i * 4 + 2], by = pos[i * 4 + 3];
+  const cx = pos[j * 4], cy = pos[j * 4 + 1], dx = pos[j * 4 + 2], dy = pos[j * 4 + 3];
+  const p = intersect(ax, ay, bx, by, cx, cy, dx, dy);
+  if (!p) return;
+  const reach = Math.max(Math.hypot(bx - ax, by - ay), Math.hypot(dx - cx, dy - cy));
+  const q = curveCurve(curveAt(scene.curves, ci), curveAt(scene.curves, cj), p[0], p[1], reach);
+  out.push(...(q ?? p));
 }
 
 /**
@@ -70,13 +334,22 @@ export class SnapIndex {
   private visibleColor: Uint8Array | null = null;
   /** レイヤ（0〜255）ごとに吸着させるかどうか。null なら全部 */
   private visibleLayer: Uint8Array | null = null;
+  /** 図形ごとの元の式の番号（円・円弧・楕円でなければ -1） */
+  private curveOf: Int32Array;
+  /** 求めた円弧の中点（元の式の番号ごと） */
+  private arcMid = new Map<number, [number, number] | null>();
+  /** 線分ごとに、最後に見た回の番号（いくつものセルに載った線分を一度だけ見るため） */
+  private visited: Uint32Array;
+  private visit = 0;
 
   constructor(scene: Scene) {
     this.scene = scene;
+    this.curveOf = curveIndex(scene);
     const { bounds } = scene;
     const w = Math.max(bounds.maxX - bounds.minX, 1e-6);
     const h = Math.max(bounds.maxY - bounds.minY, 1e-6);
     const segCount = scene.linePos.length / 4;
+    this.visited = new Uint32Array(segCount);
 
     // 1 セルあたり数本になるようにセル数を決める
     const targetCells = Math.max(64, Math.min(1 << 18, segCount));
@@ -189,60 +462,94 @@ export class SnapIndex {
   }
 
   /**
-   * 半径 r 以内の線分を、タップ位置に近い順で最大 limit 本返す。
-   * グリッドの走査順で先着順に打ち切ると、指の真下の線分が候補から漏れて
-   * 遠い線分に吸着してしまうので、必ず距離で選び直す。
+   * 半径 r 以内の線分のうち、タップ位置に近いものから最大 limit 本を、近い順に並べて返す
+   * （距離が同じなら線分の番号の小さい順）。
+   * グリッドの走査順や本数で打ち切ると、指の真下の線分が候補から漏れて遠い線分に吸着してしまう。
+   * そこで行は指のいる行から外へ向かって見ていき、まだ見ていない行がどれも limit 番目より遠いと
+   * 分かった所でだけやめる。
+   * pickable が true なら、吸着先にしない線（寸法の補助線）も含める
    */
-  /** pickable が true なら、吸着先にしない線（寸法の補助線）も含める */
   private nearbySegments(x: number, y: number, r: number, limit: number, pickable = false): number[] {
     const snap = this.scene.lineSnap;
-    const out: number[] = [];
     const gx0 = this.clampGx(Math.floor((x - r - this.minX) / this.cell));
     const gx1 = this.clampGx(Math.floor((x + r - this.minX) / this.cell));
     const gy0 = this.clampGy(Math.floor((y - r - this.minY) / this.cell));
     const gy1 = this.clampGy(Math.floor((y + r - this.minY) / this.cell));
-    const seen = new Set<number>();
+    const visited = this.visited;
+    if (++this.visit === 0xffffffff) {
+      visited.fill(0);
+      this.visit = 1;
+    }
+    const visit = this.visit;
     const pos = this.scene.linePos;
     const r2 = r * r;
-    const dist: number[] = [];
-
-    for (let gy = gy0; gy <= gy1; gy++) {
+    // 近い limit 本を、いちばん遠いものが先頭に来るヒープで持つ
+    const hd: number[] = [];
+    const hi: number[] = [];
+    const farther = (d: number, i: number, k: number): boolean => d > hd[k] || (d === hd[k] && i > hi[k]);
+    const swap = (a: number, b: number): void => {
+      const d = hd[a]; hd[a] = hd[b]; hd[b] = d;
+      const i = hi[a]; hi[a] = hi[b]; hi[b] = i;
+    };
+    const add = (i: number): void => {
+      if (visited[i] === visit) return;
+      visited[i] = visit;
+      if (!pickable && !snap[i]) return;
+      if (!this.lineVisible(i)) return;
+      const d2 = segDist2(pos, i, x, y);
+      if (d2 > r2) return;
+      if (hd.length < limit) {
+        hd.push(d2);
+        hi.push(i);
+        for (let k = hd.length - 1; k > 0;) {
+          const p = (k - 1) >> 1;
+          if (!farther(hd[k], hi[k], p)) break;
+          swap(k, p);
+          k = p;
+        }
+        return;
+      }
+      // 満杯なら、いちばん遠いものより近いときだけ入れ替える
+      if (limit === 0 || !(d2 < hd[0] || (d2 === hd[0] && i < hi[0]))) return;
+      hd[0] = d2;
+      hi[0] = i;
+      for (let k = 0; ;) {
+        const l = k * 2 + 1, rr = l + 1;
+        let m = k;
+        if (l < hd.length && farther(hd[l], hi[l], m)) m = l;
+        if (rr < hd.length && farther(hd[rr], hi[rr], m)) m = rr;
+        if (m === k) break;
+        swap(k, m);
+        k = m;
+      }
+    };
+    const row = (gy: number): void => {
       for (let gx = gx0; gx <= gx1; gx++) {
         const c = gy * this.gw + gx;
-        for (let k = this.offsets[c]; k < this.offsets[c + 1]; k++) {
-          const i = this.items[k];
-          if (seen.has(i)) continue;
-          seen.add(i);
-          if (!pickable && !snap[i]) continue;
-          if (!this.lineVisible(i)) continue;
-          const d2 = segDist2(pos, i, x, y);
-          if (d2 > r2) continue;
-          out.push(i);
-          dist.push(d2);
-        }
+        for (let k = this.offsets[c]; k < this.offsets[c + 1]; k++) add(this.items[k]);
       }
-      if (out.length >= SCAN_MAX) break;
-    }
+    };
+
     // 長い線分（通り芯や外形線）はセルに載せていないので必ず合流させる
-    for (let k = 0; k < this.big.length; k++) {
-      const i = this.big[k];
-      if (seen.has(i)) continue;
-      seen.add(i);
-      if (!pickable && !snap[i]) continue;
-      if (!this.lineVisible(i)) continue;
-      const d2 = segDist2(pos, i, x, y);
-      if (d2 > r2) continue;
-      out.push(i);
-      dist.push(d2);
+    for (let k = 0; k < this.big.length; k++) add(this.big[k]);
+    const gc = this.clampGy(Math.floor((y - this.minY) / this.cell));
+    let lo = gc;
+    let up = gc;
+    row(gc);
+    for (;;) {
+      // まだ見ていない行の線分は、どれもその行までの縦の隔たりより遠い
+      const below = lo > gy0 ? y - (this.minY + lo * this.cell) : Infinity;
+      const above = up < gy1 ? this.minY + (up + 1) * this.cell - y : Infinity;
+      const gap = Math.min(below, above);
+      if (gap === Infinity) break;
+      if (hd.length >= limit && gap > 0 && gap * gap > hd[0]) break;
+      if (below <= above) row(--lo);
+      else row(++up);
     }
 
-    if (out.length <= limit) return out;
-    // 距離は計算済みなので、並べ替えは添字だけで済ませる
-    const order = out.map((_, k) => k);
-    order.sort((a, b) => dist[a] - dist[b]);
-    const picked = new Array<number>(limit);
-    for (let k = 0; k < limit; k++) picked[k] = out[order[k]];
-    return picked;
+    const order = hd.map((_, k) => k);
+    order.sort((a, b) => hd[a] - hd[b] || hi[a] - hi[b]);
+    return order.map((k) => hi[k]);
   }
 
   /**
@@ -296,48 +603,62 @@ export class SnapIndex {
     }
 
     const segs = this.nearbySegments(x, y, radius, 400);
+    const snap = this.scene.lineSnap;
 
     for (const i of segs) {
       const ax = pos[i * 4], ay = pos[i * 4 + 1];
       const bx = pos[i * 4 + 2], by = pos[i * 4 + 3];
       const g = group(i);
-      consider(ax, ay, 'endpoint', g);
-      consider(bx, by, 'endpoint', g);
-      consider((ax + bx) / 2, (ay + by) / 2, 'midpoint', g);
+      // 円・円弧を折った線分の継ぎ目や弦の真ん中は、端点・中点にしない（SNAP_FLAG）
+      const f = snap[i];
+      if (f & SNAP_FLAG.start) consider(ax, ay, 'endpoint', g);
+      if (f & SNAP_FLAG.end) consider(bx, by, 'endpoint', g);
+      if (f & SNAP_FLAG.mid) consider((ax + bx) / 2, (ay + by) / 2, 'midpoint', g);
+      // 円弧の中点は元の式から求める（図形ごとに一度だけ）
+      const k = this.curveOf[lineEntity[i]];
+      if (k >= 0 && !this.arcMid.has(k)) this.arcMid.set(k, arcMidpoint(this.scene, this.curveOf, i));
+      const m = k >= 0 ? this.arcMid.get(k) : null;
+      if (m) consider(m[0], m[1], 'midpoint', g);
 
-      // 線上の最近点
-      const dx = bx - ax;
-      const dy = by - ay;
-      const len2 = dx * dx + dy * dy;
-      if (len2 > 1e-12) {
-        let t = ((x - ax) * dx + (y - ay) * dy) / len2;
-        t = t < 0 ? 0 : t > 1 ? 1 : t;
-        consider(ax + dx * t, ay + dy * t, 'online', g);
-      }
+      // 線上の最近点（円・円弧なら曲線そのものの上）
+      const q = onlinePoint(this.scene, this.curveOf, i, x, y);
+      if (q) consider(q[0], q[1], 'online', g);
     }
 
-    // 交点は組み合わせが増えるので、近い順に並んだ先頭だけを掛け合わせる
-    const cross = segs.length > 60 ? segs.slice(0, 60) : segs;
+    // 交点は組み合わせが増えるので、指に近い順に並んだ先頭だけを掛け合わせる
+    const cross = segs.length > CROSS_MAX ? segs.slice(0, CROSS_MAX) : segs;
+    const curved = cross.map((i) => this.curveOf[lineEntity[i]] >= 0);
+    const hits: number[] = [];
+    const solved = new Set<number>();
     for (let a = 0; a < cross.length; a++) {
       const i = cross[a];
       const ax = pos[i * 4], ay = pos[i * 4 + 1];
       const bx = pos[i * 4 + 2], by = pos[i * 4 + 3];
       for (let b = a + 1; b < cross.length; b++) {
         const j = cross[b];
-        const cx = pos[j * 4], cy = pos[j * 4 + 1];
-        const dx2 = pos[j * 4 + 2], dy2 = pos[j * 4 + 3];
-        const p = intersect(ax, ay, bx, by, cx, cy, dx2, dy2);
-        if (!p) continue;
+        hits.length = 0;
+        if (!curved[a] && !curved[b]) {
+          // 直線どうしがほとんどなので、ここは直に解く
+          if (lineEntity[i] === lineEntity[j]) continue;
+          const p = intersect(ax, ay, bx, by, pos[j * 4], pos[j * 4 + 1], pos[j * 4 + 2], pos[j * 4 + 3]);
+          if (!p) continue;
+          hits.push(p[0], p[1]);
+        } else {
+          segmentCrossings(this.scene, this.curveOf, i, j, hits, solved);
+          if (hits.length === 0) continue;
+        }
         // 交わる 2 本のレイヤグループが違うと、どちらの縮尺で測るべきか決まらない。
         // 近い方を採ったうえで、決め手がないことを呼び出し側に伝える。
         const gi = group(i);
         const gj = group(j);
-        if (gi === gj) {
-          consider(p[0], p[1], 'intersection', gi);
-        } else {
-          const near = segDist2(pos, i, x, y) <= segDist2(pos, j, x, y) ? gi : gj;
-          const sameScale = this.scene.scales[gi] === this.scene.scales[gj];
-          consider(p[0], p[1], 'intersection', near, !sameScale);
+        for (let h = 0; h < hits.length; h += 2) {
+          if (gi === gj) {
+            consider(hits[h], hits[h + 1], 'intersection', gi);
+          } else {
+            const near = segDist2(pos, i, x, y) <= segDist2(pos, j, x, y) ? gi : gj;
+            const sameScale = this.scene.scales[gi] === this.scene.scales[gj];
+            consider(hits[h], hits[h + 1], 'intersection', near, !sameScale);
+          }
         }
       }
     }
@@ -350,17 +671,8 @@ export class SnapIndex {
    * 属性の取得（タップした図形を調べる）に使う。
    */
   nearestLine(x: number, y: number, radius: number): { index: number; dist: number } {
-    const pos = this.scene.linePos;
-    let index = -1;
-    let best = Infinity;
-    for (const i of this.nearbySegments(x, y, radius, SCAN_MAX, true)) {
-      const d = segDist2(pos, i, x, y);
-      if (d < best) {
-        best = d;
-        index = i;
-      }
-    }
-    return { index, dist: index >= 0 ? Math.sqrt(best) : Infinity };
+    const [index = -1] = this.nearbySegments(x, y, radius, 1, true);
+    return { index, dist: index >= 0 ? Math.sqrt(segDist2(this.scene.linePos, index, x, y)) : Infinity };
   }
 
   /** 見えている単独点（実点・円の中心）のうち、半径内でいちばん近いもの。なければ -1 */
@@ -431,16 +743,32 @@ export class SnapIndex {
       }
     };
 
+    const snap = this.scene.lineSnap;
+    const hits: number[] = [];
+    /** 交点を求め終えた曲線（元の式の番号） */
+    const solved = new Set<number>();
     for (const i of this.nearbySegments(px, py, radius, 400)) {
       const ax = pos[i * 4], ay = pos[i * 4 + 1];
       const bx = pos[i * 4 + 2], by = pos[i * 4 + 3];
+      const f = snap[i];
+
+      // 円・円弧・楕円は、折れ線ではなく元の曲線と拘束線との交点にする（曲線ごとに一度だけ）
+      const k = this.curveOf[lineEntity[i]];
+      if (k >= 0) {
+        if (solved.has(k)) continue;
+        solved.add(k);
+        hits.length = 0;
+        axisCurve(curveAt(this.scene.curves, k), horizontal, horizontal ? originY : originX, hits);
+        for (const v of hits) consider(horizontal ? v : originX, horizontal ? originY : v, 'intersection', group(i));
+        continue;
+      }
 
       if (horizontal) {
         // 拘束線と平行な線分とは交点が定まらないので、端点だけを見る
         if (ay === by) {
           if (Math.abs(ay - originY) <= 1e-9) {
-            consider(ax, ay, 'endpoint', group(i));
-            consider(bx, by, 'endpoint', group(i));
+            if (f & SNAP_FLAG.start) consider(ax, ay, 'endpoint', group(i));
+            if (f & SNAP_FLAG.end) consider(bx, by, 'endpoint', group(i));
           }
           continue;
         }
@@ -450,8 +778,8 @@ export class SnapIndex {
       } else {
         if (ax === bx) {
           if (Math.abs(ax - originX) <= 1e-9) {
-            consider(ax, ay, 'endpoint', group(i));
-            consider(bx, by, 'endpoint', group(i));
+            if (f & SNAP_FLAG.start) consider(ax, ay, 'endpoint', group(i));
+            if (f & SNAP_FLAG.end) consider(bx, by, 'endpoint', group(i));
           }
           continue;
         }

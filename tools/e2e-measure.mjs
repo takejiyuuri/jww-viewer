@@ -237,6 +237,50 @@ const tapAt = async (x, y) => {
   }
 }
 
+// ---------- 7. 自動の縮尺は、点がなくなったら図面を開いたときの既定に戻る ----------
+{
+  await page.waitForTimeout(500);
+  const r = await page.evaluate(() => {
+    const a = window.__jww;
+    const pt = (scale) => ({ x: 0, y: 0, glayer: 0, kind: scale == null ? 'free' : 'endpoint', scale });
+    const out = { 既定: a.defaultScale };
+    // 前の計測で別の縮尺の図形から始めていたことにする（ボタンが押せるように表示も合わせる）
+    const leftover = () => {
+      a.points = [pt(a.defaultScale * 7)];
+      a.measureScale = a.defaultScale * 7;
+      a.updateReadout();
+      a.topShownAt = 0;
+    };
+    leftover();
+    document.getElementById('btn-clear').click();
+    out.消去 = a.measureScale;
+    // 戻すで点がなくなったとき
+    leftover();
+    document.getElementById('btn-undo').click();
+    out.戻す = a.measureScale;
+    a.points = [];
+    // 1 点目を何もない所に置いたとき
+    a.measureScale = a.defaultScale * 7;
+    a.addPoint({ x: 0, y: 0, kind: 'free', glayer: 0 });
+    out.任意点 = a.measureScale;
+    // 1 点目を別の縮尺の図形へ動かしたとき、何もない所へ動かしたとき
+    const g = a.scene.scales.findIndex((s) => s > 0);
+    a.movePoint(0, { x: 1, y: 1, kind: 'endpoint', glayer: g });
+    out.動かす = a.measureScale;
+    out.動かした先 = a.scene.scales[g];
+    a.movePoint(0, { x: 2, y: 2, kind: 'free', glayer: 0 });
+    out.何もない所へ = a.measureScale;
+    a.points = [];
+    a.updateReadout();
+    return out;
+  });
+  const d = r.既定;
+  check('消去すると自動の縮尺が既定に戻る', r.消去 === d, r);
+  check('戻すで点がなくなると自動の縮尺が既定に戻る', r.戻す === d, r);
+  check('1 点目が任意点なら自動の縮尺は既定', r.任意点 === d, r);
+  check('1 点目を動かすと自動の縮尺もそろう', r.動かす === r.動かした先 && r.何もない所へ === d, r);
+}
+
 const failed = results.filter((r) => !r.ok);
 console.log(JSON.stringify({ results, 失敗: failed.length, errors: errors.slice(0, 5) }, null, 2));
 await browser.close();

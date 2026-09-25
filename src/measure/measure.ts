@@ -30,10 +30,12 @@ export function toReal(drawingDist: number, scale: number): number {
   return drawingDist * scale;
 }
 
-/** 実寸 mm を読みやすい文字列にする */
+/**
+ * 実寸 mm を読みやすい文字列にする。
+ * 単位を切り替えるかは mm で丸めた後の値で決める（999.96 mm を「1000.0 mm」ではなく「1.000 m」にする）
+ */
 export function formatLength(mm: number): string {
-  const abs = Math.abs(mm);
-  if (abs >= 1000) {
+  if (Math.abs(Number(mm.toFixed(1))) >= 1000) {
     return `${(mm / 1000).toFixed(3)} m`;
   }
   return `${mm.toFixed(1)} mm`;
@@ -187,7 +189,10 @@ export function measureArea(points: MeasurePoint[], fallback: number, fixed = fa
   };
 }
 
-/** 閉じた多角形の、隣り合わない辺どうしが交わっているか */
+/**
+ * 閉じた多角形の、隣り合わない辺どうしが交わっているか。
+ * 頂点がちょうど別の辺（や別の頂点）の上に乗り、そこを突き抜けて反対側へ抜ける交わり方（8 の字）も含める
+ */
 function edgesCross(p: MeasurePoint[]): boolean {
   const n = p.length;
   const side = (a: MeasurePoint, b: MeasurePoint, c: MeasurePoint): number =>
@@ -200,8 +205,47 @@ function edgesCross(p: MeasurePoint[]): boolean {
       const c = p[j], d = p[(j + 1) % n];
       const s1 = side(a, b, c), s2 = side(a, b, d);
       const s3 = side(c, d, a), s4 = side(c, d, b);
-      // 端が相手の辺にちょうど乗っているだけの場合は交差としない
+      // 端が相手の辺にちょうど乗っている場合は、下で突き抜けているかを見る
       if (s1 * s2 < 0 && s3 * s4 < 0) return true;
+    }
+  }
+
+  const at = (k: number): MeasurePoint => p[((k % n) + n) % n];
+  const same = (a: MeasurePoint, b: MeasurePoint): boolean => a.x === b.x && a.y === b.y;
+  /** 頂点 k から dir の向きに辿って、直線 ab の上にない最初の点がどちらの側にあるか（なければ 0） */
+  const away = (a: MeasurePoint, b: MeasurePoint, k: number, dir: number): number => {
+    for (let s = 1; s < n; s++) {
+      const v = side(a, b, at(k + dir * s));
+      if (v !== 0) return v;
+    }
+    return 0;
+  };
+  /** 同じ位置にある頂点 k と m で、2 回の通り道が互いを横切っているか（前後の辺の向きが交互に並ぶか） */
+  const passes = (k: number, m: number): boolean => {
+    const v = p[k];
+    const ends = [at(k - 1), at(k + 1), at(m - 1), at(m + 1)];
+    if (ends.some((q) => same(q, v))) return false;
+    const dirs = ends.map((q) => Math.atan2(q.y - v.y, q.x - v.x));
+    // 辺が重なっている（向きが同じ）ときは決めない
+    if (new Set(dirs).size < 4) return false;
+    const turn = (t: number): number => (((t - dirs[0]) % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+    const width = turn(dirs[1]);
+    return (turn(dirs[2]) < width) !== (turn(dirs[3]) < width);
+  };
+  for (let k = 0; k < n; k++) {
+    const v = p[k];
+    for (let i = 0; i < n; i++) {
+      // 頂点 k を端に持つ辺は除く
+      if (i === k || (i + 1) % n === k) continue;
+      const a = p[i], b = at(i + 1);
+      if (side(a, b, v) !== 0) continue;
+      if (v.x < Math.min(a.x, b.x) || v.x > Math.max(a.x, b.x) || v.y < Math.min(a.y, b.y) || v.y > Math.max(a.y, b.y)) continue;
+      if (same(v, a) || same(v, b)) {
+        if (passes(k, same(v, a) ? i : (i + 1) % n)) return true;
+        continue;
+      }
+      // 辺の途中に乗った頂点の前後が辺の反対側にあれば、そこで突き抜けている（接するだけなら同じ側）
+      if (away(a, b, k, -1) * away(a, b, k, 1) < 0) return true;
     }
   }
   return false;
@@ -242,18 +286,18 @@ export function polygonCenter(points: ReadonlyArray<{ x: number; y: number }>): 
   return c.x >= minX && c.x <= maxX && c.y >= minY && c.y <= maxY ? c : mean;
 }
 
-/** 実寸 mm² を読みやすい文字列にする（0.01 m² 以上は m²） */
+/** 実寸 mm² を読みやすい文字列にする（0.01 m² 以上は m²。境目は mm² で丸めた後の値で決める） */
 export function formatArea(mm2: number): string {
-  if (Math.abs(mm2) >= 1e4) return `${(mm2 / 1e6).toFixed(3)} m²`;
+  if (Math.abs(Number(mm2.toFixed(1))) >= 1e4) return `${(mm2 / 1e6).toFixed(3)} m²`;
   return `${mm2.toFixed(1)} mm²`;
 }
 
 /**
- * 実寸 mm³ を読みやすい文字列にする（0.01 m³ 以上は m³、それより小さければ cm³）。
+ * 実寸 mm³ を読みやすい文字列にする（0.01 m³ 以上は m³、それより小さければ cm³。境目は cm³ で丸めた後の値で決める）。
  * 面積と同じく 0.01 で区切る（m³ の小数 3 桁では、0.01 m³ 未満は有効数字が 1 桁になってしまう）
  */
 export function formatVolume(mm3: number): string {
-  if (Math.abs(mm3) >= 1e7) return `${(mm3 / 1e9).toFixed(3)} m³`;
+  if (Math.abs(Number((mm3 / 1e3).toFixed(1))) >= 1e4) return `${(mm3 / 1e9).toFixed(3)} m³`;
   return `${(mm3 / 1e3).toFixed(1)} cm³`;
 }
 
