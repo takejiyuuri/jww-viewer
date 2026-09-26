@@ -4,6 +4,45 @@ import type { View } from './renderer.ts';
 const FONT_STACK = '"Hiragino Sans", "Noto Sans JP", -apple-system, system-ui, sans-serif';
 
 /**
+ * Jw_cad の特殊文字。「^」に続く 1 文字で、その後の文字の描き方が変わる。
+ * u は上付き、d は下付き、c は中付き（どれも半分の大きさ）、o は丸付き、w は続く 2 文字の重ね文字
+ */
+type RunKind = 'normal' | 'sup' | 'sub' | 'mid' | 'circle' | 'overlay';
+const SPECIAL: Record<string, RunKind> = { u: 'sup', d: 'sub', c: 'mid', o: 'circle', w: 'overlay' };
+
+/** 特殊文字で区切った文字列のひと続き */
+interface Run {
+  text: string;
+  kind: RunKind;
+}
+
+/** 特殊文字を解釈して区切る。後ろに文字が続かない「^」や、知らない記号の「^」はそのまま残す */
+export function specialRuns(s: string): Run[] {
+  const ch = Array.from(s);
+  const runs: Run[] = [];
+  let plain = '';
+  for (let i = 0; i < ch.length; i++) {
+    const kind = ch[i] === '^' ? SPECIAL[ch[i + 1]] : undefined;
+    const take = kind === 'overlay' ? 2 : 1;
+    if (!kind || i + 1 + take >= ch.length) {
+      plain += ch[i];
+      continue;
+    }
+    if (plain) runs.push({ text: plain, kind: 'normal' });
+    plain = '';
+    runs.push({ text: ch.slice(i + 2, i + 2 + take).join(''), kind });
+    i += 1 + take;
+  }
+  if (plain) runs.push({ text: plain, kind: 'normal' });
+  return runs;
+}
+
+/** 特殊文字の記号を取り除いた文字列（属性の表示などに使う） */
+export function plainText(s: string): string {
+  return s.includes('^') ? specialRuns(s).map((r) => r.text).join('') : s;
+}
+
+/**
  * 文字専用の 2D レイヤ。
  * 毎フレーム描き直すと重いので、描画時のビューを覚えておき、
  * 操作中は CSS transform で追従させ、操作が止まってから描き直す。
@@ -124,6 +163,10 @@ export class TextLayer {
     const cy = oy + h / 2;
     let font = '';
     let style = '';
+    // 揃え方は毎回ここで決める。拡大鏡では計測の札と同じキャンバスに描くので、ほかの設定が残っていることがある。
+    // Jw_cad の文字は始点が文字枠の左下なので、字の枠（em ボックス）の下端を始点に合わせる
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'bottom';
 
     for (const t of this.texts) {
       if (!this.visible[t.color] || !this.layerVisible[t.layer]) continue;
@@ -152,6 +195,13 @@ export class TextLayer {
       ctx.save();
       ctx.translate(sx, sy);
       if (Math.abs(t.angle) > 0.01) ctx.rotate((-t.angle * Math.PI) / 180);
+      if (t.text.includes('^')) {
+        drawRuns(ctx, specialRuns(t.text), px, wpx, next2);
+        // 字の大きさを変えたので、次の文字で設定し直させる
+        font = '';
+        ctx.restore();
+        continue;
+      }
       if (wpx > 0) {
         const m = ctx.measureText(t.text).width;
         // JWW は文字幅と間隔を独立して持つので、実描画幅を始終点に合わせる
@@ -161,4 +211,49 @@ export class TextLayer {
       ctx.restore();
     }
   }
+}
+
+/**
+ * 特殊文字を含む文字列を、始点（左下）から描く。px は字の高さ、wpx は始点から終点までの長さ（画面）。
+ * Jw_cad が保存している幅は、上付き・下付きの字を半分の大きさで数えた長さなので、区切りごとに同じ大きさで測って合わせる
+ */
+function drawRuns(ctx: CanvasRenderingContext2D, runs: Run[], px: number, wpx: number, color: string): void {
+  const full = `${px}px ${FONT_STACK}`;
+  const half = `${Math.round(px * 5) / 10}px ${FONT_STACK}`;
+  const small = `${Math.round(px * 6.5) / 10}px ${FONT_STACK}`;
+  const fontOf = (k: RunKind): string => (k === 'sup' || k === 'sub' || k === 'mid' ? half : k === 'circle' ? small : full);
+  const widths = runs.map((r) => {
+    ctx.font = fontOf(r.kind);
+    if (r.kind === 'circle') return Math.max(ctx.measureText(r.text).width, px);
+    // 重ね文字は 2 文字を同じ所に描くので、広いほうの幅
+    if (r.kind === 'overlay') return Math.max(...Array.from(r.text).map((c) => ctx.measureText(c).width));
+    return ctx.measureText(r.text).width;
+  });
+  const m = widths.reduce((a, b) => a + b, 0);
+  if (wpx > 0 && m > 0.5) ctx.scale(wpx / m, 1);
+
+  let x = 0;
+  runs.forEach((r, i) => {
+    const w = widths[i];
+    ctx.font = fontOf(r.kind);
+    switch (r.kind) {
+      case 'sup': ctx.fillText(r.text, x, -px * 0.5); break;
+      case 'mid': ctx.fillText(r.text, x, -px * 0.25); break;
+      case 'circle': {
+        ctx.fillText(r.text, x + (w - ctx.measureText(r.text).width) / 2, -px * 0.17);
+        ctx.beginPath();
+        ctx.arc(x + w / 2, -px / 2, px * 0.46, 0, Math.PI * 2);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = Math.max(1, px * 0.06);
+        ctx.stroke();
+        break;
+      }
+      case 'overlay':
+        for (const c of Array.from(r.text)) ctx.fillText(c, x + (w - ctx.measureText(c).width) / 2, 0);
+        break;
+      // 下付きとふつうの字は、字の枠の下端を始点の高さにそろえる
+      default: ctx.fillText(r.text, x, 0); break;
+    }
+    x += w;
+  });
 }

@@ -70,7 +70,8 @@ const tri = scene.triPos;
 for (let i = 0; i < tri.length; i += 6) {
   const xs = [sx(tri[i]), sx(tri[i + 2]), sx(tri[i + 4])];
   const ys = [sy(tri[i + 1]), sy(tri[i + 3]), sy(tri[i + 5])];
-  const e = scene.triColor[(i / 6) * 3] * 4;
+  // 塗りの色はパレットの後ろの半分（buildPalette 参照）
+  const e = (scene.triColor[(i / 6) * 3] + scene.colorGroup.length) * 4;
   if (palette[e + 3] === 0) continue;
   const r = palette[e], g = palette[e + 1], bl = palette[e + 2];
   const y0 = Math.max(0, Math.min(...ys));

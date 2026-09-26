@@ -583,9 +583,12 @@ export class Overlay {
       ctx.stroke();
     }
     ctx.fillStyle = ink ? ink.text : '#c9cfda';
+    // 揃え方はこの札の中だけで変える。残すと、あとで同じキャンバスに描く拡大鏡の中の図面の文字がずれる
+    ctx.save();
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(text, x, y + 0.5 * k);
+    ctx.restore();
   }
 
   private roundRect(x: number, y: number, w: number, h: number, r: number): void {

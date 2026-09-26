@@ -338,6 +338,180 @@ check('直角に折れる角の外側が欠けない', widths.corner.明るさ >
 check('一直線につながる線分の継ぎ目が、いちばん大きく拡大しても割れない（拡大鏡でも）', widths.seam === 255, { 継ぎ目の最小の明るさ: widths.seam });
 check('粗く折られる小さな円を拡大しても、継ぎ目の外側が欠けない（拡大鏡でも）', widths.small.通常 < 0.2 && widths.small.拡大鏡 < 0.2, widths.small);
 
+// ---------- 8. 線種・実点・単色の塗り ----------
+// 線種の模様は画面のドットで決まる。合成した線を黒地に白で描き、明るい画素の割合と、円弧の継ぎ目で模様が続くかを見る
+const styles = await page.evaluate(async () => {
+  const { buildPalette } = await import('/src/render/theme.ts');
+  const a = window.__jww;
+  const r = a.renderer;
+  const gl = r.gl;
+  const W = r.canvas.width, H = r.canvas.height, dpr = a.dpr;
+  // 線種 2（点線1）は 1001 の繰り返し、線種 9（補助線）は 0010 の繰り返し。どちらも 1 ビット 1 ドット
+  const dashes = new Uint32Array(128);
+  dashes[2 * 2] = 0x99999999; dashes[2 * 2 + 1] = 4 | (1 << 8);
+  dashes[9 * 2] = 0x22222222; dashes[9 * 2 + 1] = 4 | (1 << 8);
+  /** 1 つの図形として続く折れ線（lines は線分の並び）を、線種 style で */
+  const scene = (lines, style, extra = {}) => {
+    const n = lines.length / 4;
+    const dist = new Float32Array(n);
+    let sum = 0;
+    for (let i = 0; i < n; i++) {
+      dist[i] = sum;
+      sum += Math.hypot(lines[i * 4 + 2] - lines[i * 4], lines[i * 4 + 3] - lines[i * 4 + 1]);
+    }
+    return {
+      linePos: new Float32Array(lines), lineColor: new Uint16Array(n), lineLayer: new Uint8Array(n),
+      lineStyle: new Uint8Array(n).fill(style), lineDist: dist, dashes,
+      triPos: new Float32Array(0), triColor: new Uint16Array(0), triLayer: new Uint8Array(0),
+      ...extra,
+    };
+  };
+  r.setPalette(new Uint8Array([255, 255, 255, 255]));
+  r.setLayerVisibility(new Uint8Array(256).fill(1));
+  r.setBackground([0, 0, 0]);
+  const shot = (view) => {
+    r.draw(view, dpr);
+    const px = new Uint8Array(W * H * 4);
+    gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    return px;
+  };
+  // 横線の中央の行で、明るい画素の割合と、明るい所・暗い所の切り替わりの数
+  const rowStats = (px) => {
+    let lit = 0, flips = 0, prev = false;
+    const y = H >> 1;
+    for (let x = 0; x < W; x++) {
+      const on = px[(y * W + x) * 4] > 128;
+      if (on) lit++;
+      if (x > 0 && on !== prev) flips++;
+      prev = on;
+    }
+    return { lit: +(lit / W).toFixed(3), flips };
+  };
+  const view = { cx: 0, cy: 0, zoom: 6 * dpr };
+  r.setScene(scene([-1e5, 0, 1e5, 0], 1));
+  const solid = rowStats(shot(view));
+  r.setScene(scene([-1e5, 0, 1e5, 0], 2));
+  const dotted = rowStats(shot(view));
+  // 同じ点線を 2 本の線分に分けても、継ぎ目で模様が始まり直さない（1 本のときと同じ画素になる）
+  const one = shot(view);
+  r.setScene(scene([-1e5, 0, 13.37, 0, 13.37, 0, 1e5, 0], 2));
+  const two = shot(view);
+  // 模様の境目のすぐ近くの画素は、丸めの差で入れ替わることがあるので、数画素までは許す
+  let seamDiff = 0;
+  for (let x = 0; x < W; x++) {
+    const i = ((H >> 1) * W + x) * 4;
+    if (Math.abs(one[i] - two[i]) > 64) seamDiff++;
+  }
+
+  // 細かく折った円（線分 1 本が 1 ピクセルより短い）を補助線の模様で描く。
+  // 継ぎ目ごとに模様が始まり直すと、どの線分も最初のビット（0）だけになって何も描かれないか、すべて描かれてしまう
+  const R = 1000, rad = 40 * dpr;
+  const n = Math.max(4, Math.ceil((2 * Math.PI) / (2 * Math.acos(1 - 0.02 / R))));
+  const circle = [];
+  for (let i = 0; i < n; i++) {
+    const t0 = (2 * Math.PI * i) / n, t1 = (2 * Math.PI * (i + 1)) / n;
+    circle.push(R * Math.cos(t0), R * Math.sin(t0), R * Math.cos(t1), R * Math.sin(t1));
+  }
+  const ring = (px) => {
+    let s = 0;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      if (Math.abs(Math.hypot(x + 0.5 - W / 2, y + 0.5 - H / 2) - rad) < 12) s += px[(y * W + x) * 4] / 255;
+    }
+    return s;
+  };
+  r.setScene(scene(circle, 1));
+  const circleSolid = ring(shot({ cx: 0, cy: 0, zoom: rad / R }));
+  r.setScene(scene(circle, 9));
+  const circleAux = ring(shot({ cx: 0, cy: 0, zoom: rad / R }));
+
+  // 実点の丸。半径の指定がなければ画面で決めた小さな丸、指定があれば用紙上の半径で描く
+  const lit = (px) => { let s = 0; for (let i = 0; i < px.length; i += 4) s += px[i] / 255; return s; };
+  const dotScene = (radius) => scene([], 1, {
+    dotPos: new Float32Array([0, 0, radius]), dotColor: new Uint16Array(1), dotLayer: new Uint8Array(1),
+  });
+  r.setScene(dotScene(0));
+  const dotSmall = lit(shot({ cx: 0, cy: 0, zoom: 6 * dpr }));
+  r.setScene(dotScene(0.5));
+  const dotBig = lit(shot({ cx: 0, cy: 0, zoom: 20 * dpr }));
+
+  // 単色では、塗りを線と同じ色のべた塗りにせず淡くする。塗りの上の線が見分けられるか
+  const fillScene = {
+    ...scene([-1e5, 0, 1e5, 0], 1),
+    triPos: new Float32Array([-1e5, -1e5, 1e5, -1e5, 0, 1e5]), triColor: new Uint16Array(3), triLayer: new Uint8Array(3),
+    colors: new Uint8Array([255, 255, 200]), colorGroup: new Uint16Array(1),
+  };
+  const fills = {};
+  for (const bg of ['dark', 'light']) {
+    r.setScene(fillScene);
+    r.setPalette(buildPalette(fillScene.colors, fillScene.colorGroup, new Set(), { background: bg, mono: true }));
+    const px = shot({ cx: 0, cy: 0, zoom: 6 * dpr });
+    const at = (x, y) => [...px.subarray((y * W + x) * 4, (y * W + x) * 4 + 3)];
+    fills[bg] = { line: at(W >> 1, H >> 1), fill: at(W >> 1, (H >> 1) + 40) };
+  }
+
+  r.setScene(a.scene);
+  a.applyDisplay?.();
+  a.requestDraw?.(true);
+  return {
+    dpr, solid, dotted, seamDiff,
+    circle: { 実線: +circleSolid.toFixed(1), 補助線: +circleAux.toFixed(1), 割合: +(circleAux / circleSolid).toFixed(3) },
+    dot: { 小: +dotSmall.toFixed(1), 小の狙い: +(Math.PI * (1.1 * dpr) ** 2).toFixed(1), 大: +dotBig.toFixed(1), 大の狙い: +(Math.PI * (0.5 * 20 * dpr) ** 2).toFixed(1) },
+    fills,
+  };
+});
+check('実線は途切れない', styles.solid.lit > 0.99 && styles.solid.flips === 0, styles.solid);
+check('点線1 は半分ほどが描かれ、何度も途切れる', styles.dotted.lit > 0.35 && styles.dotted.lit < 0.65 && styles.dotted.flips > 40, styles.dotted);
+check('同じ点線を 2 本の線分に分けても、継ぎ目で模様がずれない', styles.seamDiff <= 4, { 違う画素: styles.seamDiff });
+check('細かく折った円でも補助線の模様（4 つに 1 つ）が続く', styles.circle.割合 > 0.15 && styles.circle.割合 < 0.4, styles.circle);
+const within = (v, want) => v > want * 0.6 && v < want * 1.5;
+check('実点は画面で決めた大きさの丸で描く', within(styles.dot.小, styles.dot.小の狙い), styles.dot);
+check('半径の指定がある実点は用紙上の大きさの丸で描く', within(styles.dot.大, styles.dot.大の狙い), styles.dot);
+const lum = ([r, g, b]) => {
+  const f = (c) => { const v = c / 255; return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+  return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+};
+const ratio = (a, b) => (Math.max(lum(a), lum(b)) + 0.05) / (Math.min(lum(a), lum(b)) + 0.05);
+for (const bg of ['dark', 'light']) {
+  const f = styles.fills[bg];
+  check(`単色（${bg === 'dark' ? '黒' : '白'}背景）の塗りの上でも線が見分けられる`, ratio(f.line, f.fill) >= 4.5, { ...f, 比: +ratio(f.line, f.fill).toFixed(2) });
+}
+
+// 拡大鏡の中の文字は、同じキャンバスに計測の札の揃え方（中央・中段）が残っていても同じ所に描く。
+// 字の枠の下端を始点にそろえる（Jw_cad の文字枠の左下が始点）
+const inset = await page.evaluate(() => {
+  const a = window.__jww;
+  const t = a.scene.texts.find((x) => Math.abs(x.angle) < 0.01 && x.width > x.height && a.layerMask[x.layer] && a.colorVisible[x.color]);
+  if (!t) return null;
+  const size = 400;
+  const zoom = 60 / t.height;
+  const view = { cx: t.x + t.width / 2, cy: t.y + t.height / 2, zoom };
+  const draw = (align) => {
+    const c = document.createElement('canvas');
+    c.width = c.height = size;
+    const ctx = c.getContext('2d');
+    if (align) { ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; }
+    a.textLayer.renderInset(ctx, view, 0, 0, size, size);
+    return ctx.getImageData(0, 0, size, size).data;
+  };
+  // 選んだ文字だけを描く（近くのほかの文字が混じらないように）
+  const saved = a.textLayer.texts;
+  a.textLayer.texts = [t];
+  const plain = draw(false);
+  const shifted = draw(true);
+  a.textLayer.texts = saved;
+  let diff = 0;
+  let lowest = -1;
+  for (let i = 0; i < plain.length; i += 4) {
+    if (plain[i + 3] !== shifted[i + 3]) diff++;
+    if (plain[i + 3] > 128) lowest = Math.max(lowest, Math.floor(i / 4 / size));
+  }
+  // 始点の高さ（キャンバスの行）。字はこれより下へはみ出さない
+  const base = size / 2 - (t.y - view.cy) * zoom;
+  return { diff, lowest, base: +base.toFixed(1), height: 60 };
+});
+check('拡大鏡の中の文字は、札の揃え方が残っていても同じ所に描く', inset && inset.diff === 0, inset);
+check('文字の下端は始点より下へはみ出さない', inset && inset.lowest >= 0 && inset.lowest <= inset.base + 1.5, inset);
+
 // 後片付け（次の検証に響かないよう既定に戻す）
 await page.evaluate(() => localStorage.clear());
 

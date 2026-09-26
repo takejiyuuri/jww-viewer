@@ -2,6 +2,7 @@ import type { Scene, SceneText } from '../render/geometry.ts';
 import { KIND } from '../render/geometry.ts';
 import type { SnapIndex } from '../measure/snap.ts';
 import type { Highlight } from '../render/overlay.ts';
+import { plainText } from '../render/textlayer.ts';
 import type { LoadedInfo } from '../jww/worker.ts';
 import { hex1, layerStateName, lineTypeName } from '../jww/names.ts';
 import { formatLength } from '../measure/measure.ts';
@@ -233,20 +234,20 @@ export function describeEntity(
       break;
     case KIND.text: {
       const t = scene.texts[e.text[i]];
-      if (t) rows.push({ label: '文字', html: escapeHtml(t.text) });
+      if (t) rows.push({ label: '文字', html: escapeHtml(plainText(t.text)) });
       rows.push({ label: '文字の高さ', html: `${size.toFixed(2)} mm <span class="sub">図面上</span>` });
       break;
     }
     case KIND.dim:
     case KIND.dimText: {
       const t = scene.texts[e.text[i]];
-      if (t) rows.push({ label: '寸法値', html: escapeHtml(t.text) });
+      if (t) rows.push({ label: '寸法値', html: escapeHtml(plainText(t.text)) });
       rows.push({ label: '寸法線の長さ', html: `${real(size)} ${scaleNote}` });
       break;
     }
     case KIND.dimAux: {
       const t = scene.texts[e.text[i]];
-      if (t) rows.push({ label: '寸法値', html: escapeHtml(t.text) });
+      if (t) rows.push({ label: '寸法値', html: escapeHtml(plainText(t.text)) });
       rows.push({ label: '長さ', html: `${real(size)} ${scaleNote}` });
       break;
     }
