@@ -27,6 +27,7 @@ self.onmessage = (ev: MessageEvent<LoadRequest>) => {
     // 型付き配列は複製せずに受け渡す（数十万要素あるので複製すると重い）
     const transfer: Transferable[] = [
       scene.linePos, scene.lineColor, scene.lineLayer, scene.lineSnap, scene.lineEntity,
+      scene.lineStyle, scene.lineDist, scene.dashes, scene.dotPos, scene.dotColor, scene.dotLayer,
       scene.triPos, scene.triColor, scene.triLayer, scene.triEntity,
       scene.snapPoint, scene.snapPointLayer, scene.snapPointColor, scene.snapPointEntity,
       scene.scales, scene.colors, scene.colorGroup, scene.layerCounts,

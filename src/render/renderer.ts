@@ -1,4 +1,4 @@
-import type { Scene } from './geometry.ts';
+import { DASH_STYLES, type Scene } from './geometry.ts';
 
 /**
  * 色番号からパレットの色を引く。パレットは 256 色ずつ横に並べたテクスチャで、
@@ -25,6 +25,16 @@ const JOIN_MAX_TURN = (100 * Math.PI) / 180;
 const JOIN_TAN = Math.tan(JOIN_MAX_TURN / 2);
 /** 前後の線分とつながっていない端の印 */
 const NOT_JOINED = -32768;
+/** 線種の代わりに付ける、実点の丸の印 */
+const DOT_STYLE = 255;
+
+/**
+ * 破線の 1 ドットの長さ（CSS ピクセル）。Jw_cad は線種の模様を画面のドットで描くので、拡大・縮小しても変わらない。
+ * パソコンの画面のドットと、手元で見る iPhone の CSS ピクセルが目にほぼ同じ大きさに見えるくらいにしている
+ */
+const DASH_DOT = 1.25;
+/** 実点の丸の最小の半径（CSS ピクセル）。縮小しても線より太い点として見えるように */
+const POINT_MIN = 1.1;
 
 const LINE_VS = `#version 300 es
 layout(location = 0) in vec2 aCorner;
@@ -34,6 +44,10 @@ layout(location = 3) in uint aLayer;
 // 前後の線分とのつながり（x = 始点の側、y = 終点の側）。${NOT_JOINED} はつながっていない。
 // ほかは継ぎ目で曲がる角度の半分の tan を、JOIN_TAN を 32767 として表したもの（左へ曲がるとき正）
 layout(location = 4) in ivec2 aJoin;
+// 線種番号（${DASH_STYLES} 以上は実線、${DOT_STYLE} は実点の丸）と、図形の始まりから線分の始点までの長さ（図面座標）。
+// 実点では長さの代わりに丸の半径（用紙上の mm）
+layout(location = 5) in uint aStyle;
+layout(location = 6) in float aDist;
 
 const float JOIN_TAN = ${JOIN_TAN.toFixed(9)};
 
@@ -41,16 +55,38 @@ uniform vec2 uCenter;
 uniform vec2 uScale;
 uniform vec2 uPixel;
 uniform float uHalfWidth;
+// 図面 1mm あたりのデバイスピクセル数と、ビューの中心のウィンドウ座標（デバイスピクセル、左下原点）
+uniform float uZoom;
+uniform vec2 uWinCenter;
+// 破線の 1 ドットと、実点の丸の最小の半径（デバイスピクセル）
+uniform float uDot;
+uniform float uPointMin;
+// 線種ごとの模様。2 線種ずつ（ビット列, 1 周期のビット数 | 1 ビットのドット数 << 8）を並べる
+uniform uvec4 uDash[${DASH_STYLES / 2}];
 ${PALETTE_LOOKUP}
 
 out vec3 vColor;
 out float vEdge;
 out float vHalfPx;
+// 模様のビット列と 1 周期のビット数（0 は実線、${DOT_STYLE} は実点の丸）
+flat out uint vDashBits;
+flat out uint vDashUnit;
+// 1 ビットの長さ（デバイスピクセル）
+flat out float vDashStep;
+// 模様を測る基準の点（ウィンドウ座標）。実点では丸の中心
+flat out vec2 vDashOrigin;
+// xy は線の向き、z は基準の点での模様の位置（デバイスピクセル）
+flat out vec3 vDashAxis;
 
 void main() {
   vec4 pc = paletteColor(aColorIndex);
   vColor = pc.rgb;
   vHalfPx = uHalfWidth;
+  vDashBits = 0u;
+  vDashUnit = 0u;
+  vDashStep = 1.0;
+  vDashOrigin = vec2(0.0);
+  vDashAxis = vec3(1.0, 0.0, 0.0);
   if (pc.a < 0.5 || !layerVisible(aLayer)) {
     // 隠している色やレイヤの線は、描画範囲の外へ追い出して描かない
     vEdge = 0.0;
@@ -67,6 +103,29 @@ void main() {
 
   // 端をぼかすぶんだけ外側に広げる。線そのものの太さは変えない
   float halfW = uHalfWidth + 0.5;
+  if (aStyle == ${DOT_STYLE}u) {
+    // 実点は用紙上の半径の丸（小さくなりすぎないよう下限を付ける）。四角を張って、丸く切り抜くのは FS
+    float r = max(aDist * uZoom, uPointMin);
+    halfW = r + 0.5;
+    vHalfPx = r;
+    vDashUnit = ${DOT_STYLE}u;
+    vDashOrigin = (p1 - uCenter) * uZoom + uWinCenter;
+  } else if (aStyle < ${DASH_STYLES}u) {
+    uvec4 pair = uDash[aStyle >> 1u];
+    uvec2 dash = (aStyle & 1u) == 0u ? pair.xy : pair.zw;
+    uint unit = dash.y & 255u;
+    if (unit > 0u) {
+      vDashBits = dash.x;
+      vDashUnit = unit;
+      vDashStep = float(dash.y >> 8u) * uDot;
+      // 模様の位置は、線の上で画面の中心にいちばん近い点を基準にして、ウィンドウ座標で測る。
+      // 図形の始まりから図面座標のまま数えると、大きく拡大したときに桁が足りず模様が崩れるため。
+      // 基準の点での位置は 1 周期の中に丸めておく（図形の始まりから続く模様になる）
+      float t0 = clamp(dot(uCenter - p1, dir), 0.0, len);
+      vDashOrigin = (p1 - uCenter + dir * t0) * uZoom + uWinCenter;
+      vDashAxis = vec3(dir, mod((aDist + t0) * uZoom, float(unit) * vDashStep));
+    }
+  }
 
   // 端点は補間せずにそのまま使う。mix だと GPU によっては p2 からわずかにずれ、
   // 突き合わせた継ぎ目が大きく拡大したときに割れて見える
@@ -97,12 +156,14 @@ layout(location = 2) in uint aLayer;
 
 uniform vec2 uCenter;
 uniform vec2 uScale;
+// 塗りの色がパレットのどこから並んでいるか（線と同じ色を使うなら 0）
+uniform uint uFillOffset;
 ${PALETTE_LOOKUP}
 
 out vec3 vColor;
 
 void main() {
-  vec4 pc = paletteColor(aColorIndex);
+  vec4 pc = paletteColor(aColorIndex + uFillOffset);
   vColor = pc.rgb;
   gl_Position = pc.a < 0.5 || !layerVisible(aLayer)
     ? vec4(2.0, 2.0, 2.0, 1.0)
@@ -121,15 +182,31 @@ void main() {
 /**
  * 線用。端の 1 ピクセルを透かして階段状のギザつきを消す。
  * 端末側の MSAA に頼らないので、拡大鏡の中でも同じように滑らかになる。
+ * 破線は線に沿った位置（ウィンドウ座標で測る）が模様の 0 のビットに当たる所を描かない。
+ * 実点は中心からの距離で丸く切り抜く。
+ * 画面の座標とビット列を扱うので、精度は highp にする（mediump では大きな画面で位置がずれる）
  */
 const LINE_FS = `#version 300 es
-precision mediump float;
+precision highp float;
+precision highp int;
 in vec3 vColor;
 in float vEdge;
 in float vHalfPx;
+flat in uint vDashBits;
+flat in uint vDashUnit;
+flat in float vDashStep;
+flat in vec2 vDashOrigin;
+flat in vec3 vDashAxis;
 out vec4 fragColor;
 void main() {
   float dist = abs(vEdge);
+  if (vDashUnit == ${DOT_STYLE}u) {
+    dist = length(gl_FragCoord.xy - vDashOrigin);
+  } else if (vDashUnit > 0u) {
+    float s = dot(gl_FragCoord.xy - vDashOrigin, vDashAxis.xy) + vDashAxis.z;
+    uint bit = min(uint(mod(s, float(vDashUnit) * vDashStep) / vDashStep), vDashUnit - 1u);
+    if (((vDashBits >> (31u - bit)) & 1u) == 0u) discard;
+  }
   float a = clamp(vHalfPx + 0.5 - dist, 0.0, 1.0);
   if (a <= 0.003) discard;
   fragColor = vec4(vColor, a);
@@ -228,6 +305,11 @@ interface LineUniforms {
   hw: WebGLUniformLocation;
   palette: WebGLUniformLocation;
   layers: WebGLUniformLocation;
+  zoom: WebGLUniformLocation;
+  winCenter: WebGLUniformLocation;
+  dot: WebGLUniformLocation;
+  pointMin: WebGLUniformLocation;
+  dash: WebGLUniformLocation;
 }
 
 interface TriUniforms {
@@ -235,6 +317,15 @@ interface TriUniforms {
   scale: WebGLUniformLocation;
   palette: WebGLUniformLocation;
   layers: WebGLUniformLocation;
+  fillOffset: WebGLUniformLocation;
+}
+
+/** WebGL2 が使えない（ロックダウンモードなどで止められている）ときに投げる */
+export class NoWebGL2Error extends Error {
+  constructor() {
+    super('WebGL2 が利用できません');
+    this.name = 'NoWebGL2Error';
+  }
 }
 
 export class Renderer {
@@ -243,8 +334,12 @@ export class Renderer {
   private triProg!: WebGLProgram;
   private lineVao: WebGLVertexArrayObject | null = null;
   private triVao: WebGLVertexArrayObject | null = null;
+  private dotVao: WebGLVertexArrayObject | null = null;
   private lineCount = 0;
   private triCount = 0;
+  private dotCount = 0;
+  /** 線種ごとの模様（uDash にそのまま渡す） */
+  private dashes = new Uint32Array(DASH_STYLES * 2);
   private buffers: WebGLBuffer[] = [];
   private paletteTex: WebGLTexture | null = null;
 
@@ -276,7 +371,7 @@ export class Renderer {
       powerPreference: 'high-performance',
       desynchronized: true,
     });
-    if (!gl) throw new Error('WebGL2 が利用できません');
+    if (!gl) throw new NoWebGL2Error();
     this.gl = gl;
     this.setupPrograms();
     this.uploadPalette();
@@ -289,9 +384,11 @@ export class Renderer {
       this.buffers = [];
       this.lineVao = null;
       this.triVao = null;
+      this.dotVao = null;
       this.paletteTex = null;
       this.lineCount = 0;
       this.triCount = 0;
+      this.dotCount = 0;
     });
     canvas.addEventListener('webglcontextrestored', () => {
       this.rebuild();
@@ -312,12 +409,18 @@ export class Renderer {
       hw: gl.getUniformLocation(this.lineProg, 'uHalfWidth')!,
       palette: gl.getUniformLocation(this.lineProg, 'uPalette')!,
       layers: gl.getUniformLocation(this.lineProg, 'uLayerMask')!,
+      zoom: gl.getUniformLocation(this.lineProg, 'uZoom')!,
+      winCenter: gl.getUniformLocation(this.lineProg, 'uWinCenter')!,
+      dot: gl.getUniformLocation(this.lineProg, 'uDot')!,
+      pointMin: gl.getUniformLocation(this.lineProg, 'uPointMin')!,
+      dash: gl.getUniformLocation(this.lineProg, 'uDash')!,
     };
     this.uTri = {
       center: gl.getUniformLocation(this.triProg, 'uCenter')!,
       scale: gl.getUniformLocation(this.triProg, 'uScale')!,
       palette: gl.getUniformLocation(this.triProg, 'uPalette')!,
       layers: gl.getUniformLocation(this.triProg, 'uLayerMask')!,
+      fillOffset: gl.getUniformLocation(this.triProg, 'uFillOffset')!,
     };
   }
 
@@ -343,6 +446,7 @@ export class Renderer {
   /**
    * 色番号ごとの表示色（RGBA、1 色 4 byte）を差し替える。
    * 背景の白黒や色ごとの表示・非表示はこれだけで反映され、線のバッファは作り直さない。
+   * 色番号の数の 2 倍の色があれば、後ろの半分を塗り（三角形）の色に使う（buildPalette 参照）。
    */
   setPalette(rgba: Uint8Array): void {
     this.palette = rgba;
@@ -397,6 +501,8 @@ export class Renderer {
     this.buffers = [];
     if (this.lineVao) gl.deleteVertexArray(this.lineVao);
     if (this.triVao) gl.deleteVertexArray(this.triVao);
+    if (this.dotVao) gl.deleteVertexArray(this.dotVao);
+    this.dotVao = null;
 
     // --- 線分（単位クアッドのインスタンス描画） ---
     this.lineCount = scene.linePos.length / 4;
@@ -404,30 +510,36 @@ export class Renderer {
     gl.bindVertexArray(this.lineVao);
 
     const corners = new Float32Array([0, -1, 0, 1, 1, -1, 1, 1]);
-    this.newBuffer(gl.ARRAY_BUFFER, corners);
-    gl.enableVertexAttribArray(0);
-    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    const cornerBuf = this.newBuffer(gl.ARRAY_BUFFER, corners);
+    const n = this.lineCount;
+    this.lineAttributes(
+      cornerBuf, scene.linePos, scene.lineColor, scene.lineLayer,
+      joinTangents(scene.linePos, scene.lineColor, scene.lineLayer),
+      // 線種を持たないシーン（検証で組み立てたものなど）は実線で描く
+      scene.lineStyle ?? new Uint8Array(n), scene.lineDist ?? new Float32Array(n),
+    );
+    this.dashes = new Uint32Array(DASH_STYLES * 2);
+    if (scene.dashes) this.dashes.set(scene.dashes.subarray(0, this.dashes.length));
 
-    this.newBuffer(gl.ARRAY_BUFFER, scene.linePos);
-    gl.enableVertexAttribArray(1);
-    gl.vertexAttribPointer(1, 4, gl.FLOAT, false, 0, 0);
-    gl.vertexAttribDivisor(1, 1);
-
-    // 色番号は整数のままシェーダへ渡す
-    this.newBuffer(gl.ARRAY_BUFFER, scene.lineColor);
-    gl.enableVertexAttribArray(2);
-    gl.vertexAttribIPointer(2, 1, gl.UNSIGNED_SHORT, 0, 0);
-    gl.vertexAttribDivisor(2, 1);
-
-    this.newBuffer(gl.ARRAY_BUFFER, scene.lineLayer);
-    gl.enableVertexAttribArray(3);
-    gl.vertexAttribIPointer(3, 1, gl.UNSIGNED_BYTE, 0, 0);
-    gl.vertexAttribDivisor(3, 1);
-
-    this.newBuffer(gl.ARRAY_BUFFER, joinTangents(scene.linePos, scene.lineColor, scene.lineLayer));
-    gl.enableVertexAttribArray(4);
-    gl.vertexAttribIPointer(4, 2, gl.SHORT, 0, 0);
-    gl.vertexAttribDivisor(4, 1);
+    // --- 実点の丸（長さ 0 の線分として、線と同じシェーダで描く） ---
+    const dots = scene.dotPos ?? new Float32Array(0);
+    this.dotCount = Math.floor(dots.length / 3);
+    if (this.dotCount > 0) {
+      const m = this.dotCount;
+      const pos = new Float32Array(m * 4);
+      const radius = new Float32Array(m);
+      for (let i = 0; i < m; i++) {
+        pos[i * 4] = pos[i * 4 + 2] = dots[i * 3];
+        pos[i * 4 + 1] = pos[i * 4 + 3] = dots[i * 3 + 1];
+        radius[i] = dots[i * 3 + 2];
+      }
+      this.dotVao = gl.createVertexArray();
+      gl.bindVertexArray(this.dotVao);
+      this.lineAttributes(
+        cornerBuf, pos, scene.dotColor, scene.dotLayer,
+        new Int16Array(m * 2).fill(NOT_JOINED), new Uint8Array(m).fill(DOT_STYLE), radius,
+      );
+    }
 
     // --- 塗り三角形 ---
     this.triCount = scene.triPos.length / 2;
@@ -449,6 +561,48 @@ export class Renderer {
     gl.bindVertexArray(null);
   }
 
+  /** いま結んでいる VAO に、線のシェーダの入力（線分ごとのインスタンス）を結ぶ */
+  private lineAttributes(
+    corners: WebGLBuffer, pos: Float32Array, color: Uint16Array, layer: Uint8Array,
+    join: Int16Array, style: Uint8Array, dist: Float32Array,
+  ): void {
+    const gl = this.gl;
+    gl.bindBuffer(gl.ARRAY_BUFFER, corners);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+    this.newBuffer(gl.ARRAY_BUFFER, pos);
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribPointer(1, 4, gl.FLOAT, false, 0, 0);
+    gl.vertexAttribDivisor(1, 1);
+
+    // 色番号は整数のままシェーダへ渡す
+    this.newBuffer(gl.ARRAY_BUFFER, color);
+    gl.enableVertexAttribArray(2);
+    gl.vertexAttribIPointer(2, 1, gl.UNSIGNED_SHORT, 0, 0);
+    gl.vertexAttribDivisor(2, 1);
+
+    this.newBuffer(gl.ARRAY_BUFFER, layer);
+    gl.enableVertexAttribArray(3);
+    gl.vertexAttribIPointer(3, 1, gl.UNSIGNED_BYTE, 0, 0);
+    gl.vertexAttribDivisor(3, 1);
+
+    this.newBuffer(gl.ARRAY_BUFFER, join);
+    gl.enableVertexAttribArray(4);
+    gl.vertexAttribIPointer(4, 2, gl.SHORT, 0, 0);
+    gl.vertexAttribDivisor(4, 1);
+
+    this.newBuffer(gl.ARRAY_BUFFER, style);
+    gl.enableVertexAttribArray(5);
+    gl.vertexAttribIPointer(5, 1, gl.UNSIGNED_BYTE, 0, 0);
+    gl.vertexAttribDivisor(5, 1);
+
+    this.newBuffer(gl.ARRAY_BUFFER, dist);
+    gl.enableVertexAttribArray(6);
+    gl.vertexAttribPointer(6, 1, gl.FLOAT, false, 0, 0);
+    gl.vertexAttribDivisor(6, 1);
+  }
+
   resize(cssW: number, cssH: number, dpr: number): void {
     const w = Math.max(1, Math.round(cssW * dpr));
     const h = Math.max(1, Math.round(cssH * dpr));
@@ -463,7 +617,7 @@ export class Renderer {
     if (this.isLost) return;
     const gl = this.gl;
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
-    this.paint(view, this.canvas.width, this.canvas.height, dpr);
+    this.paint(view, 0, 0, this.canvas.width, this.canvas.height, dpr);
   }
 
   /**
@@ -477,12 +631,13 @@ export class Renderer {
     gl.scissor(x, y, w, h);
     gl.viewport(x, y, w, h);
     // 拡大して見ている場所なので、線もそれらしく太くする
-    this.paint(view, w, h, dpr, 1.6);
+    this.paint(view, x, y, w, h, dpr, 1.6);
     gl.disable(gl.SCISSOR_TEST);
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
   }
 
-  private paint(view: View, w: number, h: number, dpr: number, widthScale = 1): void {
+  /** 左下が (x, y)、大きさ w × h のビューポート（デバイスピクセル）に描く */
+  private paint(view: View, x: number, y: number, w: number, h: number, dpr: number, widthScale = 1): void {
     const gl = this.gl;
 
     gl.clearColor(this.background[0], this.background[1], this.background[2], 1);
@@ -495,16 +650,20 @@ export class Renderer {
     gl.bindTexture(gl.TEXTURE_2D, this.paletteTex);
 
     if (this.triCount > 0) {
+      // パレットに塗り用の色が続いていれば、塗りはそちらで描く
+      const colors = this.scene?.colorGroup?.length ?? 0;
+      const fillOffset = colors > 0 && this.palette.length >= colors * 8 ? colors : 0;
       gl.useProgram(this.triProg);
       gl.uniform1i(this.uTri.palette, 0);
       gl.uniform1uiv(this.uTri.layers, this.layerMask);
       gl.uniform2f(this.uTri.center, view.cx, view.cy);
       gl.uniform2f(this.uTri.scale, sx, sy);
+      gl.uniform1ui(this.uTri.fillOffset, fillOffset);
       gl.bindVertexArray(this.triVao);
       gl.drawArrays(gl.TRIANGLES, 0, this.triCount);
     }
 
-    if (this.lineCount > 0) {
+    if (this.lineCount > 0 || this.dotCount > 0) {
       gl.useProgram(this.lineProg);
       gl.uniform1i(this.uLine.palette, 0);
       gl.uniform1uiv(this.uLine.layers, this.layerMask);
@@ -512,8 +671,21 @@ export class Renderer {
       gl.uniform2f(this.uLine.scale, sx, sy);
       gl.uniform2f(this.uLine.pixel, 2 / w, 2 / h);
       gl.uniform1f(this.uLine.hw, (lineWidthAt(view.zoom, dpr) * widthScale * dpr) / 2);
-      gl.bindVertexArray(this.lineVao);
-      gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, this.lineCount);
+      gl.uniform1f(this.uLine.zoom, view.zoom);
+      gl.uniform2f(this.uLine.winCenter, x + w / 2, y + h / 2);
+      // 破線の模様と実点の大きさは画面の上で決まった大きさ。拡大鏡では線と同じく大きくする
+      gl.uniform1f(this.uLine.dot, DASH_DOT * dpr * widthScale);
+      gl.uniform1f(this.uLine.pointMin, POINT_MIN * dpr * widthScale);
+      gl.uniform4uiv(this.uLine.dash, this.dashes);
+      if (this.lineCount > 0) {
+        gl.bindVertexArray(this.lineVao);
+        gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, this.lineCount);
+      }
+      // 実点は線の上に描く
+      if (this.dotCount > 0 && this.dotVao) {
+        gl.bindVertexArray(this.dotVao);
+        gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, this.dotCount);
+      }
     }
 
     gl.bindVertexArray(null);

@@ -1,4 +1,4 @@
-import { Renderer, type View } from './render/renderer.ts';
+import { NoWebGL2Error, Renderer, type View } from './render/renderer.ts';
 import { TextLayer } from './render/textlayer.ts';
 import { Overlay, type Highlight, type MagnifierBox, type OverlayState } from './render/overlay.ts';
 import type { Scene } from './render/geometry.ts';
@@ -430,6 +430,8 @@ class App {
     this.updateInspect();
     this.buildInfoPanel();
     this.fit();
+    // 文字もその場で描き直す。待つと、前の図面の文字が新しい図面の上に少しのあいだ残って見える
+    this.textLayer.render(this.view);
     // 読み込んだときの全体表示も全体を見ているものとする（ここで「全体」を押しても戻る先は作らない）
     this.recordFit();
     const hiddenLayers = this.layers.hiddenCount(scene.layerCounts);
@@ -2469,7 +2471,33 @@ function escapeHtml(s: string): string {
   return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c] as string));
 }
 
-const app = new App();
+/**
+ * 起動できなかったことを最初の画面で知らせる。
+ * WebGL2 が使えない端末・設定（ロックダウンモードなど）では図面を描けないので、ボタンが反応しないだけの画面にしない
+ */
+function showStartupError(err: unknown): void {
+  el('title').textContent = '図面を表示できません';
+  const w = el('welcome');
+  w.classList.remove('hidden');
+  const body = w.querySelector('.welcome-body p');
+  if (body) {
+    body.textContent = err instanceof NoWebGL2Error
+      ? 'この端末・設定では図面を描けません（WebGL2 が使えません）。' +
+        'ロックダウンモードを入れている場合は、設定でこのサイトまたはアプリを除外すると使えるようになります。'
+      : `起動できませんでした: ${err instanceof Error ? err.message : String(err)}`;
+    body.classList.add('error');
+  }
+  // 開くボタンは動かないので出さない
+  document.getElementById('btn-open-2')?.classList.add('hidden');
+}
+
+let app: App | null = null;
+try {
+  app = new App();
+} catch (err) {
+  console.error(err);
+  showStartupError(err);
+}
 
 // 開発サーバーでのみ、検証スクリプトから内部状態を触れるようにする
 if (import.meta.env.DEV) {

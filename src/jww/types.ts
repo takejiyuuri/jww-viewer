@@ -126,6 +126,18 @@ export interface JwwLayerGroup {
   layers: { state: number; protect: number; name: string }[];
 }
 
+/** 線種の模様（Jw_cad の基本設定の「線種」） */
+export interface JwwLineType {
+  /** 32 ビットのパターン。上位のビットから並べ、1 のビットを描く */
+  pattern: number;
+  /** 「1 ユニットのドット数」。模様の 1 周期に使うビットの数（上位から）。ランダム線では 1 */
+  unit: number;
+  /** 画面表示のピッチ。1 ビットを何ドットで描くか */
+  pitch: number;
+  /** プリンタ出力のピッチ */
+  printPitch: number;
+}
+
 export interface JwwHeader {
   version: number;
   memo: string;
@@ -141,6 +153,15 @@ export interface JwwHeader {
   sxfColorNames: string[];
   /** SXF 拡張線種の名前（線種番号 30 から順）。空文字のこともある */
   sxfLineTypeNames: string[];
+  /**
+   * 線種の画面表示のパターン（線種番号を添字にする。2〜9、ランダム線 11〜15、倍長線種 16〜19、SXF 線種 30〜62）。
+   * 古い図面で持っていない番号は undefined
+   */
+  lineTypes: (JwwLineType | undefined)[];
+  /** 線色 0-9 の実点半径（用紙上の mm） */
+  pointRadius: number[];
+  /** 実点を画面に指定半径で描く */
+  drawPointRadius: boolean;
   /** 保存時の画面倍率・原点 */
   zoom: number;
   originX: number;

@@ -112,12 +112,64 @@ const fps = await page.evaluate(async () => {
   return frames;
 });
 
+const checks = [];
+const check = (name, ok, info) => checks.push({ name, ok, ...(info ?? {}) });
+
+// 計測の札を描いたあとも、札の揃え方（中央・中段）がキャンバスに残らない（拡大鏡の中の文字がずれないように）
+const align = await page.evaluate(() => {
+  const c = window.__jww.overlay.ctx;
+  return { textAlign: c.textAlign, textBaseline: c.textBaseline };
+});
+check('計測の札の揃え方がキャンバスに残らない', align.textAlign === 'start' && align.textBaseline === 'alphabetic', align);
+
+// 別の図面を開いたら、文字もその場で描き直す（前の図面の文字が新しい図面の上に残らない）
+await page.evaluate(() => {
+  const a = window.__jww;
+  const loaded = a.onLoaded;
+  window.__textAfterLoad = null;
+  a.onLoaded = function (...args) {
+    loaded.apply(this, args);
+    const at = this.textLayer.drawnAt;
+    window.__textAfterLoad = { drawn: !!at, same: !!at && at.zoom === this.view.zoom && at.cx === this.view.cx && at.cy === this.view.cy };
+  };
+});
+await page.setInputFiles('#file', sample);
+await page.waitForFunction(() => window.__textAfterLoad !== null, null, { timeout: 60000 });
+const afterLoad = await page.evaluate(() => window.__textAfterLoad);
+check('図面を開いた直後に、文字も新しい図面で描き直している', afterLoad.drawn && afterLoad.same, afterLoad);
+
+// WebGL2 が使えない端末・設定では、反応しない画面にせず理由を出す
+const noGlContext = await browser.newContext({ ...devices['iPhone 14 Pro'], hasTouch: true });
+await noGlContext.addInitScript(() => {
+  const getContext = HTMLCanvasElement.prototype.getContext;
+  HTMLCanvasElement.prototype.getContext = function (type, ...rest) {
+    return type === 'webgl2' ? null : getContext.call(this, type, ...rest);
+  };
+});
+const noGlPage = await noGlContext.newPage();
+const noGlErrors = [];
+noGlPage.on('pageerror', (e) => noGlErrors.push(e.message));
+await noGlPage.goto(url, { waitUntil: 'networkidle' });
+await noGlPage.waitForTimeout(300);
+const noGl = await noGlPage.evaluate(() => ({
+  welcome: !document.getElementById('welcome').classList.contains('hidden'),
+  message: document.querySelector('#welcome .welcome-body p')?.textContent ?? '',
+  openHidden: document.getElementById('btn-open-2').classList.contains('hidden'),
+  title: document.getElementById('title').textContent,
+}));
+check('WebGL2 が使えないときは理由を出す', noGl.welcome && noGl.message.includes('WebGL2') && noGl.openHidden && noGlErrors.length === 0, {
+  ...noGl, errors: noGlErrors,
+});
+await noGlContext.close();
+
 console.log(JSON.stringify({
   title, gl, distinctColorsInCenter: painted, held,
   距離: readout, 内訳: detail, 連続計測: multiDetail,
   秒間フレーム: fps,
+  checks,
   errors,
 }, null, 2));
 
 await browser.close();
 await srv.close();
+process.exit(checks.some((c) => !c.ok) ? 1 : 0);

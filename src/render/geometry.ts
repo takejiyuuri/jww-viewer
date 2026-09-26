@@ -28,6 +28,24 @@ export interface Scene {
   lineSnap: Uint8Array;
   /** 線分ごとの、元になった図形の番号（entities の添字） */
   lineEntity: Uint32Array;
+  /** 線分ごとの線種番号（破線の描き分けに使う。0〜DASH_STYLES-1。模様のない番号とソリッドの線は実線） */
+  lineStyle: Uint8Array;
+  /**
+   * 線分ごとの、図形の始まりからその線分の始点までの長さ（図面座標）。
+   * 円弧を折った線分でも、破線の模様が継ぎ目ごとに始まり直さず続くようにするため
+   */
+  lineDist: Float32Array;
+  /**
+   * 線種番号（0〜DASH_STYLES-1）ごとの画面表示の模様。
+   * [ビット列, 1 周期のビット数 | 1 ビットのドット数 << 8] の並びで、1 周期のビット数が 0 なら実線
+   */
+  dashes: Uint32Array;
+  /** 実点 [x, y, 半径（用紙上の mm。指定がなければ 0）, ...]。画面では小さな丸で描く */
+  dotPos: Float32Array;
+  /** 実点ごとの色番号 */
+  dotColor: Uint16Array;
+  /** 実点ごとのレイヤ */
+  dotLayer: Uint8Array;
   /** 塗り三角形の頂点 */
   triPos: Float32Array;
   /** 三角形の頂点ごとの色番号 */
@@ -61,7 +79,7 @@ export interface Scene {
 }
 
 export interface ColorGroup {
-  /** Jw_cad の線色番号。任意色は 10、SXF 拡張色は 100 以上 */
+  /** Jw_cad の線色番号。任意色は 10、SXF 拡張色は 100 以上、補助線種は AUX_STYLE_PEN */
   penColor: number;
   label: string;
   /** 見本に使う元の色 */
@@ -213,6 +231,17 @@ function lengthScale(t: Xform): number {
 /** 色番号は Uint16 で持つので、これを超える種類の色は最後の番号にまとめる */
 const MAX_COLORS = 65535;
 
+/** 補助線種の線種番号。Jw_cad では印刷されない作図用の線で、画面では補助線色の疎な点線で描く */
+export const AUX_LINE_STYLE = 9;
+/**
+ * 補助線種の線をまとめた色グループの番号（ColorGroup.penColor）。線色によらずここに入れ、
+ * 補助線色で描いて、表示・非表示も線色とは別に切り替えられるようにする。線色の並びでは最後に来る
+ */
+export const AUX_STYLE_PEN = 1000 + AUX_LINE_STYLE;
+
+/** 模様を持てる線種番号の数（0〜63。SXF 線種の 30〜62 まで入る）。これより大きい番号は実線で描く */
+export const DASH_STYLES = 64;
+
 /**
  * 線色番号（と任意色の RGB）ごとに色番号を払い出す。
  * 色番号は描画色の単位、グループは表示・非表示の単位。
@@ -244,6 +273,7 @@ class Palette {
     if (penColor >= 1 && penColor <= 8) return `線色${penColor}`;
     if (penColor === 9) return '補助線色';
     if (penColor === 10) return '任意色';
+    if (penColor === AUX_STYLE_PEN) return '補助線種';
     if (penColor >= 100) {
       const name = (this.header.sxfColorNames[penColor - 100] ?? '').trim();
       return name ? `SXF ${name}` : `SXF色 ${penColor - 100}`;
@@ -263,10 +293,11 @@ class Palette {
   /**
    * 色番号を返す。custom は任意色（COLORREF）。
    * 呼ぶたびにその色のグループの図形数を 1 増やすかどうかを tally で選ぶ。
+   * aux は補助線種の線。線色によらず補助線色で描き、「補助線種」のグループに入れる
    */
-  entry(penColor: number, custom?: number, tally = true): number {
-    const rgb = penColor === 10 && custom !== undefined ? colorref(custom) : this.baseColor(penColor);
-    const key = penColor === 10 && custom !== undefined ? `10:${custom}` : String(penColor);
+  entry(penColor: number, custom?: number, tally = true, aux = false): number {
+    const rgb = aux ? this.baseColor(9) : penColor === 10 && custom !== undefined ? colorref(custom) : this.baseColor(penColor);
+    const key = aux ? 'aux' : penColor === 10 && custom !== undefined ? `10:${custom}` : String(penColor);
     let e = this.byKey.get(key);
     if (e === undefined) {
       if (this.entryGroup.length >= MAX_COLORS) {
@@ -274,7 +305,7 @@ class Palette {
       } else {
         e = this.entryGroup.length;
         this.rgb.push(rgb[0], rgb[1], rgb[2]);
-        this.entryGroup.push(this.groupOf(penColor, rgb));
+        this.entryGroup.push(this.groupOf(aux ? AUX_STYLE_PEN : penColor, rgb));
       }
       this.byKey.set(key, e);
     }
@@ -326,6 +357,11 @@ class Builder {
   lineLayer = new Buf(u8);
   lineSnap = new Buf(u8);
   lineEntity = new Buf(u32);
+  lineStyle = new Buf(u8);
+  lineDist = new Buf(f32);
+  dotPos = new Buf(f32);
+  dotColor = new Buf(u16);
+  dotLayer = new Buf(u8);
   triPos = new Buf(f32);
   triColor = new Buf(u16);
   triLayer = new Buf(u8);
@@ -358,6 +394,9 @@ class Builder {
   private blockIndex = new Map<number, number>();
   /** いま書き出している図形の番号 */
   private cur = 0;
+  /** いま書き出している図形の線種と、その図形の始まりから数えた線分の長さの合計（破線の模様をつなげるため） */
+  private curStyle = 0;
+  private curDist = 0;
 
   minX = Infinity; minY = Infinity; maxX = -Infinity; maxY = -Infinity;
   /** 壊れたファイルで際限なく膨らむのを防ぐための打ち切り */
@@ -365,10 +404,24 @@ class Builder {
 
   readonly palette: Palette;
   readonly blockDefs: Map<number, JwwBlockDef>;
+  private readonly header: JwwHeader;
 
-  constructor(palette: Palette, blockDefs: Map<number, JwwBlockDef>) {
+  constructor(palette: Palette, blockDefs: Map<number, JwwBlockDef>, header: JwwHeader) {
     this.palette = palette;
     this.blockDefs = blockDefs;
+    this.header = header;
+  }
+
+  /**
+   * 実点を描く半径（用紙上の mm）。Jw_cad で「実点を画面描画時の指定半径で描画」にしていれば、
+   * 線色ごとの実点半径。そうでなければ 0（Jw_cad の画面と同じく、拡大しても変わらない小さな点で描く）。
+   * プリンタ出力だけの指定では使わない。拡大すると大きな●が端点や交点を覆い、指したい所が見えなくなるため
+   */
+  pointRadius(penColor: number): number {
+    const h = this.header;
+    if (!h.drawPointRadius) return 0;
+    const r = h.pointRadius[penColor];
+    return r !== undefined && Number.isFinite(r) && r > 0 && r < 100 ? r : 0;
   }
 
   /** 部品名の番号。Ver.4.10 以降の名前に付く "@@SfigorgFlag@@..." は取り除く */
@@ -392,6 +445,10 @@ class Builder {
     rgb = -1, group = layer >> 4,
   ): number {
     this.cur = this.entKind.len;
+    // ソリッドの線種番号は円ソリッドの種類なので、線（円周ソリッド）は実線で描く。
+    // 模様の表にない番号（壊れたファイルの大きな値など）も実線にする（下位の桁だけで別の線種や実点の印に化けないように）
+    this.curStyle = kind !== KIND.solid && style > 0 && style < DASH_STYLES ? style : 0;
+    this.curDist = 0;
     this.entKind.push(kind);
     this.entLayer.push(layer);
     this.entGroup.push(group);
@@ -437,6 +494,10 @@ class Builder {
     this.lineLayer.push(layer);
     this.lineSnap.push(snap ? 1 : 0);
     this.lineEntity.push(this.cur);
+    // 線種は begin で受け取った図形のもの。長さは同じ図形の中で続けて数える
+    this.lineStyle.push(this.curStyle);
+    this.lineDist.push(this.curDist);
+    this.curDist += Math.hypot(x2 - x1, y2 - y1);
     this.track(x1, y1);
     this.track(x2, y2);
   }
@@ -463,6 +524,14 @@ class Builder {
     this.snapPointColor.push(color);
     this.snapPointEntity.push(this.cur);
   }
+
+  /** 実点を描くための丸。radius は用紙上の mm（0 なら画面で決めた大きさ） */
+  addDot(x: number, y: number, radius: number, color: number, layer: number): void {
+    if (!finite4(x, y, radius, 0)) return;
+    this.dotPos.push(x, y, radius);
+    this.dotColor.push(color);
+    this.dotLayer.push(layer);
+  }
 }
 
 /** 線分をひとつ出す（図形の begin/end は呼び出し側）。長さを返す */
@@ -475,7 +544,7 @@ function lineSegment(b: Builder, l: JwwLine, t: Xform, snap: boolean, color: num
 
 function emitLine(b: Builder, l: JwwLine, t: Xform, inherit: number | null, block: number): void {
   const layer = layerOf(l, inherit);
-  const color = b.palette.entry(l.penColor);
+  const color = b.palette.entry(l.penColor, undefined, true, l.penStyle === AUX_LINE_STYLE);
   b.begin(KIND.line, l.penColor, l.penStyle, layer, color, block);
   const len = lineSegment(b, l, t, true, color, layer);
   b.end(len);
@@ -486,7 +555,7 @@ function emitArc(b: Builder, a: JwwArc, t: Xform, inherit: number | null, block:
   const layer = layerOf(a, inherit);
   const sweep = a.isCircle ? Math.PI * 2 : a.arcAngle;
   const n = arcSegments(a.radius, sweep);
-  const color = b.palette.entry(a.penColor);
+  const color = b.palette.entry(a.penColor, undefined, true, a.penStyle === AUX_LINE_STYLE);
   const cos = Math.cos(a.tilt);
   const sin = Math.sin(a.tilt);
   const ry = a.radius * (a.flatness || 1);
@@ -563,6 +632,8 @@ function emitSolid(b: Builder, s: JwwSolid, t: Xform, inherit: number | null, bl
   if (s.penStyle >= 101) {
     // 円系ソリッド。CDataSolid を流用しており各点の意味が異なる。
     //   p1=中心, p4=(半径, 扁平率), p2=(傾き角, 開始角), p3=(円弧角, 種別)
+    // 種別は 101 では -1:外側円弧 0:扇形 5:弓形 100:全円、111（円周ソリッド）では 0:円弧 100:全円、
+    // 105・106（円環ソリッド）では内側の半径
     const cx = s.x1, cy = s.y1;
     const radius = s.x4;
     const flat = s.y4 || 1;
@@ -572,33 +643,52 @@ function emitSolid(b: Builder, s: JwwSolid, t: Xform, inherit: number | null, bl
     const sweep = kind === 100 ? Math.PI * 2 : s.x3;
     const n = arcSegments(radius, sweep);
     const cos = Math.cos(tilt), sin = Math.sin(tilt);
-    // 円環ソリッドでは p3.y が内側の半径
     const inner = (s.penStyle === 105 || s.penStyle === 106) ? kind : 0;
 
-    const pt = (th: number, rr: number): [number, number] => {
-      const lx = rr * Math.cos(th);
-      const ly = rr * flat * Math.sin(th);
-      return apply(t, cx + lx * cos - ly * sin, cy + lx * sin + ly * cos);
-    };
+    const local = (lx: number, ly: number): [number, number] =>
+      apply(t, cx + lx * cos - ly * sin, cy + lx * sin + ly * cos);
+    const pt = (th: number, rr: number): [number, number] => local(rr * Math.cos(th), rr * flat * Math.sin(th));
 
-    if (inner > 0) {
+    if (s.penStyle === 111) {
+      // 円周ソリッドは円周を線として描く（中は塗らない）
+      let [px, py] = pt(start, radius);
+      for (let i = 1; i <= n; i++) {
+        const [qx, qy] = pt(start + (sweep * i) / n, radius);
+        b.addSegment(px, py, qx, qy, color, layer, false);
+        px = qx; py = qy;
+      }
+    } else if (inner > 0) {
+      // 円環「2」（106）の楕円は、外側と内側の差を長軸・短軸とも同じ幅にする
+      const gap = radius - inner;
+      const inside = (th: number): [number, number] => s.penStyle === 106 && flat !== 1
+        ? local((radius - gap) * Math.cos(th), (radius * flat - gap) * Math.sin(th))
+        : pt(th, inner);
       let [ax, ay] = pt(start, radius);
-      let [bx, by] = pt(start, inner);
+      let [bx, by] = inside(start);
       for (let i = 1; i <= n; i++) {
         const th = start + (sweep * i) / n;
         const [cx2, cy2] = pt(th, radius);
-        const [dx2, dy2] = pt(th, inner);
+        const [dx2, dy2] = inside(th);
         b.addTriangle(ax, ay, bx, by, cx2, cy2, color, layer);
         b.addTriangle(bx, by, dx2, dy2, cx2, cy2, color, layer);
         ax = cx2; ay = cy2; bx = dx2; by = dy2;
       }
     } else {
-      const [ox, oy] = apply(t, cx, cy);
+      // 弧の点を要から扇に結んで塗る。要は、扇形・全円では中心、弓形では弧の始点（弦と弧のあいだを塗る）、
+      // 外側円弧では両端の接線の交点（弧と 2 本の接線のあいだ、隅の丸面の外側を塗る）
+      let [ox, oy] = apply(t, cx, cy);
+      if (s.penStyle === 101 && kind === 5) {
+        [ox, oy] = pt(start, radius);
+      } else if (s.penStyle === 101 && kind === -1 && Math.cos(sweep / 2) > 1e-6) {
+        // 楕円でも、円で求めた交点を同じ変換で移せば接線の交点になる
+        [ox, oy] = pt(start + sweep / 2, radius / Math.cos(sweep / 2));
+      }
       let [px, py] = pt(start, radius);
       for (let i = 1; i <= n; i++) {
         const th = start + (sweep * i) / n;
         const [qx, qy] = pt(th, radius);
-        b.addTriangle(ox, oy, px, py, qx, qy, color, layer);
+        // 弓形の最初の三角形は要と始点が重なって面積がないので出さない
+        if (!(s.penStyle === 101 && kind === 5 && i === 1)) b.addTriangle(ox, oy, px, py, qx, qy, color, layer);
         px = qx; py = qy;
       }
     }
@@ -665,7 +755,7 @@ function emitDim(b: Builder, d: JwwDim, t: Xform, inherit: number | null, block:
   // 寸法線と寸法値が縮尺の違うグループに載っていることがある。寸法値と合うのは寸法そのもののグループ
   const group = layerOf(d, inherit) >> 4;
   const lineLayer = layerOf(d.line, inherit);
-  const lineColor = b.palette.entry(d.line.penColor);
+  const lineColor = b.palette.entry(d.line.penColor, undefined, true, d.line.penStyle === AUX_LINE_STYLE);
   const lineEnt = b.begin(KIND.dim, d.line.penColor, d.line.penStyle, lineLayer, lineColor, block, -1, group);
   const len = lineSegment(b, d.line, t, true, lineColor, lineLayer);
   b.end(len);
@@ -674,7 +764,7 @@ function emitDim(b: Builder, d: JwwDim, t: Xform, inherit: number | null, block:
     // 補助線は計測の吸着先にしない。レイヤと線色はそれぞれが持つものに従うので、図形としても分けておく
     for (const aux of [d.extras.aux1, d.extras.aux2]) {
       const auxLayer = layerOf(aux, inherit);
-      const auxColor = b.palette.entry(aux.penColor, undefined, false);
+      const auxColor = b.palette.entry(aux.penColor, undefined, false, aux.penStyle === AUX_LINE_STYLE);
       members.push(b.begin(KIND.dimAux, aux.penColor, aux.penStyle, auxLayer, auxColor, block, -1, group));
       b.end(lineSegment(b, aux, t, false, auxColor, auxLayer));
     }
@@ -703,10 +793,11 @@ function emitEntities(
     if (p.temporary) continue;
     const [x, y] = apply(t, p.x, p.y);
     const layer = layerOf(p, inherit);
-    // 実点は線として描かないので、色の図形数には数えない
-    const color = b.palette.entry(p.penColor, undefined, false);
+    const color = b.palette.entry(p.penColor);
     b.begin(KIND.point, p.penColor, 0, layer, color, block);
     b.addPoint(x, y, layer, color);
+    // 画面にも小さな丸で描く（寸法の端の●など）
+    b.addDot(x, y, b.pointRadius(p.penColor), color, layer);
     b.end();
     b.track(x, y);
   }
@@ -739,7 +830,7 @@ function emitEntities(
 }
 
 export function buildScene(doc: JwwDocument): Scene {
-  const b = new Builder(new Palette(doc.header), doc.blockDefs);
+  const b = new Builder(new Palette(doc.header), doc.blockDefs, doc.header);
   emitEntities(b, doc.entities, IDENTITY, 0, new Set(), null, -1);
   if (b.truncated) {
     doc.warnings.push('図形が多すぎたため、描画データを途中で打ち切りました');
@@ -763,6 +854,12 @@ export function buildScene(doc: JwwDocument): Scene {
     lineLayer: b.lineLayer.trim(),
     lineSnap: b.lineSnap.trim(),
     lineEntity: b.lineEntity.trim(),
+    lineStyle: b.lineStyle.trim(),
+    lineDist: b.lineDist.trim(),
+    dashes: dashTable(doc.header),
+    dotPos: b.dotPos.trim(),
+    dotColor: b.dotColor.trim(),
+    dotLayer: b.dotLayer.trim(),
     triPos: b.triPos.trim(),
     triColor: b.triColor.trim(),
     triLayer: b.triLayer.trim(),
@@ -801,6 +898,32 @@ export function buildScene(doc: JwwDocument): Scene {
   };
   scene.fitBounds = fitScene(scene, () => true);
   return scene;
+}
+
+/**
+ * 線種ごとの画面表示の模様（Scene.dashes）。Jw_cad の基本設定の「線種」に保存されているものを使う。
+ * パターンは 32 ビットで、上位のビットから「1 周期のビット数」ぶんを繰り返し、1 のビットを描く。
+ * 1 ビットの長さは「ピッチ」のドット数（Jw_cad は画面のドット単位で描くので、拡大・縮小しても模様の大きさは変わらない）。
+ * SXF 線種（30〜62）も、Jw_cad が画面表示用に作ったパターンを持っているのでそれを使う。
+ * ランダム線（11〜15）は波打つ線で破線ではないので実線にする。模様が読めない・空の線種も、線が消えないよう実線にする
+ */
+function dashTable(h: JwwHeader): Uint32Array {
+  const out = new Uint32Array(DASH_STYLES * 2);
+  for (let s = 2; s < DASH_STYLES; s++) {
+    if (s >= 11 && s <= 15) continue;
+    const t = h.lineTypes[s];
+    if (!t) continue;
+    const unit = t.unit >>> 0;
+    const pitch = t.pitch >>> 0;
+    if (unit < 1 || unit > 32 || pitch < 1 || pitch > 64) continue;
+    const bits = (t.pattern >>> 0) >>> (32 - unit);
+    const full = unit === 32 ? 0xffffffff : 2 ** unit - 1;
+    // 描くビットが 1 つもない、またはすべて描く模様は実線
+    if (bits === 0 || bits === full) continue;
+    out[s * 2] = t.pattern >>> 0;
+    out[s * 2 + 1] = unit | (pitch << 8);
+  }
+  return out;
 }
 
 /**

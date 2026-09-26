@@ -1,5 +1,5 @@
 import type { Reader } from './reader.ts';
-import type { JwwHeader, JwwLayerGroup } from './types.ts';
+import type { JwwHeader, JwwLayerGroup, JwwLineType } from './types.ts';
 
 /** SXF 拡張色の色番号オフセット */
 const SXCOL_EXT = 100;
@@ -84,14 +84,30 @@ export function parseHeader(r: Reader): JwwHeader {
   for (let i = 0; i <= 9; i++) {
     penColors.push({ rgb: r.u32(), width: r.u32() });
   }
+  const pointRadius: number[] = [];
   for (let i = 0; i <= 9; i++) {
-    r.skip(4 + 4 + 8); // プリンタ出力色・線幅・実点半径
+    r.skip(4 + 4); // プリンタ出力色・線幅
+    pointRadius.push(r.f64()); // 実点半径
   }
-  for (let i = 2; i <= 9; i++) r.skip(4 * 4);   // 線種 2-9
-  for (let i = 11; i <= 15; i++) r.skip(4 * 5); // ランダム線 1-5
-  for (let i = 16; i <= 19; i++) r.skip(4 * 4); // 倍長線種 6-9
+  // 線種の画面表示のパターン。線種番号を添字にして持つ
+  const lineTypes: JwwLineType[] = [];
+  for (let i = 2; i <= 9; i++) {
+    lineTypes[i] = { pattern: r.u32(), unit: r.u32(), pitch: r.u32(), printPitch: r.u32() };
+  }
+  for (let i = 11; i <= 15; i++) {
+    // ランダム線は 1 ユニットのドット数の代わりに振れ幅を持つ
+    const pattern = r.u32();
+    r.skip(4); // 振れ幅
+    const pitch = r.u32();
+    r.skip(4); // プリンタ出力の振れ幅
+    lineTypes[i] = { pattern, unit: 1, pitch, printPitch: r.u32() };
+  }
+  for (let i = 16; i <= 19; i++) {
+    lineTypes[i] = { pattern: r.u32(), unit: r.u32(), pitch: r.u32(), printPitch: r.u32() };
+  }
 
-  r.skip(4 * 11); // 実点描画〜表示のみレイヤ非出力 の各フラグ
+  const drawPointRadius = r.u32() !== 0; // 実点を画面描画時の指定半径で描画
+  r.skip(4 * 10); // 実点をプリンタ出力時に指定半径で書く〜表示のみレイヤ非出力 の各フラグ
   r.skip(4);      // 作図時間
   r.skip(4);      // 2.5D 視点設定済フラグ
   r.skip(4 * 3);  // 2.5D 視点水平角
@@ -111,7 +127,10 @@ export function parseHeader(r: Reader): JwwHeader {
       sxfColorNames.push(r.str()); // 線色名
       r.skip(4 + 4 + 8); // プリンタ出力色・線幅・点半径
     }
-    for (let n = 0; n <= 32; n++) r.skip(4 * 4); // SXF 線種パターン
+    for (let n = 0; n <= 32; n++) {
+      // SXF 線種の画面表示用のパターン（線種番号 30 から）
+      lineTypes[30 + n] = { pattern: r.u32(), unit: r.u32(), pitch: r.u32(), printPitch: r.u32() };
+    }
     for (let n = 0; n <= 32; n++) {
       sxfLineTypeNames.push(r.str()); // 線種名
       r.skip(4);     // セグメント数
@@ -137,6 +156,9 @@ export function parseHeader(r: Reader): JwwHeader {
     sxfColors,
     sxfColorNames,
     sxfLineTypeNames,
+    lineTypes,
+    pointRadius,
+    drawPointRadius,
     zoom,
     originX,
     originY,

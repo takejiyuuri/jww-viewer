@@ -80,8 +80,31 @@ export function displayColor(
 }
 
 /**
+ * 単色表示のときの塗りの濃さ（背景から単色の線の色へ寄せる割合）。元の色が淡いほど MIN、濃いほど MAX に近づける。
+ * 線や文字と同じ色でべた塗りにすると、塗りの上の室名や寸法が読めなくなるので、紙に刷った網掛けのように淡くする
+ */
+const MONO_FILL_MIN = 0.14;
+const MONO_FILL_MAX = 0.28;
+
+/** 塗り（ソリッド）の表示色。単色のときは淡い灰色、そうでなければ線と同じ */
+export function fillColor(
+  r: number, g: number, b: number, s: DisplaySettings,
+): [number, number, number] {
+  if (!s.mono) return displayColor(r, g, b, s);
+  const bg = BACKGROUND_RGB[s.background];
+  const ink = MONO_RGB[s.background];
+  const k = MONO_FILL_MIN + (MONO_FILL_MAX - MONO_FILL_MIN) * (1 - luminance(r, g, b));
+  return [
+    Math.round(bg[0] + (ink[0] - bg[0]) * k),
+    Math.round(bg[1] + (ink[1] - bg[1]) * k),
+    Math.round(bg[2] + (ink[2] - bg[2]) * k),
+  ];
+}
+
+/**
  * 描画に使うパレット（1 色 4 byte の RGBA）を作る。
  * A は表示する色なら 255、隠す色なら 0。
+ * 色番号の数だけ線・文字の色を並べ、そのあとに同じ数だけ塗りの色を並べる（塗りは色番号 + 色の数で引く）。
  */
 export function buildPalette(
   colors: Uint8Array,
@@ -90,13 +113,21 @@ export function buildPalette(
   s: DisplaySettings,
 ): Uint8Array {
   const n = colorGroup.length;
-  const out = new Uint8Array(Math.max(1, n) * 4);
+  const out = new Uint8Array(Math.max(1, n * 2) * 4);
   for (let i = 0; i < n; i++) {
-    const [r, g, b] = displayColor(colors[i * 3], colors[i * 3 + 1], colors[i * 3 + 2], s);
+    const r0 = colors[i * 3], g0 = colors[i * 3 + 1], b0 = colors[i * 3 + 2];
+    const a = hidden.has(colorGroup[i]) ? 0 : 255;
+    const [r, g, b] = displayColor(r0, g0, b0, s);
     out[i * 4] = r;
     out[i * 4 + 1] = g;
     out[i * 4 + 2] = b;
-    out[i * 4 + 3] = hidden.has(colorGroup[i]) ? 0 : 255;
+    out[i * 4 + 3] = a;
+    const [fr, fg, fb] = fillColor(r0, g0, b0, s);
+    const j = (n + i) * 4;
+    out[j] = fr;
+    out[j + 1] = fg;
+    out[j + 2] = fb;
+    out[j + 3] = a;
   }
   return out;
 }
