@@ -1,7 +1,7 @@
 // 面積・体積・角度の計算と、高さの入力の読み取りを確かめる（図面は使わない）。
 import {
-  MEASURE_MODES, angleAt, formatAngle, formatArea, formatVolume, inclination, measureAngles, measureArea, measureLengths,
-  parseLength, polygonCenter, type MeasurePoint,
+  MEASURE_MODES, angleAt, formatAngle, formatArea, formatLength, formatVolume, inclination, measureAngles, measureArea,
+  measureLengths, parseLength, polygonCenter, type MeasurePoint,
 } from '../src/measure/measure.ts';
 import { MEASURE_COLORS, measureInk } from '../src/measure/colors.ts';
 
@@ -84,6 +84,14 @@ const pt = (x: number, y: number, scale: number | null = null): MeasurePoint => 
   // 頂点が別の辺にちょうど乗っているだけなら交差としない
   const touch = measureArea([pt(0, 0), pt(10, 0), pt(10, 10), pt(5, 0), pt(0, 10)], 1);
   if (touch.crossing) fail('頂点が辺に乗るだけ', touch);
+  // 頂点が別の辺にちょうど乗り、そこを突き抜けて反対側へ続く（8 の字）は交差
+  const through = measureArea([pt(0, 0), pt(10, 0), pt(10, 10), pt(5, 0), pt(5, -10), pt(0, -10)], 1);
+  if (!through.crossing) fail('頂点で辺を突き抜ける 8 の字は交差', through);
+  // 同じ点を 2 回通る 8 の字：通り道が横切れば交差、触れるだけなら交差しない
+  if (!measureArea([pt(0, 0), pt(10, 0), pt(5, 5), pt(0, 10), pt(10, 10), pt(5, 5)], 1).crossing) fail('同じ点で横切る 8 の字は交差');
+  if (measureArea([pt(0, 0), pt(10, 0), pt(5, 5), pt(10, 10), pt(0, 10), pt(5, 5)], 1).crossing) fail('同じ点で触れるだけなら交差しない');
+  // 辺の途中に点を置いただけの四角（T 字の取り合いの点）は交差しない
+  if (measureArea([pt(0, 0), pt(5, 0), pt(10, 0), pt(10, 10), pt(0, 10)], 1).crossing) fail('辺の途中の点は交差しない');
   // 3 点は交差しようがない
   if (measureArea([pt(0, 0), pt(10, 0), pt(0, 10)], 1).crossing) fail('三角形は交差しない');
   console.log(`辺の交差: ${failures === before ? 'OK' : 'NG'}`);
@@ -124,6 +132,13 @@ const pt = (x: number, y: number, scale: number | null = null): MeasurePoint => 
     // 0.01 m³ 未満は cm³（m³ の小数 3 桁では有効数字が 1 桁になる）
     [formatVolume(1.4e6), '1400.0 cm³'],
     [formatVolume(5e5), '500.0 cm³'],
+    // 丸めると境目に届く値は、上の単位で出す（「1000.0 mm」「10000.0 mm²」にしない）
+    [formatLength(999.94), '999.9 mm'],
+    [formatLength(999.96), '1.000 m'],
+    [formatLength(-999.96), '-1.000 m'],
+    [formatLength(1000), '1.000 m'],
+    [formatArea(9999.95), '0.010 m²'],
+    [formatVolume(9999950), '0.010 m³'],
   ];
   for (const [got, want] of cases) if (got !== want) fail('表し方', { got, want });
   console.log(`表し方: ${failures === before ? 'OK' : 'NG'}`);

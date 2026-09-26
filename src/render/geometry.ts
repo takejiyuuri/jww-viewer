@@ -24,7 +24,7 @@ export interface Scene {
   lineColor: Uint16Array;
   /** 線分ごとのレイヤ（0〜255）。縮尺の判定には上位 4 ビットのレイヤグループを使う */
   lineLayer: Uint8Array;
-  /** 線分ごとのスナップ可否（寸法の補助線などは対象外） */
+  /** 線分ごとのスナップの扱い（SNAP_FLAG のビット。0 なら寸法の補助線などの対象外） */
   lineSnap: Uint8Array;
   /** 線分ごとの、元になった図形の番号（entities の添字） */
   lineEntity: Uint32Array;
@@ -58,7 +58,34 @@ export interface Scene {
   entities: SceneEntities;
   /** 部品（ブロック）の名前。entities.block の添字 */
   blockNames: string[];
+  /**
+   * 円・円弧・楕円（弧）の元の式。CURVE_STRIDE 個ずつ [図形の番号, cx, cy, ux, uy, vx, vy, 開始角, 円弧角] と並ぶ。
+   * 曲線上の点は (cx, cy) + (ux, uy)·cosθ + (vx, vy)·sinθ（θ は開始角から円弧角ぶん）。
+   * 吸着で折れ線ではなく曲線そのものの上の点（線上・交点・円弧の中点）を求めるのに使う
+   */
+  curves: Float64Array;
 }
+
+/** curves の 1 件あたりの数 */
+export const CURVE_STRIDE = 9;
+
+/**
+ * lineSnap のビット。
+ * 円・円弧を折った線分の継ぎ目や真ん中は図面上の点ではないので、端点・中点にはしない
+ */
+export const SNAP_FLAG = {
+  /** 吸着先にする（線上・交点） */
+  on: 1,
+  /** 始点が図形の本当の端 */
+  start: 2,
+  /** 終点が図形の本当の端 */
+  end: 4,
+  /** 線分の真ん中が図形の中点 */
+  mid: 8,
+} as const;
+
+/** 直線（寸法線を含む）の線分。両端と真ん中に吸着する */
+const SNAP_LINE = SNAP_FLAG.on | SNAP_FLAG.start | SNAP_FLAG.end | SNAP_FLAG.mid;
 
 export interface ColorGroup {
   /** Jw_cad の線色番号。任意色は 10、SXF 拡張色は 100 以上 */
@@ -175,6 +202,7 @@ const MAX_TRI_FLOATS = 1_000_000 * 6;
 /**
  * 円弧を折れ線にするときの許容誤差（図面上の mm）。
  * 弦と弧の最大の隔たりがこれ以内になるように分割数を決める。
+ * 吸着は元の式（Scene.curves）で曲線そのものの上に求めるので、この誤差はほぼ描画にだけ出る。
  */
 const ARC_TOLERANCE = 0.02;
 
@@ -335,6 +363,8 @@ class Builder {
   snapPointLayer = new Buf(u8);
   snapPointColor = new Buf(u16);
   snapPointEntity = new Buf(u32);
+  /** 円・円弧・楕円の元の式（Scene.curves と同じ並び） */
+  curves: number[] = [];
   layerCounts = new Uint32Array(256);
 
   // 図形ごとの属性
@@ -424,9 +454,10 @@ class Builder {
     if (y > this.maxY) this.maxY = y;
   }
 
+  /** snap は true なら直線（両端と真ん中に吸着）、false なら吸着しない、数なら SNAP_FLAG のビット */
   addSegment(
     x1: number, y1: number, x2: number, y2: number,
-    color: number, layer: number, snap: boolean,
+    color: number, layer: number, snap: boolean | number,
   ): void {
     // 壊れたファイルでは座標が NaN や Infinity になりうる。
     // そのまま入れると範囲計算も索引も総崩れになるので、ここで落とす。
@@ -435,7 +466,7 @@ class Builder {
     this.linePos.push(x1, y1, x2, y2);
     this.lineColor.push(color);
     this.lineLayer.push(layer);
-    this.lineSnap.push(snap ? 1 : 0);
+    this.lineSnap.push(snap === true ? SNAP_LINE : snap === false ? 0 : snap);
     this.lineEntity.push(this.cur);
     this.track(x1, y1);
     this.track(x2, y2);
@@ -462,6 +493,14 @@ class Builder {
     this.snapPointLayer.push(layer);
     this.snapPointColor.push(color);
     this.snapPointEntity.push(this.cur);
+  }
+
+  /** いま書き出している図形（円・円弧）の元の式を残す。式が壊れていれば残さない（吸着は折れ線のまま） */
+  addCurve(cx: number, cy: number, ux: number, uy: number, vx: number, vy: number, start: number, sweep: number): void {
+    const v = [cx, cy, ux, uy, vx, vy, start, sweep];
+    if (!v.every(Number.isFinite)) return;
+    if (!(Math.abs(ux * vy - uy * vx) > 1e-9 * (ux * ux + uy * uy + vx * vx + vy * vy))) return;
+    this.curves.push(this.cur, ...v);
   }
 }
 
@@ -492,6 +531,8 @@ function emitArc(b: Builder, a: JwwArc, t: Xform, inherit: number | null, block:
   const ry = a.radius * (a.flatness || 1);
 
   b.begin(a.isCircle ? KIND.circle : KIND.arc, a.penColor, a.penStyle, layer, color, block);
+  // 折れ線の継ぎ目や弦の真ん中は図面上の点ではないので、端点にするのは円弧の両端だけ
+  const ends = a.isCircle ? 0 : 1;
   let px = 0, py = 0;
   let length = 0;
   for (let i = 0; i <= n; i++) {
@@ -500,7 +541,8 @@ function emitArc(b: Builder, a: JwwArc, t: Xform, inherit: number | null, block:
     const ly = ry * Math.sin(th);
     const [x, y] = apply(t, a.cx + lx * cos - ly * sin, a.cy + lx * sin + ly * cos);
     if (i > 0) {
-      b.addSegment(px, py, x, y, color, layer, true);
+      const snap = SNAP_FLAG.on | (i === 1 ? SNAP_FLAG.start * ends : 0) | (i === n ? SNAP_FLAG.end * ends : 0);
+      b.addSegment(px, py, x, y, color, layer, snap);
       length += Math.hypot(x - px, y - py);
     }
     px = x;
@@ -508,6 +550,13 @@ function emitArc(b: Builder, a: JwwArc, t: Xform, inherit: number | null, block:
   }
   const [cx, cy] = apply(t, a.cx, a.cy);
   b.addPoint(cx, cy, layer, color);
+  // 吸着で使う元の式。軸の向きの 2 本 (半径, 0)・(0, 短い半径) を傾けてから、部品の変換を掛ける
+  b.addCurve(
+    cx, cy,
+    t.a * a.radius * cos + t.c * a.radius * sin, t.b * a.radius * cos + t.d * a.radius * sin,
+    -t.a * ry * sin + t.c * ry * cos, -t.b * ry * sin + t.d * ry * cos,
+    a.startAngle, sweep,
+  );
   const [major, minor] = ellipseAxes(t, a.radius, ry, a.tilt);
   b.end(major, arcLength(a, t, sweep, ry, cos, sin, major, minor, length), minor);
 }
@@ -798,6 +847,7 @@ export function buildScene(doc: JwwDocument): Scene {
       rgb: b.entRgb.trim(),
     },
     blockNames: b.blockNames,
+    curves: Float64Array.from(b.curves),
   };
   scene.fitBounds = fitScene(scene, () => true);
   return scene;
