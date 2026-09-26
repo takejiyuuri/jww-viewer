@@ -162,6 +162,22 @@ html.standalone #shell {
   background: #2a2d38;
 }
 
+/*
+ * 押せる所は見た目より少し広げ、指先（44pt 前後）で押せるようにする。
+ * 枠（1px）の外へ上下 5px、左右は隣のボタンとの間（8px）の半分の 4px まで
+ */
+.chip,
+.icon-btn {
+  position: relative;
+}
+
+.chip::after,
+.icon-btn::after {
+  content: "";
+  position: absolute;
+  inset: -6px -5px;
+}
+
 /* ---- 計測・属性のパネル ---- */
 /* 下のツールバーの上に浮かべる。中にボタンがあるので触れるようにしておく */
 .panel {
@@ -212,6 +228,20 @@ html.standalone #shell {
   width: 36px;
 }
 
+/*
+ * 戻す・消去の押せる所は、その間と下の段（距離・面積…）の方へは広げない。
+ * 消去（点をすべて消す）を押し間違えないよう、間は押しても何も起きない所のままにする
+ */
+#btn-undo::after {
+  right: -1px;
+  bottom: -1px;
+}
+
+#btn-clear::after {
+  left: -1px;
+  bottom: -1px;
+}
+
 .readout-top .detail {
   flex: 1;
   min-width: 0;
@@ -247,6 +277,8 @@ html.standalone #shell {
 /* 縮尺の数字の桁が変わっても、隣の直交が横にずれないよう幅を決めておく */
 .readout-bar #btn-scale {
   width: 60px;
+  /* 文字を切り詰めるので押せる所を外へ広げられない。隣のボタンと同じ高さにして押しやすくする */
+  min-height: 36px;
   padding-left: 4px;
   padding-right: 4px;
   text-align: center;
@@ -308,9 +340,18 @@ html.standalone #shell {
   background: var(--panel-solid);
 }
 
+/*
+ * 色の一覧を開いているあいだは、計測パネルをシート（縮めたレイヤ一覧）より前に出す。
+ * 縮めたレイヤ一覧はパネルのすぐ上に載るので、上に浮かべた色の一覧と同じ所に来る
+ */
+#readout.colors-open {
+  z-index: 21;
+}
+
 .color-pop button {
   appearance: none;
-  flex: 0 1 34px;
+  position: relative;
+  flex: 0 1 40px;
   min-width: 0;
   aspect-ratio: 1;
   border-radius: 50%;
@@ -318,6 +359,14 @@ html.standalone #shell {
   padding: 0;
   background: var(--c);
   box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.35);
+}
+
+/* 押せる所は丸の間（6px）の半分まで広げる */
+.color-pop button::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
 }
 
 .color-pop button.on {
@@ -334,12 +383,20 @@ html.standalone #shell {
 }
 
 .readout-bar .mode-seg button {
+  position: relative;
   flex: 1 1 0;
   min-width: 0;
   white-space: nowrap;
   padding: 7px 2px;
   font-size: 13px;
   border-radius: 8px;
+}
+
+/* 見た目の高さ（パネルの高さ）は変えずに、押せる所だけ上下に広げる。左右は隣との間（2px）の半分まで */
+.readout-bar .mode-seg button::after {
+  content: "";
+  position: absolute;
+  inset: -5px -1px;
 }
 
 .icon-btn {
@@ -774,6 +831,27 @@ body[data-bg="light"] #inspect-panel {
   color: var(--accent);
 }
 
+/* プライバシーポリシーとサポートへの案内（図面情報と最初の画面の下） */
+.about-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  margin: 18px 0 0;
+  font-size: 13px;
+}
+
+.welcome-body .about-links {
+  margin: 14px 0 0;
+  font-size: 13px;
+}
+
+.about-links a {
+  /* 指で押しやすいよう、行の高さいっぱいを押せるようにする */
+  display: inline-block;
+  padding: 8px 0;
+  color: var(--accent);
+}
+
 .hidden {
   display: none !important;
 }
@@ -799,6 +877,23 @@ body[data-bg="light"] .title {
 
 body[data-bg="light"] #toolbar {
   background: linear-gradient(0deg, rgba(255, 255, 255, 0.94), rgba(255, 255, 255, 0));
+}
+
+/*
+ * ホーム画面から開いた Web 版では、ステータスバーの文字がいつも白（index.html の black-translucent。起動したときにしか読まれない）。
+ * 白背景のときは、ステータスバーの所にだけ暗い帯を敷いて時刻や電池を読めるようにする（ボタンを隠しているときも）。
+ * iOS アプリは背景に合わせて文字を黒にするので敷かない。横向きはステータスバーが出ない（safe-top が 0）
+ */
+html.standalone:not(.native) body[data-bg="light"]::before {
+  content: "";
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--safe-top);
+  background: var(--bg);
+  z-index: 50;
+  pointer-events: none;
 }
 
 /* 白い図面の上では、ボタンに影を落として浮かせる */
@@ -873,6 +968,12 @@ body[data-bg="light"] .panel {
   display: flex;
   gap: 6px;
   flex-shrink: 0;
+}
+
+/* 間が 6px なので、押せる所の左右は間の半分（枠の外 3px）までにして、隣と重ねない */
+.section-actions .chip::after {
+  left: -4px;
+  right: -4px;
 }
 
 .chip.small {
@@ -1017,6 +1118,15 @@ body[data-bg="light"] .panel {
   touch-action: none;
 }
 
+/*
+ * 属性のパネルの見出しは、パネルの上の余白（つまみのある所）まで広げ、つまみを触っても見出しをつかめるようにする。
+ * 見た目の位置は変えない
+ */
+#inspect-panel .panel-top {
+  margin-top: -10px;
+  padding-top: 10px;
+}
+
 /* 指について動かしたあと、元の位置へ戻るとき */
 #layer-panel,
 #inspect-panel {
@@ -1032,6 +1142,19 @@ body[data-bg="light"] .panel {
 /* 縮めた属性のパネルは、見出しの下の余白も詰める */
 #inspect-panel.collapsed .panel-top {
   margin-bottom: 0;
+}
+
+/*
+ * 縮めたレイヤ一覧は、見出しだけを下の計測・属性のパネル（--panel-stack は main.ts が測る）とツールバーの上に浮かべ、
+ * ツールバーもパネルも使えるようにする（横向きは下の @media で、右下のパネルの上に載せる）
+ */
+#layer-panel.collapsed {
+  left: calc(var(--safe-left) + 10px);
+  right: calc(var(--safe-right) + 10px);
+  bottom: calc(var(--bar-height) + 6px + var(--panel-stack, 0px));
+  padding-bottom: 0;
+  border: 1px solid var(--line);
+  border-radius: 16px;
 }
 
 /* ---- ボタンやパネルを隠して、図面を画面いっぱいに見る ---- */
@@ -1062,8 +1185,8 @@ body.ui-hidden #color-pop {
   top: calc(var(--safe-top) + 8px);
   right: calc(var(--safe-right) + 10px);
   z-index: 30;
-  width: 38px;
-  height: 38px;
+  width: 44px;
+  height: 44px;
   align-items: center;
   justify-content: center;
   appearance: none;
@@ -1284,6 +1407,24 @@ body.ui-hidden .ui-show {
 
   #readout .readout-top .detail {
     font-size: 11px;
+  }
+
+  /*
+   * レイヤ一覧の行：幅が足りないときも、レイヤ名は数文字残し、「Jw で非表示」の印と図形の数の方を詰める
+   * （名前が消えると、どのレイヤを切り替えているのか分からなくなる）
+   */
+  .l-row .lname {
+    flex: 1 0 3em;
+  }
+
+  .lflag {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .count {
+    min-width: auto;
   }
 }
 
@@ -1520,27 +1661,55 @@ body.ui-hidden .ui-show {
     right: var(--edge-right);
     top: calc(var(--safe-top) + 56px);
     bottom: var(--bar-bottom);
-    /* 図面を隠しすぎないよう、幅は控えめにする */
-    width: min(340px, 44%);
+    /*
+     * 図面を隠しすぎないよう、幅は控えめにする。
+     * 幅の狭い横画面（iPhone SE など）でも、レイヤ名とスイッチが収まる幅は取る
+     */
+    width: max(290px, min(340px, 44%));
     max-height: none;
     padding-bottom: 0;
     border: 1px solid var(--line);
     border-radius: 16px;
   }
 
-  /* 縮めたレイヤ一覧は、右下の計測・属性のパネル（--panel-stack は main.ts が測る）の上に載せ、どちらも使えるようにする */
+  /*
+   * 縮めたレイヤ一覧は、右下の計測・属性のパネル（--panel-stack は main.ts が測る）の上に載せ、どちらも使えるようにする。
+   * 幅は下のパネルにそろえる
+   */
   #layer-panel.collapsed {
     top: auto;
+    left: auto;
+    right: var(--edge-right);
     bottom: calc(var(--bar-bottom) + var(--panel-stack, 0px));
+    width: max(300px, min(360px, 48vw));
   }
 
   /*
-   * 知らせは、右側に出るシート（幅 min(340px, 44%)）とツールバーを除いた所の真ん中に出す。
+   * 縮めたレイヤ一覧を載せているあいだは、下のパネルを低くして（中は送れる）、一覧の見出しが上のバーにかからないようにする。
+   * --layer-head は縮めた一覧の高さで、main.ts が測る
+   */
+  #shell:has(> #layer-panel.collapsed:not(.hidden)) .panel,
+  #shell:has(> #layer-panel.collapsed:not(.hidden)) #inspect-panel {
+    max-height: calc(100% - var(--safe-top) - 56px - var(--bar-bottom) - var(--layer-head, 62px) - 8px);
+  }
+
+  /*
+   * 縮めていないシートを開いているあいだは、その下の計測・属性のパネルを見せない。
+   * パネルの方がシートより幅が広いので、シートの左に端がはみ出して見え、はみ出した所のボタンが押せてしまう。
+   * 大きさは残す（縮めたレイヤ一覧を載せる高さの測り方は変えない）
+   */
+  #shell:has(> .sheet:not(.hidden):not(.collapsed)) #readout,
+  #shell:has(> .sheet:not(.hidden):not(.collapsed)) #inspect-panel {
+    visibility: hidden;
+  }
+
+  /*
+   * 知らせは、右側に出るシート（幅 max(290px, min(340px, 44%))）とツールバーを除いた所の真ん中に出す。
    * シートを開いていても見出しに重ならない
    */
   .hint {
     --hint-from: var(--edge-left);
-    --hint-to: calc(100% - var(--edge-right) - min(340px, 44%) - 10px);
+    --hint-to: calc(100% - var(--edge-right) - max(290px, min(340px, 44%)) - 10px);
     left: calc((var(--hint-from) + var(--hint-to)) / 2);
     max-width: calc(var(--hint-to) - var(--hint-from));
     text-align: center;
