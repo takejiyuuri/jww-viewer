@@ -81,14 +81,16 @@
   <!-- 色の選択。操作の段の上に浮かべる（パネルの高さは変えない） -->
   <div id="color-pop" class="color-pop hidden" role="group" aria-label="計測の色"></div>
   <div class="readout-top">
-    <span id="readout-value" class="readout-value">—</span>
+    <span id="readout-value" class="readout-value" aria-live="polite">—</span>
     <div id="readout-detail" class="detail"></div>
     <button id="btn-undo" class="icon-btn" aria-label="1 点戻す"><svg class="ico"><use href="#i-undo"/></svg></button>
     <button id="btn-clear" class="icon-btn" aria-label="すべて消去"><svg class="ico"><use href="#i-clear"/></svg></button>
   </div>
   <div class="readout-bar">
-    <button id="btn-scale" class="chip small" aria-label="計測に使う縮尺">1/—</button>
-    <button id="btn-ortho" class="pill on" aria-pressed="true" aria-label="水平・垂直に拘束"><svg class="ico"><use href="#i-ortho"/></svg><span class="label">直交</span></button>
+    <!-- 読み上げでは「計測に使う縮尺 1/100」と、いまの縮尺（ボタンの文字）まで読む -->
+    <span id="scale-name" hidden>計測に使う縮尺</span>
+    <button id="btn-scale" class="chip small" aria-labelledby="scale-name btn-scale">1/—</button>
+    <button id="btn-ortho" class="pill on" aria-pressed="true" aria-label="直交（水平・垂直に拘束）"><svg class="ico"><use href="#i-ortho"/></svg><span class="label">直交</span></button>
     <button id="btn-color" class="icon-btn color-btn" aria-label="計測の色" aria-haspopup="true" aria-expanded="false"><span class="color-dot"></span></button>
     <div id="seg-mode" class="segmented mode-seg" role="group" aria-label="計測の種類">
       <button data-mode="length" aria-pressed="true" class="on">距離</button>
@@ -149,7 +151,7 @@
   <button id="btn-fit" class="tool" aria-label="全体を表示"><svg class="ico"><use href="#i-fit"/></svg><span>全体</span></button>
 </nav>
 
-<div id="hint" class="hint hidden"></div>
+<div id="hint" class="hint hidden" role="status"></div>
 
 <div id="loading" class="overlay-panel hidden">
   <div class="spinner"></div>
@@ -248,6 +250,11 @@
       <li>「属性」では図形をタップすると、レイヤ・線色・線種・長さが分かります</li>
       <li>「レイヤ」でレイヤごとに表示を切り替えられます。最初は Jw_cad と同じ表示です</li>
     </ul>
+    <!-- 図面情報（上のバーの i）にも同じ案内を出す。iOS アプリでは Safari で開く -->
+    <p class="about-links">
+      <a href="https://takejiyuuri.github.io/jww-viewer/privacy.html" target="_blank" rel="noopener">プライバシーポリシー</a>
+      <a href="https://takejiyuuri.github.io/jww-viewer/support.html" target="_blank" rel="noopener">サポート・お問い合わせ</a>
+    </p>
   </div>
 </div>
 </div>

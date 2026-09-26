@@ -108,6 +108,14 @@ for (const [name, opts] of [
       dlg.ok <= dlg.h * 0.5 && dlg.input <= dlg.h * 0.5 && dlg.inside, dlg);
     if (name === '横 667') await page.screenshot({ path: path.join(outDir, 'e2e-modes-land-dialog.png') });
     await page.click('#btn-height-cancel');
+    // 距離から「体積」を押して「やめる」を選んだら、距離のまま（体積には切り替えない）
+    const kept = await page.evaluate(() => ({
+      mode: [...document.querySelectorAll('#seg-mode button.on')].map((b) => b.dataset.mode).join(),
+      prefs: JSON.parse(localStorage.getItem('jww-viewer:measure') ?? 'null'),
+      dialog: !document.getElementById('height-dialog').classList.contains('hidden'),
+    }));
+    check(`${name}：「体積」を押して高さの窓で「やめる」を選ぶと、元の「距離」のまま`,
+      kept.mode === 'length' && (kept.prefs?.mode ?? 'length') === 'length' && !kept.dialog, kept);
   }
   await ctx.close();
 }

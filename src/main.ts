@@ -35,6 +35,15 @@ const MAGNIFY = 3.5;
 
 const PAPER_NAMES = ['A0', 'A1', 'A2', 'A3', 'A4', '', '', '', '2A', '3A', '4A', '5A', '10m', '50m', '100m'];
 
+/**
+ * 図面情報の下に出す、プライバシーポリシーとサポートへの案内。
+ * 新しいタブ（iOS アプリでは Capacitor が外のサイトとして Safari）で開き、図面の画面はそのまま残す
+ */
+const ABOUT_LINKS = '<p class="about-links">'
+  + '<a href="https://takejiyuuri.github.io/jww-viewer/privacy.html" target="_blank" rel="noopener">プライバシーポリシー</a>'
+  + '<a href="https://takejiyuuri.github.io/jww-viewer/support.html" target="_blank" rel="noopener">サポート・お問い合わせ</a>'
+  + '</p>';
+
 type Tool = 'measure' | 'inspect';
 
 /** 図面の見えている範囲を狭めているものの幅（CSS ピクセル） */
@@ -164,6 +173,8 @@ class App {
   private idleTimer = 0;
   /** 色の一覧を閉じるために図面に触れた。このタップでは点を置かない */
   private swallowTap = false;
+  /** 高さの窓を、ほかの種類から体積に切り替えるために開いている。高さを決めたときに体積にする */
+  private heightSwitch = false;
 
   /** 背景の白黒と単色表示。端末ごとの好みとして次回も使う */
   private display: DisplaySettings = loadDisplay();
@@ -563,6 +574,8 @@ class App {
     this.selected = -1;
     this.previewEntity = -1;
     this.shapeCache = null;
+    // 別の図面では、属性のパネルは縮めずに出す（縮めたままだと長さや線色の行が見えない）
+    el('inspect-panel').classList.remove('collapsed');
     this.layerPast = [];
     this.layerFuture = [];
     this.layerSaved = null;
@@ -1061,6 +1074,13 @@ class App {
     stage.addEventListener('pointerup', (e) => this.onUp(e as PointerEvent));
     stage.addEventListener('pointercancel', (e) => this.onCancel(e as PointerEvent));
     stage.addEventListener('wheel', (e) => this.onWheel(e as WheelEvent), { passive: false });
+    // アプリを離れたとき（切り替え・通知など）は、指の終わりが届かないことがあるので、途中の操作を捨てる
+    const leave = (): void => {
+      this.resetGesture();
+      this.swallowTap = false;
+    };
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') leave(); });
+    window.addEventListener('pagehide', leave);
     // iOS Safari のダブルタップズーム・ピンチによるページ拡大を抑止
     stage.addEventListener('dblclick', (e) => e.preventDefault());
     stage.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -1079,6 +1099,9 @@ class App {
     } catch {
       // 捕捉なしでも操作は続けられる
     }
+    // 最初の指（isPrimary）は、ほかに触れている指がないときにだけ来る。そのときに指の記録が残っていれば、
+    // 前の指の終わり（pointerup・pointercancel）を取りこぼしたものなので捨てる（残すと、以後のタップがピンチとして扱われる）
+    if (e.isPrimary && this.pointers.size > 0) this.resetGesture();
     this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
     this.maxPointers = Math.max(this.maxPointers, this.pointers.size);
@@ -1090,6 +1113,8 @@ class App {
 
       // 色の一覧を閉じるためのタッチは、図面を動かすだけにする（点をつまんだり、長押しで置いたりしない）
       if (this.swallowTap) return;
+      // ボタンを隠しているあいだは見るだけ（値や戻す・消去が見えないので、点をつまんだり、長押しで置いたりしない）
+      if (this.uiHidden()) return;
       // 置いた点をつまんだなら、その場で動かし始める
       const grabbed = this.tool === 'measure' ? this.hitPoint(e.clientX, e.clientY) : null;
       if (grabbed !== null) {
@@ -1156,10 +1181,21 @@ class App {
       const index = this.dragIndex;
       const entity = this.previewEntity;
       const inspecting = this.tool === 'inspect';
+      // 置いた点の近くを動かさずにすぐ離したときは、点のつまみ直しではなく、ふつうのタップとして扱う。
+      // 点を置き直すのは、指でずらしたときと、長押ししてから離したときだけ
+      const tap = index !== null && this.moved < 9 && performance.now() - this.downAt < 400;
       this.cancelHold();
       if (inspecting) {
         this.select(entity);
         if (entity >= 0) tapFeedback();
+      } else if (tap) {
+        // 近くの吸着先に新しい点を足す。吸着先がつまんだ点そのものなら、何もしない
+        const next = this.snapFor(e.clientX, e.clientY, null);
+        const p = this.points[index];
+        if (next && p && Math.hypot(next.x - p.x, next.y - p.y) > 1e-9 * Math.max(1, Math.abs(p.x), Math.abs(p.y))) {
+          this.addPoint(next);
+          tapFeedback();
+        }
       } else if (hit) {
         if (index !== null) this.movePoint(index, hit);
         else this.addPoint(hit);
@@ -1172,8 +1208,12 @@ class App {
 
     clearTimeout(this.holdTimer);
     const quick = performance.now() - this.downAt < 400;
+    // ボタンを隠しているあいだに図面を押したときは、点を置かずに戻し方を知らせる
+    if (this.uiHidden() && this.pointers.size === 0 && this.maxPointers === 1 && this.moved < 9 && !this.swallowTap) {
+      this.hint(`ボタンを隠しているあいだは見るだけです。右上のボタンで戻すと${this.tool === 'inspect' ? '図形を選べます' : '点を置けます'}`);
+    }
     // 2 本以上触れていた操作はピンチなので、点を打たない。色の一覧を閉じるためのタップでも打たない
-    if (this.pointers.size === 0 && this.maxPointers === 1 && quick && this.moved < 9 && !this.swallowTap) {
+    if (this.pointers.size === 0 && this.maxPointers === 1 && quick && this.moved < 9 && !this.swallowTap && !this.uiHidden()) {
       if (this.tool === 'inspect') {
         this.select(this.pickAt(e.clientX, e.clientY));
         if (this.selected >= 0) tapFeedback();
@@ -1204,6 +1244,24 @@ class App {
       this.moved = 0;
       this.swallowTap = false;
     }
+  }
+
+  /**
+   * 指の記録と、長押し・ピンチの途中の状態を捨てる（指の終わりを取りこぼしたとき）。
+   * 色の一覧を閉じたタッチの印（swallowTap）は、いま触れた指のものなので残す
+   */
+  private resetGesture(): void {
+    this.pointers.clear();
+    this.pinch = null;
+    this.maxPointers = 0;
+    this.moved = 0;
+    this.cancelHold();
+    this.requestDraw(true);
+  }
+
+  /** ボタンやパネルを隠して、図面を画面いっぱいに見ているか */
+  private uiHidden(): boolean {
+    return document.body.classList.contains('ui-hidden');
   }
 
   private onWheel(e: WheelEvent): void {
@@ -1320,8 +1378,9 @@ class App {
     const margin = 12;
     const topLimit = this.insets.top;       // 上部のバー
     const bottomLimit = this.insets.bottom; // 下部のパネルとツールバー（開いているシートも）
-    const rightLimit = this.insets.right;   // 横向きで右に寄せたパネル（と右に並べたツールバー）
-    const leftEdge = this.insets.left + margin; // 横向きで左に並べたツールバー
+    // 横向きで右に寄せたパネル（と右に並べたツールバー）。左右の安全領域（ダイナミックアイランドやノッチの側）にも入れない
+    const rightLimit = Math.max(this.insets.right, this.safeRight);
+    const leftEdge = Math.max(this.insets.left, this.safeLeft) + margin; // 横向きで左に並べたツールバー
     const gap = 28;                         // 指との間隔
     // 横向きやシートを開いているときは、見えている範囲に収まるまで小さくする
     const roomH = this.cssH - topLimit - bottomLimit;
@@ -1470,8 +1529,11 @@ class App {
    * 下に広がるパネルなら上へ、横向きで右に寄せたパネルなら左へ。隠れていなければ動かさない。
    */
   private keepClearOfPanel(x: number, y: number): void {
-    const r = el('readout').getBoundingClientRect();
+    let r: DOMRectReadOnly = el('readout').getBoundingClientRect();
     if (r.width <= 0 || r.height <= 0) return;
+    // 縮めたレイヤ一覧は計測パネルのすぐ上に載り、パネルが伸びると一緒に上がるので、その見出しの分も避ける
+    const head = this.stackedLayerHead();
+    if (head > 0) r = new DOMRect(r.left, r.top - head, r.width, r.height + head);
     const k = this.dpr / this.view.zoom;
     const sx = (x - this.view.cx) / k + this.cssW / 2;
     const sy = this.cssH / 2 - (y - this.view.cy) / k;
@@ -1712,19 +1774,24 @@ class App {
       el('readout').classList.add('idle');
     }
     el('color-pop').classList.toggle('hidden', !open);
+    // 開いているあいだは計測パネルをシートより前に出す（縮めたレイヤ一覧が、上に浮かべた色の一覧と同じ所に来るため）
+    el('readout').classList.toggle('colors-open', open);
     el('btn-color').setAttribute('aria-expanded', String(open));
   }
 
   /**
    * 距離・面積・体積を切り替える。置いた点はそのまま使う（結んだ線を囲んだ範囲として測り直す）。
-   * 体積は高さが要るので、選んだとき（選んであるときにもう一度押したときも）高さを聞く
+   * 体積は高さが要るので、選んだとき（選んであるときにもう一度押したときも）高さを聞く。
+   * 体積へは高さを決めたときに切り替え、窓で「やめる」を選んだら元の種類のままにする
    */
   private setMode(mode: MeasureMode): void {
     const changed = mode !== this.measurePrefs.mode;
-    if (changed) this.setMeasurePrefs({ ...this.measurePrefs, mode });
     if (mode === 'volume') {
-      this.openHeightDialog();
-    } else if (changed) {
+      this.openHeightDialog(changed);
+      return;
+    }
+    if (changed) {
+      this.setMeasurePrefs({ ...this.measurePrefs, mode });
       this.hint(
         mode === 'area' ? '囲む範囲の角を順にタップすると面積を出します'
           : mode === 'angle' ? '一方の辺の点、角の頂点、もう一方の辺の点の順にタップすると角度を出します'
@@ -1733,7 +1800,9 @@ class App {
     }
   }
 
-  private openHeightDialog(): void {
+  /** switching なら、ほかの種類から体積に切り替えるために高さを聞く（決めたときに体積にする） */
+  private openHeightDialog(switching = false): void {
+    this.heightSwitch = switching;
     const input = el<HTMLInputElement>('height-input');
     input.value = String(this.measurePrefs.height);
     el('height-error').textContent = '';
@@ -1753,9 +1822,12 @@ class App {
         input.focus();
         return;
       }
-      this.setMeasurePrefs({ ...this.measurePrefs, height });
+      const mode = this.heightSwitch ? 'volume' : this.measurePrefs.mode;
+      this.setMeasurePrefs({ ...this.measurePrefs, height, mode });
       this.hint(`高さ ${formatLength(height)} で体積を出します`);
     }
+    // やめたときは、体積に切り替える前の種類のまま（体積で高さを変えようとしたときは体積のまま）
+    this.heightSwitch = false;
     input.blur();
     el('height-dialog').classList.add('hidden');
     // iOS はキーボードを出したときに画面をずらしたまま戻さないことがあるので、閉じ終わった頃に戻す
@@ -1825,6 +1897,9 @@ class App {
     const top = this.cssH / 2 - (maxY - this.view.cy) / k;
     const bottom = this.cssH / 2 - (minY - this.view.cy) / k;
     const ins = this.measureInsets();
+    // 縦向きで縮めたレイヤ一覧は、属性のパネルのすぐ上に載って一緒に上がるので、その見出しの下にも隠さない
+    // （横向きでは右下のパネルと同じ列に載るので、右のパネルを避ける動きで一緒に避けられる）
+    if (el('layer-panel').getBoundingClientRect().width >= this.cssW * 0.6) ins.bottom += this.stackedLayerHead();
     const pad = 16;
 
     let dy = 0;
@@ -1902,6 +1977,8 @@ class App {
     this.cancelHold();
     this.toggleColors(false);
     this.tool = tool;
+    // 属性に切り替えたときは、属性のパネルを縮めずに出す（縮めたままだと長さや線色の行が見えない）
+    if (tool === 'inspect') el('inspect-panel').classList.remove('collapsed');
     this.updatePanels();
     this.requestDraw();
     this.hint(tool === 'inspect' ? '図形をタップすると属性を表示します' : 'タップで計測点を置きます');
@@ -1924,14 +2001,14 @@ class App {
    * 見出しの中のボタン（戻る・進む・閉じる）は、そのボタンとして押せる
    */
   private makeCollapsible(panel: HTMLElement, head: HTMLElement): void {
-    let drag: { id: number; y: number; moved: boolean } | null = null;
+    let drag: { id: number; x: number; y: number; moved: boolean } | null = null;
     const release = (): void => {
       panel.style.transform = '';
       panel.style.transition = '';
     };
     head.addEventListener('pointerdown', (e) => {
       if ((e.target as HTMLElement).closest('button')) return;
-      drag = { id: e.pointerId, y: e.clientY, moved: false };
+      drag = { id: e.pointerId, x: e.clientX, y: e.clientY, moved: false };
       try {
         head.setPointerCapture(e.pointerId);
       } catch {
@@ -1943,7 +2020,8 @@ class App {
     head.addEventListener('pointermove', (e) => {
       if (!drag || e.pointerId !== drag.id) return;
       const dy = e.clientY - drag.y;
-      if (Math.abs(dy) > 6) drag.moved = true;
+      // 横にずらしただけでも、押したことにはしない（押したときだけ縮める・戻す）
+      if (Math.hypot(e.clientX - drag.x, dy) > 6) drag.moved = true;
       // 開いているときは、下へずらす指についてパネルを下げる（縮める手応え）
       if (!panel.classList.contains('collapsed')) panel.style.transform = `translateY(${Math.max(0, dy)}px)`;
     });
@@ -1963,14 +2041,32 @@ class App {
       drag = null;
       release();
     });
+    // アプリを離れて指の終わりが届かなかったときも、ずらしかけたパネルを元の位置へ戻す
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState !== 'hidden' || !drag) return;
+      drag = null;
+      release();
+    });
   }
 
   /** パネルを縮める（見出しだけにする）か、元に戻す */
   private setCollapsed(panel: HTMLElement, collapsed: boolean): void {
     if (panel.classList.contains('collapsed') === collapsed) return;
     panel.classList.toggle('collapsed', collapsed);
+    // 属性のパネルを戻して伸びたら、選んでいる図形がその下に隠れないよう図面をずらす
+    if (!collapsed && panel.id === 'inspect-panel' && this.selected >= 0) this.reveal(this.selected);
     // 見えている所が変わるので描き直す（前の範囲の囲いや、拡大鏡の置き場所にも効く）
     this.requestDraw(true);
+  }
+
+  /**
+   * 縮めたレイヤ一覧を、下（横向きでは右下）の計測・属性のパネルのすぐ上に載せているときの、その見出しの高さと間隔。
+   * 載せていなければ 0。一覧はパネルが伸びると少し遅れて一緒に上がるので、位置ではなく高さで見る
+   */
+  private stackedLayerHead(): number {
+    const layer = el('layer-panel');
+    const h = layer.classList.contains('collapsed') ? layer.getBoundingClientRect().height : 0;
+    return h > 0 ? h + 8 : 0;
   }
 
   /**
@@ -1988,7 +2084,12 @@ class App {
     document.body.classList.toggle('ui-hidden', hidden);
     if (fitted) {
       this.view = this.fitView();
-      if (recorded) this.recordFit();
+      if (recorded) {
+        this.recordFit();
+        // 隠しているあいだに画面を回していると、「前の範囲」で戻ったときに映る所の形が変わるので、囲いも合わせ直す
+        // （回していなければ、元に戻したときの囲いは前と同じ）
+        if (this.viewBeforeFit) this.backRect = this.visibleRect(this.viewBeforeFit);
+      }
       this.textLayer.render(this.view);
     }
     this.requestDraw(true);
@@ -2249,14 +2350,20 @@ class App {
     // レイヤ一覧と属性のパネルは、見出しを下へずらすと見出しだけに縮める
     this.makeCollapsible(el('layer-panel'), el('layer-panel').querySelector<HTMLElement>('.sheet-head')!);
     this.makeCollapsible(el('inspect-panel'), el('inspect-panel').querySelector<HTMLElement>('.panel-top')!);
-    // 横向きで縮めたレイヤ一覧を、右下の計測・属性のパネルの上に載せるため、そのパネルの高さを CSS に渡す
+    // 縮めたレイヤ一覧を、下（横向きでは右下）の計測・属性のパネルの上に載せるため、そのパネルの高さを CSS に渡す。
+    // 縮めたレイヤ一覧の高さも渡し、横向きではその分だけパネルを低くして、一覧が上のバーにかからないようにする
     if (window.ResizeObserver) {
       const stack = new ResizeObserver(() => {
+        const root = document.documentElement.style;
         const box = [el('readout'), el('inspect-panel')].map((n) => n.getBoundingClientRect()).find((r) => r.height > 0);
-        document.documentElement.style.setProperty('--panel-stack', `${box ? Math.round(box.height) + 8 : 0}px`);
+        root.setProperty('--panel-stack', `${box ? Math.round(box.height) + 8 : 0}px`);
+        const layer = el('layer-panel');
+        const head = layer.getBoundingClientRect().height;
+        if (layer.classList.contains('collapsed') && head > 0) root.setProperty('--layer-head', `${Math.ceil(head)}px`);
       });
       stack.observe(el('readout'));
       stack.observe(el('inspect-panel'));
+      stack.observe(el('layer-panel'));
     }
 
     el('btn-info').addEventListener('click', () => {
@@ -2644,7 +2751,7 @@ class App {
     const body = el('info-body');
     const info = this.info;
     if (!info) {
-      body.innerHTML = '<p class="sub">図面が読み込まれていません。</p>';
+      body.innerHTML = `<p class="sub">図面が読み込まれていません。</p>${ABOUT_LINKS}`;
       return;
     }
     const c = info.counts;
@@ -2680,6 +2787,7 @@ class App {
       );
     }
     rows.push('</div>');
+    rows.push(ABOUT_LINKS);
     body.innerHTML = rows.join('');
 
     for (const row of body.querySelectorAll<HTMLElement>('.group-row.pick')) {
