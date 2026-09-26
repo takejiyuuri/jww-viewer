@@ -995,7 +995,7 @@ function dashTable(h: JwwHeader): Uint32Array {
   const out = new Uint32Array(DASH_STYLES * 2);
   for (let s = 2; s < DASH_STYLES; s++) {
     if (s >= 11 && s <= 15) continue;
-    const t = h.lineTypes[s];
+    const t = h.lineTypes?.[s];
     if (!t) continue;
     const unit = t.unit >>> 0;
     const pitch = t.pitch >>> 0;

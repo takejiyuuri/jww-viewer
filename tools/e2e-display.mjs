@@ -120,7 +120,7 @@ await page.click('#seg-mono button[data-value="color"]');
 await page.waitForTimeout(150);
 
 // ---------- 4. 色ごとに隠す ----------
-// 白背景で一番多く描かれている線色を選び、それを隠すとその色の画素が消えるかを見る
+// 白背景で多く描かれている線色（ほかの色と見分けのつくもの）を選び、それを隠すとその色の画素が消えるかを見る
 const target = await page.evaluate(() => {
   const a = window.__jww;
   const s = a.scene;
@@ -130,11 +130,21 @@ const target = await page.evaluate(() => {
     const g = s.colorGroup[s.lineColor[i]];
     tally.set(g, (tally.get(g) ?? 0) + 1);
   }
-  const [group] = [...tally.entries()].sort((x, y) => y[1] - x[1])[0];
+  const p = a.renderer.palette;
+  const rgbOf = (entry) => [p[entry * 4], p[entry * 4 + 1], p[entry * 4 + 2]];
+  const near = (x, y) => Math.abs(x[0] - y[0]) + Math.abs(x[1] - y[1]) + Math.abs(x[2] - y[2]) < 30;
+  // 画素の色で数えるので、ほかの色グループ（線・文字）に同じような表示色がない色を選ぶ
+  // （白背景では暗い色どうしが近くなり、隠していない色の文字まで数えてしまうため）
+  const used = new Set([...s.lineColor, ...s.texts.map((t) => t.color)]);
+  const distinct = (group) => {
+    const rgb = rgbOf(s.colorGroup.indexOf(group));
+    return [...used].every((c) => s.colorGroup[c] === group || !near(rgbOf(c), rgb));
+  };
+  const ranked = [...tally.entries()].sort((x, y) => y[1] - x[1]).map(([g]) => g);
+  const group = ranked.find(distinct) ?? ranked[0];
   // その色の、いまの表示色
   const entry = s.colorGroup.indexOf(group);
-  const p = a.renderer.palette;
-  return { group, label: s.groups[group].label, rgb: [p[entry * 4], p[entry * 4 + 1], p[entry * 4 + 2]] };
+  return { group, label: s.groups[group].label, rgb: rgbOf(entry) };
 });
 const before4 = await glPixels();
 const textBefore = await textPixels(target.rgb);

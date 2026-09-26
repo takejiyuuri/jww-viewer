@@ -153,7 +153,8 @@ function checkFlags(scene: Scene, label: string): void {
       let want: number;
       if (kind === KIND.circle) want = SNAP_FLAG.on;
       else if (kind === KIND.arc) want = SNAP_FLAG.on | (j === s ? SNAP_FLAG.start : 0) | (j === s + n - 1 ? SNAP_FLAG.end : 0);
-      else if (kind === KIND.dimAux) want = 0;
+      // 寸法補助線と、円周ソリッドの円周（線として描くが、ソリッドなので吸着しない）
+      else if (kind === KIND.dimAux || kind === KIND.solid) want = 0;
       else want = SNAP_FLAG.on | ends | SNAP_FLAG.mid;
       if (f !== want) bad++;
     }
