@@ -23,10 +23,15 @@ export function listSamples() {
   return listDir(samplesDir, /\.jww$/i);
 }
 
-/** e2e が既定で開く図面。環境変数 JWW_SAMPLE、なければ samples/ の名前順で最初の .jww */
+/**
+ * e2e が既定で開く図面。環境変数 JWW_SAMPLE、なければ samples/ でいちばん小さい .jww
+ * （画面の書き出しや読み込みの待ち時間が図面の重さで変わるので、軽いものにそろえる）
+ */
 export function defaultSample() {
   if (process.env.JWW_SAMPLE) return path.resolve(process.env.JWW_SAMPLE);
-  const first = listSamples()[0];
+  const first = listSamples()
+    .map((f) => ({ f, size: fs.statSync(f).size }))
+    .sort((a, b) => a.size - b.size || (a.f < b.f ? -1 : 1))[0]?.f;
   if (!first) {
     console.error('図面がありません。samples/ に .jww を置くか、引数か環境変数 JWW_SAMPLE で図面のパスを渡してください');
     process.exit(1);

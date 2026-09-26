@@ -1,7 +1,7 @@
 // 描き方の検査（ブラウザ不要）。答えを決め打ちした合成データで、次を確かめる。
 //   線種の模様の表、円弧を折った線分でも破線が続くこと、補助線種の色グループ、実点の丸、
 //   円ソリッドの種類ごとの塗り（扇形・弓形・外側円弧・円周・円環）、特殊文字の区切り、単色での塗りの色
-import { AUX_STYLE_PEN, DASH_STYLES, KIND, buildScene } from '../src/render/geometry.ts';
+import { AUX_STYLE_PEN, DASH_STYLES, KIND, SNAP_FLAG, buildScene } from '../src/render/geometry.ts';
 import { buildPalette, luminance } from '../src/render/theme.ts';
 import { plainText, specialRuns } from '../src/render/textlayer.ts';
 import { emptyEntities } from '../src/jww/types.ts';
@@ -113,7 +113,7 @@ function doc(fill: (e: JwwEntities) => void, drawPointRadius = false): JwwDocume
   const c = ent.color[0];
   check('補助線種は補助線色で描く', [scene.colors[c * 3], scene.colors[c * 3 + 1], scene.colors[c * 3 + 2]].join() === '255,128,255');
   check('実線の線は線色のグループのまま', g1.penColor === 2 && g1.count === 1, g1);
-  check('補助線種の線にも吸着する', scene.lineSnap[ent.lineStart[0]] === 1);
+  check('補助線種の線にも吸着する', (scene.lineSnap[ent.lineStart[0]] & SNAP_FLAG.on) !== 0);
   check('属性の線色は元の線色のまま', ent.pen[0] === 2 && ent.style[0] === 9);
 }
 
