@@ -171,6 +171,24 @@ function compose(p: Xform, q: Xform): Xform {
 /** 線分 300 万本 / 三角形 100 万枚を超えたら打ち切る（実データは数万〜20 万本） */
 const MAX_LINE_FLOATS = 3_000_000 * 4;
 const MAX_TRI_FLOATS = 1_000_000 * 6;
+/**
+ * 図形 100 万個 / 文字 30 万個 / 部品の展開 20 万回を超えたら打ち切る（実データは図形が数万、展開は数百）。
+ * 同じ部品を何度も配置する入れ子は、数 KB のファイルでも展開すると指数的に増え、
+ * 線の上限だけでは図形ごとの属性や文字が際限なく積まれて、時間とメモリを使い果たすため
+ */
+const MAX_ENTITIES = 1_000_000;
+const MAX_TEXTS = 300_000;
+const MAX_EXPANSIONS = 200_000;
+
+/** 打ち切ったときの警告（読み込んだときの知らせにも使う） */
+export const TRUNCATED_WARNING = '図形が多すぎたため、描画データを途中で打ち切りました';
+
+/**
+ * 座標や大きさとして受け付ける値の上限（図面上の mm）。これを超える値は壊れたファイルのものとして捨てる。
+ * 1e9 mm は 1000 km で、縮尺 1/1 で描いた測量座標でも収まる。
+ * 途方もない値が範囲に入ると、「全体」や吸着の索引の格子が壊れる
+ */
+const MAX_COORD = 1e9;
 
 /**
  * 円弧を折れ線にするときの許容誤差（図面上の mm）。
@@ -189,8 +207,14 @@ function arcSegments(radius: number, sweep: number): number {
   return Math.max(4, Math.min(720, Math.ceil(abs / step)));
 }
 
+/** 座標として使える値か（NaN・Infinity と、MAX_COORD を超える途方もない値は使えない） */
+function inRange(v: number): boolean {
+  return v >= -MAX_COORD && v <= MAX_COORD;
+}
+
+/** 4 つとも座標として使える値か。有限なだけでなく、MAX_COORD の内側にあること */
 function finite4(a: number, b: number, c: number, d: number): boolean {
-  return Number.isFinite(a) && Number.isFinite(b) && Number.isFinite(c) && Number.isFinite(d);
+  return inRange(a) && inRange(b) && inRange(c) && inRange(d);
 }
 
 /** COLORREF (0x00BBGGRR) を RGB に分解 */
@@ -362,6 +386,8 @@ class Builder {
   minX = Infinity; minY = Infinity; maxX = -Infinity; maxY = -Infinity;
   /** 壊れたファイルで際限なく膨らむのを防ぐための打ち切り */
   truncated = false;
+  /** 図形の一覧を展開した回数（いちばん外側と、部品を配置するたびのその中身） */
+  expanded = 0;
 
   readonly palette: Palette;
   readonly blockDefs: Map<number, JwwBlockDef>;
@@ -391,6 +417,8 @@ class Builder {
     kind: number, pen: number, style: number, layer: number, color: number, block: number,
     rgb = -1, group = layer >> 4,
   ): number {
+    // 上限に達したら打ち切りの印だけ立てる（書き始めた図形は閉じられるよう、ここでは積む。以後の部品は展開しない）
+    if (this.entKind.len >= MAX_ENTITIES || this.texts.length >= MAX_TEXTS) this.truncated = true;
     this.cur = this.entKind.len;
     this.entKind.push(kind);
     this.entLayer.push(layer);
@@ -418,6 +446,8 @@ class Builder {
   }
 
   track(x: number, y: number): void {
+    // 捨てた座標（NaN・Infinity・途方もない値）は範囲にも入れない（点は捨てたあとも呼ばれる）
+    if (!finite4(x, y, 0, 0)) return;
     if (x < this.minX) this.minX = x;
     if (y < this.minY) this.minY = y;
     if (x > this.maxX) this.maxX = x;
@@ -694,6 +724,9 @@ function emitEntities(
   b: Builder, e: JwwEntities, t: Xform, depth: number,
   open: Set<number>, inherit: number | null, block: number,
 ): void {
+  // 上限に達したら、それ以上は展開しない（同じ部品を何重にも配置した入れ子で、時間とメモリを使い果たさないように）
+  if (b.truncated) return;
+  if (++b.expanded > MAX_EXPANSIONS) { b.truncated = true; return; }
   for (const l of e.lines) emitLine(b, l, t, inherit, block);
   for (const a of e.arcs) emitArc(b, a, t, inherit, block);
   for (const s of e.solids) emitSolid(b, s, t, inherit, block);
@@ -715,6 +748,7 @@ function emitEntities(
 
   if (depth >= 16) return;
   for (const ref of e.blocks) {
+    if (b.truncated) return;
     // 自分や祖先を参照し返すブロックがあると際限なく展開されるので、
     // 展開中の定義番号を覚えておいて、戻る辺を捨てる。
     if (open.has(ref.defNo)) continue;
@@ -742,7 +776,7 @@ export function buildScene(doc: JwwDocument): Scene {
   const b = new Builder(new Palette(doc.header), doc.blockDefs);
   emitEntities(b, doc.entities, IDENTITY, 0, new Set(), null, -1);
   if (b.truncated) {
-    doc.warnings.push('図形が多すぎたため、描画データを途中で打ち切りました');
+    doc.warnings.push(TRUNCATED_WARNING);
   }
 
   const scales = new Float64Array(16);

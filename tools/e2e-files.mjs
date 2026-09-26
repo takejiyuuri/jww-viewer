@@ -176,20 +176,25 @@ await recentHas(1);
   check('Web 版では iOS アプリとして扱わない', r.isNative === false, { isNative: r.isNative });
 }
 
-// ---------- 7b. 読めないファイルは最近の一覧に入れず、一覧を出しても最初の画面の下に隠れない ----------
+// ---------- 7b. 読めないファイルは最近の一覧に入れず、図面を開いていれば最初の画面で覆わない ----------
 {
   const bad = path.join(root, 'package.json');
   const before = await page.evaluate(() => window.__jww.recent.length);
   await page.setInputFiles('#file', bad);
-  await page.waitForFunction(() => !document.getElementById('welcome').classList.contains('hidden'), null, { timeout: 30000 });
+  await page.waitForFunction(() => /読み込めませんでした/.test(document.getElementById('hint').textContent), null, { timeout: 30000 });
   await page.waitForTimeout(300);
   const after = await page.evaluate(async () => {
     const st = await import('/src/storage.ts');
-    return { recent: window.__jww.recent.length, names: (await st.listRecent()).map((r) => r.name), last: (await st.loadLast())?.name };
+    return {
+      recent: window.__jww.recent.length, names: (await st.listRecent()).map((r) => r.name), last: (await st.loadLast())?.name,
+      welcomeHidden: document.getElementById('welcome').classList.contains('hidden'), title: document.getElementById('title').textContent,
+    };
   });
   check('読めなかったファイルは、最近の一覧にも「前回の図面」にも入れない',
     after.recent === before && !after.names.includes('package.json') && after.last !== 'package.json', { before, ...after });
-  await page.click('#btn-open-2');
+  check('図面を開いたまま読めなかったときは、最初の画面で覆わずに知らせ、表示中の図面はそのまま',
+    after.welcomeHidden && after.title === nameA, after);
+  await page.click('#btn-open');
   const shown = await page.evaluate(() => {
     const panel = document.getElementById('files-panel').getBoundingClientRect();
     const top = document.elementFromPoint(panel.left + panel.width / 2, panel.top + 20);
@@ -199,7 +204,7 @@ await recentHas(1);
       onTop: !!top?.closest('#files-panel'),
     };
   });
-  check('読み込めなかったあとに「図面を開く」を押すと、一覧が最初の画面に隠れずに出る', shown.open && shown.welcomeHidden && shown.onTop, shown);
+  check('読み込めなかったあとに「ファイル」を押すと、一覧が隠れずに出る', shown.open && shown.welcomeHidden && shown.onTop, shown);
   // 一覧から開き直せば、また図面が出る
   await page.click(`#recent-list .recent-open[data-open="${nameA}"]`);
   // 見出しは読み込めなかったあとも前の図面の名前のままなので、読み込み中の画面が消えるのを待つ

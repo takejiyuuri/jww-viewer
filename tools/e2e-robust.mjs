@@ -1,7 +1,9 @@
 // 画面向きを変えたときの拡大鏡の置き場所と、描画コンテキストが失われたあとの復帰を確かめる。
+// あわせて、読み込めないファイル・表示の準備で止まる図面・部品の爆弾・開いている途中で落ちたあとの起動を確かめる。
 import { chromium } from 'playwright';
 import path from 'node:path';
 import { startServer, projectRoot as root } from './serve.mjs';
+import { makeJww, nestedBomb } from './jww-synth.mjs';
 
 const sample = process.argv[2] ?? path.join(root, 'samples', 'A棟 11階躯体図2026.5.12提出スリーブ.jww');
 const outDir = process.argv[3] ?? '.';
@@ -130,6 +132,132 @@ for (const s of SCREENS) {
     前: before, 後: after,
   });
   await page.screenshot({ path: path.join(outDir, 'e2e-restored.png') });
+  await ctx.close();
+}
+
+// ---------- 読み込めないとき・落ちたあとの起動 ----------
+{
+  const ctx = await browser.newContext({
+    viewport: { width: 393, height: 852 }, deviceScaleFactor: 3, hasTouch: true, isMobile: true,
+  });
+  const page = await ctx.newPage();
+  page.on('pageerror', (e) => errors.push(`load: ${e.message}`));
+  await page.goto(url, { waitUntil: 'networkidle' });
+
+  const small = { name: 'small.jww', mimeType: 'application/octet-stream', buffer: Buffer.from(makeJww({ entities: [{ line: [0, 0, 200, 100] }, { line: [0, 100, 200, 0] }] })) };
+  const notJww = { name: 'note.txt', mimeType: 'text/plain', buffer: Buffer.from('これは図面ではありません') };
+  const brokenJww = { name: 'broken.jww', mimeType: 'application/octet-stream', buffer: Buffer.concat([Buffer.from('JwwData.'), Buffer.alloc(200, 0xff)]) };
+  const state = () => page.evaluate(() => ({
+    welcome: !document.getElementById('welcome').classList.contains('hidden'),
+    welcomeText: document.querySelector('#welcome .welcome-body p')?.textContent ?? '',
+    loading: !document.getElementById('loading').classList.contains('hidden'),
+    uiHidden: document.body.classList.contains('ui-hidden'),
+    title: document.getElementById('title').textContent,
+    hint: document.getElementById('hint').classList.contains('hidden') ? '' : document.getElementById('hint').textContent,
+    scene: !!window.__jww.scene,
+    recent: window.__jww.recent.map((r) => r.name),
+    opening: localStorage.getItem('jww-viewer:opening'),
+  }));
+  const hintHas = (text) => page.waitForFunction((t) => {
+    const h = document.getElementById('hint');
+    return !h.classList.contains('hidden') && h.textContent.includes(t);
+  }, text, { timeout: 30000 });
+  const titled = (name) => page.waitForFunction((n) => document.getElementById('title').textContent === n, name, { timeout: 60000 });
+  const lastName = () => page.evaluate(async () => (await (await import('/src/storage.ts')).loadLast())?.name ?? null);
+
+  // 図面がないまま、ボタンを隠して読めないファイルを選ぶ：最初の画面に理由が出て、ボタンも戻る
+  await page.waitForFunction(() => !document.getElementById('welcome').classList.contains('hidden'), null, { timeout: 10000 });
+  await page.evaluate(() => window.__jww.setUiHidden(true));
+  await page.setInputFiles('#file', notJww);
+  await page.waitForFunction(() => /JWW ファイルではありません/.test(document.querySelector('#welcome .welcome-body p')?.textContent ?? ''), null, { timeout: 10000 });
+  {
+    const s = await state();
+    check('図面がないときに読めないファイルを選ぶと、最初の画面に理由を出し、隠したボタンも戻す',
+      s.welcome && !s.loading && !s.uiHidden && !s.scene, s);
+  }
+
+  // 図面を開いたあとに読めないファイル・壊れた .jww を開いても、最初の画面で覆わず、前の図面をそのまま使える
+  await page.setInputFiles('#file', small);
+  await titled('small.jww');
+  await page.waitForFunction(() => window.__jww.recent.some((r) => r.name === 'small.jww'), null, { timeout: 10000 });
+  await page.waitForFunction(() => localStorage.getItem('jww-viewer:opening') === null, null, { timeout: 10000 });
+  await page.evaluate(() => { window.__prevScene = window.__jww.scene; });
+  for (const [label, file, why] of [['JWW でないファイル', notJww, 'JWW ファイルではありません'], ['壊れた .jww', brokenJww, '途中で終わっています']]) {
+    await page.setInputFiles('#file', file);
+    await hintHas(why);
+    await page.waitForFunction(() => document.getElementById('loading').classList.contains('hidden'), null, { timeout: 30000 });
+    const s = await state();
+    const same = await page.evaluate(() => window.__jww.scene === window.__prevScene);
+    check(`図面を開いたまま${label}を開くと、知らせだけ出して前の図面を残す（最初の画面で覆わない）`,
+      !s.welcome && !s.loading && s.title === 'small.jww' && same && /読み込めませんでした/.test(s.hint) && s.opening === null, { ...s, same });
+  }
+
+  // 表示の準備で止まった図面：前の図面を残して知らせ、最近の一覧にも前回の図面にも入れない
+  {
+    await page.evaluate(() => { window.__jww.onLoaded = () => { throw new Error('テスト用の失敗'); }; });
+    const bad = { name: 'throws.jww', mimeType: 'application/octet-stream', buffer: Buffer.from(makeJww({ entities: [{ line: [0, 0, 1, 1] }] })) };
+    await page.setInputFiles('#file', bad);
+    await hintHas('表示できません');
+    await page.evaluate(() => { delete window.__jww.onLoaded; });
+    await page.waitForTimeout(800);
+    const s = await state();
+    const same = await page.evaluate(() => window.__jww.scene === window.__prevScene);
+    const last = await lastName();
+    check('表示の準備で止まった図面は、前の図面を残して知らせ、最近の一覧にも前回の図面にも入れない',
+      same && s.title === 'small.jww' && !s.welcome && !s.recent.includes('throws.jww') && last === 'small.jww' && s.opening === null,
+      { ...s, same, last });
+  }
+
+  // 同じ部品を何度も配置する入れ子（数 KB）：打ち切って表示し、途中までしか表示していないと知らせる
+  {
+    const bomb = { name: 'bomb.jww', mimeType: 'application/octet-stream', buffer: Buffer.from(nestedBomb(9, 10)) };
+    const t0 = Date.now();
+    await page.setInputFiles('#file', bomb);
+    await titled('bomb.jww');
+    const ms = Date.now() - t0;
+    const hint = await page.evaluate(() => document.getElementById('hint').textContent);
+    check('入れ子の部品の爆弾は、打ち切って表示し、途中までしか表示していないと知らせる',
+      /途中まで/.test(hint) && ms < 60000, { ms, hint, bytes: bomb.buffer.length });
+  }
+
+  // 開いている途中で落ちた図面は、次に起動したとき自動では開かない。別の図面を開き直せば元に戻る
+  {
+    await page.setInputFiles('#file', small);
+    await titled('small.jww');
+    await page.waitForFunction(() => localStorage.getItem('jww-viewer:opening') === null, null, { timeout: 10000 });
+    await page.waitForFunction(async () => (await (await import('/src/storage.ts')).loadLast())?.name === 'small.jww', null, { timeout: 10000 });
+    const cleared = await state();
+    check('描き終えたら、開いている途中の印を消す', cleared.opening === null, cleared);
+
+    // 開いた直後に読み込み直しても（落ちたのではないので）、次も前回の図面を開く
+    await page.setInputFiles('#file', small);
+    await titled('small.jww');
+    await page.reload({ waitUntil: 'networkidle' });
+    let quick = true;
+    await titled('small.jww').catch(() => { quick = false; });
+    check('開いた直後に読み込み直しても、前回の図面を開く', quick, await state());
+    await page.waitForFunction(() => localStorage.getItem('jww-viewer:opening') === null, null, { timeout: 10000 });
+
+    // 描いている途中で落ちたのと同じ状態を作って起動し直す（落ちたときは、ページを閉じるときの後片付けが届かない）
+    await page.evaluate(() => window.addEventListener('pagehide', () => localStorage.setItem('jww-viewer:opening', 'small.jww')));
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForFunction(() => !document.getElementById('welcome').classList.contains('hidden'), null, { timeout: 10000 });
+    await page.waitForTimeout(500);
+    const skipped = await state();
+    check('前回その図面を開いている途中で終わっていたら、自動では開かず、最初の画面で知らせる',
+      skipped.welcome && !skipped.scene && !skipped.loading && /自動では開いていません/.test(skipped.welcomeText), skipped);
+
+    // 一覧から開き直して描き終えれば、次からはまた自動で開く
+    await page.click('#btn-open-2');
+    await page.click('#recent-list .recent-open');
+    await titled('small.jww');
+    await page.waitForFunction(() => localStorage.getItem('jww-viewer:opening') === null, null, { timeout: 10000 });
+    await page.reload({ waitUntil: 'networkidle' });
+    let restored = true;
+    await titled('small.jww').catch(() => { restored = false; });
+    check('開き直して描き終えれば、次に起動したときはまた前回の図面を開く', restored, await state());
+  }
+
   await ctx.close();
 }
 
