@@ -19,8 +19,9 @@ import {
 } from './render/theme.ts';
 import { LayerVisibility, renderLayerList, type LayerSnapshot } from './ui/layers.ts';
 import { describeEntity, entityShape, pickEntity } from './ui/inspect.ts';
-import { KIND, fitScene, type Bounds } from './render/geometry.ts';
+import { KIND, TRUNCATED_WARNING, fitScene, type Bounds } from './render/geometry.ts';
 import { hex1, layerTag } from './jww/names.ts';
+import { isJwwHead } from './jww/header.ts';
 
 /** 吸着先を探す半径（CSS ピクセル） */
 const SNAP_RADIUS = 22;
@@ -63,6 +64,46 @@ interface LayerStep {
 /** レイヤの表示の変更を覚えておく数 */
 const LAYER_HISTORY = 50;
 
+/** 開けるファイルの大きさの上限。実際の図面は数 MB で、画像を同梱した図面でも十分に収まる */
+const MAX_FILE_BYTES = 200 * 1024 * 1024;
+
+/** 解析をあきらめるまでの、画面が見えていた秒数 */
+const LOAD_TIMEOUT_S = 60;
+
+/**
+ * 図面を開き始めてから最初に描き終えるまで置いておく印（中身は図面の名前）。
+ * 次に起動したときに残っていれば、開いている途中でアプリが終わった（落ちた）ことが分かる
+ */
+const OPENING_KEY = 'jww-viewer:opening';
+
+/** 開いている途中の印を置く。null なら消す（使えない環境では何もしない） */
+function markOpening(name: string | null): void {
+  try {
+    if (name === null) localStorage.removeItem(OPENING_KEY);
+    else localStorage.setItem(OPENING_KEY, name);
+  } catch {
+    // 印を置けなくても開くことはできる
+  }
+}
+
+/** 前に開いている途中で終わった図面の名前。無ければ null */
+function openingMark(): string | null {
+  try {
+    return localStorage.getItem(OPENING_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/** 大きさと先頭 8 バイトから、開けないファイルならその理由を返す（開けそうなら null） */
+function rejectReason(size: number, head: Uint8Array): string | null {
+  if (size > MAX_FILE_BYTES) {
+    return `ファイルが大きすぎます（${Math.round(size / 1024 / 1024)}MB。${MAX_FILE_BYTES / 1024 / 1024}MB まで開けます）`;
+  }
+  if (!isJwwHead(head)) return 'JWW ファイルではありません';
+  return null;
+}
+
 const el = <T extends HTMLElement>(id: string): T => {
   const node = document.getElementById(id);
   if (!node) throw new Error(`要素が見つかりません: ${id}`);
@@ -90,6 +131,10 @@ class App {
   private loadSeq = 0;
   /** 読み込み中の図面の決着を、待っている側（渡された図面の写しの片付け）へ知らせる */
   private loadSettle: () => void = () => {};
+  /** 解析している図面の名前（worker があるあいだ）。受け取り中の知らせのあとで「読み込み中」の名前を戻すのに使う */
+  private loadingName = '';
+  /** 開いている途中の印を置いた読み込みの番号。印を消すのは、いちばん新しい読み込みが終わったときだけ */
+  private openingId = 0;
   private snapIndex: SnapIndex | null = null;
 
   private view: View = { cx: 0, cy: 0, zoom: 1 };
@@ -262,21 +307,33 @@ class App {
    */
   private async start(): Promise<void> {
     void this.refreshRecent();
+    // ページを閉じる・読み込み直すときは、開いている途中でも落ちたのではないので印を消す（落ちたときはこれが届かない）。
+    // この起動で何も開いていなければ、前に落ちたときの印はそのまま残す
+    window.addEventListener('pagehide', () => {
+      if (this.openingId > 0) markOpening(null);
+    });
     let launched = false;
+    // 渡された図面を読み取れなかったときは、前回の図面を出し直さない（読めなかった知らせがすぐ消えて、
+    // 前回の図面が渡された図面のように見えないように）。前回の図面は「最近開いた図面」から開ける
+    let launchFailed = false;
     try {
       launched = await listenForFiles({
-        // アプリが閉じた状態から渡されたときは起動に時間がかかるので、受け取った時点ですぐ読み込み中と知らせる
-        receiving: (name) => this.showLoading(name),
+        // アプリが閉じた状態から渡されたときは起動に時間がかかるので、受け取った時点ですぐ読み込み中と知らせる。
+        // 読み込みを始めたものとして数え、前回の図面を読み出しているあいだに届いても、その上に最初の画面を出さない
+        receiving: (name) => {
+          this.loadSeq++;
+          this.showLoading(name);
+        },
         open: (buffer, name) => this.load(buffer, name),
         fail: (m) => {
-          el('loading').classList.add('hidden');
+          launchFailed = true;
           this.fail(m);
         },
       });
     } catch {
       // 受け取れなくても起動は続ける
     }
-    if (!launched) await this.restoreLast();
+    if (!launched && !launchFailed) await this.restoreLast();
   }
 
   /** 最近開いた図面の一覧を読み直す（開いていれば一覧の表示も） */
@@ -296,6 +353,9 @@ class App {
   private async restoreLast(): Promise<void> {
     // 読み出しを待つあいだに、渡された図面や選んだ図面を開き始めていたら、そちらを優先する
     const seq = this.loadSeq;
+    // 前回その図面を開いている途中（読み込みから最初に描き終えるまで）でアプリが終わっていたら、自動では開かない。
+    // 描くと落ちる図面を、起動するたびに開き直して落ち続けないように（一覧から選べば開ける）
+    const opening = openingMark();
     let last: Awaited<ReturnType<typeof loadLast>> = null;
     try {
       last = await loadLast();
@@ -303,8 +363,13 @@ class App {
       // 復元できなくても起動は続ける
     }
     if (this.loadSeq !== seq) return;
-    if (last) this.load(last.buffer, last.name, false);
-    else el('welcome').classList.remove('hidden');
+    if (last && last.name === opening) {
+      this.showWelcome(`前回「${last.name}」を開いている途中でアプリが終了したため、自動では開いていません。「図面を開く」から開き直せます`);
+    } else if (last) {
+      this.load(last.buffer, last.name, false);
+    } else {
+      this.showWelcome();
+    }
   }
 
   /** 読み込み中の知らせを出す（最初の画面はしまう） */
@@ -320,51 +385,98 @@ class App {
    */
   private load(buffer: ArrayBuffer, name: string, persist = true): Promise<void> {
     this.loadSeq++;
-    this.showLoading(name);
     // 前の図面の読み込みはここで打ち切るので、待っている側には終わったと知らせる
     this.loadSettle();
     let settle = (): void => {};
     const settled = new Promise<void>((r) => { settle = r; });
     this.loadSettle = settle;
 
-    // 転送で中身が失われる前に保存用の複製を取る。保存は読み込めたときだけにする
+    // 中身を確かめてから複製や解析に進む（誤って選んだ大きな別形式のファイルで、メモリを使い果たさないように）
+    const reason = rejectReason(buffer.byteLength, new Uint8Array(buffer, 0, Math.min(8, buffer.byteLength)));
+    if (reason) {
+      this.fail(reason);
+      settle();
+      return settled;
+    }
+
+    // 転送で中身が失われる前に保存用の複製を取る。保存は読み込めて表示できたときだけにする
     // （読めないファイルを最近の一覧に入れたり、次に起動したとき出し直そうとしたりしないように）
-    const copy = persist ? buffer.slice(0) : null;
+    let copy: ArrayBuffer | null = null;
+    try {
+      copy = persist ? buffer.slice(0) : null;
+    } catch {
+      this.fail('メモリが足りないため開けませんでした');
+      settle();
+      return settled;
+    }
     // 最近の一覧で表示中の図面を見分ける鍵も、転送の前に作っておく
     const key = recentKey(name, buffer);
 
     this.worker?.terminate();
-    clearTimeout(this.loadTimer);
-    this.worker = new Worker(new URL('./jww/worker.ts', import.meta.url), { type: 'module' });
-    // 解析が返ってこないまま読み込み画面で固まらないように区切りをつける
-    this.loadTimer = window.setTimeout(() => {
-      this.worker?.terminate();
+    this.worker = null;
+    clearInterval(this.loadTimer);
+    const worker = new Worker(new URL('./jww/worker.ts', import.meta.url), { type: 'module' });
+    this.worker = worker;
+    this.showLoading(name);
+    this.loadingName = name;
+    // 開いている途中でアプリが落ちたら、次に起動したとき同じ図面を自動で開き直して落ち続けないよう、描き終えるまで印を置く
+    const id = ++this.openingId;
+    markOpening(name);
+    const unmark = (): void => {
+      if (this.openingId === id) markOpening(null);
+    };
+    /** この読み込みを終える（結果が届いた・失敗した・打ち切った）。worker は解析に使ったメモリごと閉じる */
+    const finish = (): void => {
+      clearInterval(this.loadTimer);
+      worker.terminate();
       this.worker = null;
       el('loading').classList.add('hidden');
+    };
+    // 解析が返ってこないまま読み込み画面で固まらないように区切りをつける。
+    // 画面が見えているあいだだけ 1 秒ずつ数える。アプリが止められていたあいだは数えないので、戻ったときに
+    // 期限の過ぎたタイマーが、届く直前の結果を捨ててしまうことはない（時刻の差ではなく回数で数える）
+    let waited = 0;
+    this.loadTimer = window.setInterval(() => {
+      if (document.visibilityState !== 'visible' || ++waited < LOAD_TIMEOUT_S) return;
+      finish();
+      unmark();
       this.fail('解析に時間がかかりすぎたため中止しました');
       settle();
-    }, 60000);
-    this.worker.onmessage = (ev: MessageEvent<LoadResponse>) => {
-      clearTimeout(this.loadTimer);
-      el('loading').classList.add('hidden');
+    }, 1000);
+    worker.onmessage = (ev: MessageEvent<LoadResponse>) => {
+      // 次の図面を開き始めたあとに届いた、前の図面の結果は使わない
+      if (this.worker !== worker) return;
+      finish();
       const res = ev.data;
       if (!res.ok) {
+        unmark();
         this.fail(res.error);
+        settle();
+        return;
+      }
+      try {
+        this.onLoaded(res.scene, res.info);
+      } catch {
+        // 表示の準備で止まったら（壊れた座標で吸着の索引が作れないなど）、前の図面をそのまま残して知らせる
+        unmark();
+        this.fail('図面の内容が壊れているか大きすぎるため、表示できません');
         settle();
         return;
       }
       this.shownKey = key;
       if (copy) void this.remember(name, copy, key).then(settle);
       else settle();
-      this.onLoaded(res.scene, res.info);
+      // 最初に描き終えたら（文字は少し遅れて描くので、それも待ってから）、開いている途中の印を消す
+      requestAnimationFrame(() => window.setTimeout(unmark, 400));
     };
-    this.worker.onerror = (ev) => {
-      clearTimeout(this.loadTimer);
-      el('loading').classList.add('hidden');
+    worker.onerror = (ev) => {
+      if (this.worker !== worker) return;
+      finish();
+      unmark();
       this.fail(ev.message || '読み込みに失敗しました');
       settle();
     };
-    this.worker.postMessage({ buffer, name }, [buffer]);
+    worker.postMessage({ buffer, name }, [buffer]);
     return settled;
   }
 
@@ -382,23 +494,70 @@ class App {
     await this.refreshRecent();
   }
 
+  /**
+   * 読み込めなかったことを知らせる。図面を表示しているときや、ほかの図面を読み込んでいる途中なら、
+   * 最初の画面は出さずに知らせだけ出す（閉じるボタンのない最初の画面で、図面や読み込み中の表示を覆わないように）
+   */
   private fail(message: string): void {
-    const w = el('welcome');
-    w.classList.remove('hidden');
-    const body = w.querySelector('.welcome-body p');
-    if (body) {
-      body.textContent = `読み込めませんでした: ${message}`;
-      body.classList.add('error');
+    const text = `読み込めませんでした: ${message}`;
+    if (this.worker) {
+      // ほかの図面を読み込んでいる途中なら、その「読み込み中」は消さない（受け取り中に出した名前は戻す）。
+      // 縦向きでは知らせが読み込み中の幕の下に隠れるので、幕の文にも添える
+      el('loading-text').textContent = `${this.loadingName} を読み込み中…（${text}）`;
+      this.hint(text, 6000);
+      return;
+    }
+    el('loading').classList.add('hidden');
+    if (this.scene) {
+      // 表示中の図面はそのまま使える
+      this.hint(text, 6000);
+      return;
+    }
+    this.showWelcome(text, true);
+  }
+
+  /**
+   * 選んだ（落とした）ファイルを開く。中身を丸ごと読む前に、大きさと先頭 8 バイトを確かめる
+   * （動画などを誤って選んだとき、読み込みと複製でメモリを使い果たしてページごと落ちないように）
+   */
+  private async openPicked(f: File): Promise<void> {
+    try {
+      const reason = rejectReason(f.size, new Uint8Array(await f.slice(0, 8).arrayBuffer()));
+      if (reason) {
+        this.loadSeq++;
+        this.fail(reason);
+        return;
+      }
+      this.load(await f.arrayBuffer(), f.name);
+    } catch {
+      this.fail('ファイルを読み取れませんでした');
     }
   }
 
+  /** 最初の画面を出す。note があれば、はじめの案内の文の代わりに出す（読み込めなかった知らせなど） */
+  private showWelcome(note?: string, error = false): void {
+    const w = el('welcome');
+    const body = w.querySelector<HTMLElement>('.welcome-body p');
+    if (body) {
+      if (body.dataset.text === undefined) body.dataset.text = body.textContent ?? '';
+      body.textContent = note ?? body.dataset.text;
+      body.classList.toggle('error', error);
+    }
+    // ボタンを隠したままだと、「図面を開く」で出す一覧も隠れて見えないので戻す
+    this.setUiHidden(false);
+    w.classList.remove('hidden');
+  }
+
   private onLoaded(scene: Scene, info: LoadedInfo): void {
+    // 吸着の索引は、いまの図面の状態を書き換える前に作る。壊れた座標などで作れなければここで止まり、前の図面がそのまま残る
+    const index = new SnapIndex(scene);
     this.scene = scene;
     this.info = info;
     this.renderer.setScene(scene);
     this.textLayer.setTexts(scene.texts);
-    const index = new SnapIndex(scene);
     this.snapIndex = index;
+    // 前に読み込めなかったときの最初の画面が出ていたら、図面の上に残さない
+    el('welcome').classList.add('hidden');
     this.points = [];
     this.manualScale = false;
     this.selected = -1;
@@ -418,15 +577,17 @@ class App {
     this.layers.useCounts(scene.layerCounts);
 
     // 同じ図面を開き直したときは、前に隠していた色とレイヤをそのまま隠す。
-    // 記録がなければ、レイヤは Jw_cad で保存したときの表示状態から始める
+    // 記録がなければ、レイヤは Jw_cad で保存したときの表示状態から始める。
+    // 図面の側が変わっていたら（同じ名前の別の図面・保存し直した図面）、色もレイヤも記録は使わない
+    // （別の図面で線が黙って隠れ、吸着もしなくならないように）
     const saved = loadViewState(info.name);
-    const hiddenPens = new Set(saved.pens);
+    const sameDrawing = saved.jw === jwFingerprint(info);
+    const hiddenPens = new Set(sameDrawing ? saved.pens : []);
     this.hiddenGroups = new Set();
     scene.groups.forEach((g, i) => {
       if (hiddenPens.has(g.penColor)) this.hiddenGroups.add(i);
     });
-    // 図面の側でレイヤの状態が変わっていたら（別の図面・保存し直した図面）、記録は使わない
-    if (saved.groups && saved.layers && saved.jw === jwFingerprint(info)) {
+    if (sameDrawing && saved.groups && saved.layers) {
       this.layers.applyHidden({ groups: saved.groups, layers: saved.layers, stash: saved.stash });
     } else {
       this.layers.resetToJw(info.groups, info.writeGroup);
@@ -463,10 +624,19 @@ class App {
     this.fit();
     // 読み込んだときの全体表示も全体を見ているものとする（ここで「全体」を押しても戻る先は作らない）
     this.recordFit();
+    // 隠れているものがあれば知らせる（前回隠した線色も、レイヤと同じく）
+    const notes: string[] = [];
     const hiddenLayers = this.layers.hiddenCount(scene.layerCounts);
-    this.hint(hiddenLayers > 0
-      ? `読み込みました。${hiddenLayers} 個のレイヤが非表示です`
-      : `${info.counts.lines.toLocaleString()} 本の線を ${Math.round(info.parseMs)}ms で読み込みました`);
+    if (hiddenLayers > 0) notes.push(`${hiddenLayers} 個のレイヤが非表示です`);
+    if (this.hiddenGroups.size > 0) notes.push(`前回隠した ${this.hiddenGroups.size} 色の線を隠しています`);
+    if (info.warnings.includes(TRUNCATED_WARNING)) {
+      // 図形が多すぎて途中で打ち切ったときは、欠けていることを長めに知らせる（欠けた所の線は測れない）
+      this.hint(['図形が多すぎるため、途中までしか表示していません', ...notes].join('\n'), 8000);
+    } else if (notes.length > 0) {
+      this.hint(`読み込みました。${notes.join('。')}`);
+    } else {
+      this.hint(`${info.counts.lines.toLocaleString()} 本の線を ${Math.round(info.parseMs)}ms で読み込みました`);
+    }
   }
 
   // ---------- ビュー ----------
@@ -1953,7 +2123,8 @@ class App {
     this.renderRecent();
   }
 
-  private hint(text: string): void {
+  /** 知らせを出す。長い知らせ（読み込めなかった理由など）は ms を長めにする */
+  private hint(text: string, ms = 2600): void {
     const node = el('hint');
     node.textContent = text;
     node.classList.remove('hidden');
@@ -1964,7 +2135,7 @@ class App {
     this.hintTimer = window.setTimeout(() => {
       node.style.opacity = '0';
       this.hintHideTimer = window.setTimeout(() => node.classList.add('hidden'), 260);
-    }, 2600);
+    }, ms);
   }
 
   // ---------- UI ----------
@@ -1993,7 +2164,7 @@ class App {
     file.addEventListener('change', () => {
       const f = file.files?.[0];
       if (!f) return;
-      f.arrayBuffer().then((buf) => this.load(buf, f.name)).catch(() => this.fail('ファイルを読み取れませんでした'));
+      void this.openPicked(f);
       file.value = '';
     });
 
@@ -2199,7 +2370,7 @@ class App {
     document.addEventListener('drop', (e) => {
       e.preventDefault();
       const f = e.dataTransfer?.files?.[0];
-      if (f) f.arrayBuffer().then((buf) => this.load(buf, f.name)).catch(() => this.fail('ファイルを読み取れませんでした'));
+      if (f) void this.openPicked(f);
     });
   }
 
@@ -2529,13 +2700,15 @@ class App {
 }
 
 /**
- * 図面に保存されているレイヤの状態の要約。
- * 同じ名前でも中身が変わった図面には、前に覚えたレイヤの表示を当てないために使う。
+ * 図面に保存されているレイヤの状態と、図形の数の要約。
+ * 同じ名前でも中身の違う図面（別の物件の同じ名前の図面、描き足して保存し直した図面）には、
+ * 前に覚えた色やレイヤの表示を当てないために使う。同じひな形から描いた図面はレイヤの状態が同じでも、図形の数で分かれる
  */
 function jwFingerprint(info: LoadedInfo): string {
   return JSON.stringify([
     info.writeGroup,
     info.groups.map((g) => [g.state, g.writeLayer, g.layers.map((l) => l.state)]),
+    info.counts,
   ]);
 }
 

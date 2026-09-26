@@ -353,7 +353,8 @@ export class SnapIndex {
 
     // 1 セルあたり数本になるようにセル数を決める
     const targetCells = Math.max(64, Math.min(1 << 18, segCount));
-    this.cell = Math.max(Math.sqrt((w * h) / targetCells), 1e-6);
+    // 極端に細長い範囲（横一本の線だけなど）でも格子が膨らまないよう、縦横それぞれ 4096 セルまでにする
+    this.cell = Math.max(Math.sqrt((w * h) / targetCells), w / 4096, h / 4096, 1e-6);
     this.gw = Math.max(1, Math.ceil(w / this.cell));
     this.gh = Math.max(1, Math.ceil(h / this.cell));
     this.minX = bounds.minX;

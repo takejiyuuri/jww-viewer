@@ -16,9 +16,17 @@ interface Ctx {
   classes: Map<number, string>;
   mapCount: number;
   warnings: string[];
+  /** 読み飛ばした画像の配置の数 */
+  images: number;
 }
 
 const NULL_CLASS = '';
+
+/**
+ * 画像の配置。Jw_cad は画像を「^@BM」で始まる文字（画像のファイル名と大きさなどを並べたもの）として持つ。
+ * 画像は表示しないので、文字としても描かない（意味のない文字列が図面に出ないように）
+ */
+const IMAGE_TEXT = '^@BM';
 
 /** オブジェクトの先頭タグを読み、クラス名を返す */
 function readClassTag(r: Reader, ctx: Ctx): string {
@@ -174,7 +182,12 @@ function readEntity(r: Reader, ctx: Ctx, out: JwwEntities, className: string): v
     case 'CDataSen': out.lines.push(readLine(r, ctx)); break;
     case 'CDataEnko': out.arcs.push(readArc(r, ctx)); break;
     case 'CDataTen': out.points.push(readPoint(r, ctx)); break;
-    case 'CDataMoji': out.texts.push(readText(r, ctx)); break;
+    case 'CDataMoji': {
+      const m = readText(r, ctx);
+      if (m.text.startsWith(IMAGE_TEXT)) ctx.images++;
+      else out.texts.push(m);
+      break;
+    }
     case 'CDataSolid': out.solids.push(readSolid(r, ctx)); break;
     case 'CDataSunpou': out.dims.push(readDim(r, ctx)); break;
     case 'CDataBlock': out.blocks.push(readBlockRef(r, ctx)); break;
@@ -191,6 +204,7 @@ export function parseJww(buffer: ArrayBuffer): JwwDocument {
     classes: new Map(),
     mapCount: 1,
     warnings: [],
+    images: 0,
   };
 
   const entities = emptyEntities();
@@ -225,12 +239,34 @@ export function parseJww(buffer: ArrayBuffer): JwwDocument {
     }
   }
 
-  // Jw_cad は最後に 4 バイトの 0 を書く。それ以外が残っていたら読み損ねている。
-  if (r.rest === 4 && r.u32() === 0) {
-    // 正常な終端
-  } else if (r.pos !== r.length) {
-    ctx.warnings.push(`末尾に未読の ${r.length - r.pos} バイトが残りました`);
-  }
+  readTrailer(r, ctx);
+  if (ctx.images > 0) ctx.warnings.push(`画像（${ctx.images} 個）は表示していません`);
 
   return { header, entities, blockDefs, warnings: ctx.warnings };
+}
+
+/**
+ * 図形の後ろ。Ver.7.00 以降は同梱画像の数（DWORD）と、画像ごとの名前・大きさ（DWORD）・中身が続く。
+ * 画像を同梱していなければ 4 バイトの 0 で終わる。画像は表示しないので読み飛ばす。
+ * それ以外が残っていたら読み損ねているので知らせる。
+ */
+function readTrailer(r: Reader, ctx: Ctx): void {
+  const start = r.pos;
+  if (r.rest === 4 && r.u32() === 0) return; // 画像のない正常な終端
+  r.pos = start;
+  if (ctx.version >= 700 && r.rest >= 4) {
+    try {
+      const n = r.u32();
+      // Jw_cad は画像のファイルを開けなかったとき、数を書いたまま中身を飛ばすので、末尾に来たらそこで終わる
+      for (let i = 0; i < n && r.rest > 0; i++) {
+        r.str(); // 画像のファイル名
+        r.skip(r.u32());
+      }
+    } catch {
+      // 途中で終わっていたら、読めた所までとして下で知らせる
+    }
+  }
+  if (r.pos !== r.length) {
+    ctx.warnings.push(`末尾に未読の ${r.length - r.pos} バイトが残りました`);
+  }
 }

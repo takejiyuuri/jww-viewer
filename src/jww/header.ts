@@ -4,6 +4,21 @@ import type { JwwHeader, JwwLayerGroup } from './types.ts';
 /** SXF 拡張色の色番号オフセット */
 const SXCOL_EXT = 100;
 
+/** JWW ファイルの先頭 8 バイト */
+export const JWW_MAGIC = 'JwwData.';
+
+/**
+ * 先頭のバイト列が JWW ファイルのものか。
+ * 中身を丸ごと読んだり複製したりする前に、別形式のファイル（誤って選んだ動画など）を弾くのに使う
+ */
+export function isJwwHead(bytes: Uint8Array): boolean {
+  if (bytes.length < JWW_MAGIC.length) return false;
+  for (let i = 0; i < JWW_MAGIC.length; i++) {
+    if (bytes[i] !== JWW_MAGIC.charCodeAt(i)) return false;
+  }
+  return true;
+}
+
 /**
  * JWW ヘッダを読む。
  * 図形データの開始位置を正しく決めるため、使わない項目も全て読み進める必要がある。
@@ -11,7 +26,7 @@ const SXCOL_EXT = 100;
  */
 export function parseHeader(r: Reader): JwwHeader {
   const magic = r.ascii(8);
-  if (magic !== 'JwwData.') {
+  if (magic !== JWW_MAGIC) {
     throw new Error(`JWW ファイルではありません (先頭 8 バイトが "${magic}")`);
   }
   const version = r.u32();
