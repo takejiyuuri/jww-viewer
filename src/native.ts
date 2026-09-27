@@ -31,9 +31,9 @@ export interface IncomingReader {
 }
 
 /**
- * iOS がアプリの中に作った、受け渡し用の写しか。メールなどからは Documents/Inbox/、
- * 「ファイル」アプリからは tmp/<Bundle ID>-Inbox/ に写されると報告されている。
- * このアプリはその場で開く設定にしていない（LSSupportsOpeningDocumentsInPlace が false）ので、どちらも元のファイルではない
+ * アプリの中に作った、受け渡し用の写しか。メールなどからは iOS が Documents/Inbox/ に写す。
+ * 「ファイル」アプリで押した図面は元の場所のまま渡されるが、SceneDelegate.swift が tmp/<Bundle ID>-Inbox/ へ写してから渡す。
+ * どちらも元のファイルではないので、読み終えたら消してよい
  */
 export function isInboxCopy(url: string): boolean {
   return /\/(?:Inbox|tmp\/[^/]+-Inbox)\//i.test(url.split(/[?#]/)[0]);
