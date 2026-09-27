@@ -7,6 +7,8 @@
   --dim: #9aa2b1;
   --accent: #35d07f;
   --accent-dim: rgba(53, 208, 127, 0.18);
+  /* 記録した計測の札の色（colors.ts の RECORD_COLOR と同じ） */
+  --record: #5eead4;
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left, 0px);
@@ -239,6 +241,21 @@ html.standalone #shell {
 
 #btn-clear::after {
   left: -1px;
+  bottom: -1px;
+}
+
+/* 記録。図面の上の札と同じ色にして、押すと札になることを示す。押せる所は戻すの側へ広げない */
+.readout-top .record-btn {
+  width: 40px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--record);
+  border-color: rgba(94, 234, 212, 0.45);
+}
+
+#btn-record::after {
+  right: -1px;
   bottom: -1px;
 }
 
@@ -1189,6 +1206,7 @@ body.ui-hidden #layer-panel,
 body.ui-hidden #display-panel,
 body.ui-hidden #info-panel,
 body.ui-hidden #files-panel,
+body.ui-hidden #records-panel,
 body.ui-hidden #color-pop {
   display: none;
 }
@@ -1273,6 +1291,34 @@ body.ui-hidden .ui-show {
   flex-shrink: 0;
   font-size: 16px;
   color: var(--dim);
+}
+
+/* ---- 計測の記録のシート ---- */
+/* 上のバーの「記録 N」。題名を詰めてでも番号の数は見せる */
+#btn-records {
+  flex: none;
+  white-space: nowrap;
+  color: var(--record);
+}
+
+/* 一覧を開いたままでも、上に図面の札が見えて押せるよう、画面の半分までにする */
+#records-panel {
+  max-height: 50%;
+}
+
+.record-no {
+  color: var(--record);
+  font-weight: 700;
+  margin-right: 4px;
+}
+
+.record-row.current .recent-name {
+  color: var(--record);
+}
+
+#btn-records-badges[aria-pressed="true"] {
+  border-color: var(--record);
+  color: var(--record);
 }
 
 /* ---- レイヤシート ---- */
@@ -1671,7 +1717,8 @@ body.ui-hidden .ui-show {
    */
   .sheet,
   #layer-panel,
-  #display-panel {
+  #display-panel,
+  #records-panel {
     left: auto;
     right: var(--edge-right);
     top: calc(var(--safe-top) + 56px);

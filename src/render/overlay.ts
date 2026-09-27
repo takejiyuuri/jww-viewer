@@ -4,7 +4,7 @@ import type { Axis, SnapResult } from '../measure/snap.ts';
 import {
   SNAP_LABEL, formatAngle, formatArea, formatLength, formatVolume, measureAngles, measureArea, measureLengths, polygonCenter,
 } from '../measure/measure.ts';
-import type { MeasureInk } from '../measure/colors.ts';
+import { RECORD_COLOR, RECORD_INK, type MeasureInk } from '../measure/colors.ts';
 import type { Background } from './theme.ts';
 
 /**
@@ -77,6 +77,28 @@ export interface OverlayState {
   height: number;
   /** 計測の印・線・数字の色 */
   ink: MeasureInk;
+  /** 記録した計測の札の位置（CSS ピクセル）と番号。focused は押して見せている記録の札 */
+  badges: RecordBadge[];
+  /** 札を押して見せている記録。いま測っているものと同じ描き方で、記録の色で描く。無ければ null */
+  focus: MeasureShape | null;
+}
+
+/** 計測の形と、辺の長さ・面積を出すのに要るもの */
+export interface MeasureShape {
+  points: MeasurePoint[];
+  mode: MeasureMode;
+  scale: number;
+  fixedScale: boolean;
+  height: number;
+}
+
+/** 記録した計測の札 */
+export interface RecordBadge {
+  /** CSS ピクセル、左上原点 */
+  x: number;
+  y: number;
+  label: string;
+  focused: boolean;
 }
 
 /** 属性で見ている図形を目立たせる色 */
@@ -145,7 +167,8 @@ export class Overlay {
     // 何も描かないあいだは、この層ごと隠す。GPU で描く 2D キャンバス（Chrome で確認）では、
     // 描いていた状態から空になったあと、中身の変わらないコマで消したはずの前の絵（「前の範囲」の囲いなど）が
     // 1 コマおきに画面に出ることがある。隠しておけば出ない。切り替えは空かどうかが変わったときだけ
-    const empty = !s.backRect && !s.highlight && !s.constraint && s.points.length === 0 && !s.preview && !s.magnifier;
+    const empty = !s.backRect && !s.highlight && !s.constraint && s.points.length === 0 && !s.preview && !s.magnifier
+      && s.badges.length === 0 && !s.focus;
     if (empty !== this.wasEmpty) {
       this.canvas.style.visibility = empty ? 'hidden' : '';
       this.wasEmpty = empty;
@@ -176,9 +199,12 @@ export class Overlay {
       this.drawHighlight(s.highlight, (x, y) => this.toScreen(view, x, y), k);
     }
 
+    // 札を押して見せている記録。いま測っているものより下に描き、記録の色で見分ける
+    if (s.focus) this.drawMeasure(view, s.focus, null, k, RECORD_INK, -1);
+    // 記録の札。線は引かず、番号だけを図面の上に浮かべる
+    for (const b of s.badges) this.badge(b.x * k, b.y * k, b.label, k, b.focused);
+
     const ink = s.ink;
-    // 面積・体積では、3 点以上で最後の点から最初の点へ戻して囲む
-    const closed = (s.mode === 'area' || s.mode === 'volume') && pts.length >= 3;
 
     // 直交拘束の基準線。この線の上だけを動くことを示す
     if (s.constraint) {
@@ -198,68 +224,7 @@ export class Overlay {
       ctx.setLineDash([]);
     }
 
-    // 囲んだ範囲を薄く塗る
-    if (closed) {
-      ctx.fillStyle = ink.fill;
-      ctx.beginPath();
-      ctx.moveTo(pts[0][0], pts[0][1]);
-      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
-      ctx.closePath();
-      ctx.fill();
-    }
-
-    // 測線。囲むときの最後の点から最初の点へ戻る辺は点線にして、置いた辺と見分ける
-    if (pts.length >= 2) {
-      ctx.strokeStyle = ink.line;
-      ctx.lineWidth = 2 * k;
-      ctx.setLineDash([]);
-      ctx.beginPath();
-      ctx.moveTo(pts[0][0], pts[0][1]);
-      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
-      ctx.stroke();
-      if (closed) {
-        ctx.setLineDash([7 * k, 6 * k]);
-        ctx.beginPath();
-        ctx.moveTo(pts[pts.length - 1][0], pts[pts.length - 1][1]);
-        ctx.lineTo(pts[0][0], pts[0][1]);
-        ctx.stroke();
-        ctx.setLineDash([]);
-      }
-    }
-
-    // 角度は、頂点ごとに 2 辺のあいだへ弧を描き、角度の札を添える（辺の長さは出さず、角度を読みやすくする）
-    if (s.mode === 'angle' && pts.length >= 3) this.drawAngles(s.points, pts, k, ink);
-
-    // 辺の長さ。下の計測結果と同じ縮尺で実寸に直す
-    // （距離は区間ごとに両端が乗っている図の縮尺、面積・体積は囲んだ範囲全体で一つの縮尺）
-    if (pts.length >= 2 && s.mode !== 'angle') {
-      const n = pts.length;
-      const edges = s.mode === 'length'
-        ? measureLengths(s.points, s.scale, s.fixedScale).segments
-        : measureArea(s.points, s.scale, s.fixedScale).edges;
-      for (let i = 0; i < edges.length; i++) {
-        // 同じ所に重ねた点のあいだ（長さ 0）は、印の上に「0.0 mm」が重なるだけなので出さない
-        if (!(edges[i] > 1e-6)) continue;
-        const a = pts[i];
-        const b = pts[(i + 1) % n];
-        this.pill((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, formatLength(edges[i]), k, ink);
-      }
-    }
-
-    // 確定した点。動かしている点は大きく描く
-    for (let i = 0; i < pts.length; i++) {
-      const strong = i === s.activeIndex || (s.activeIndex === null && i === pts.length - 1);
-      this.marker(pts[i][0], pts[i][1], k, strong, ink);
-    }
-
-    // 面積・体積の値は、囲んだ範囲の真ん中に大きめに出す（辺の長さより手前に）
-    if (closed) {
-      const m = measureArea(s.points, s.scale, s.fixedScale);
-      const c = polygonCenter(s.points);
-      const [cx, cy] = this.toScreen(view, c.x, c.y);
-      const text = s.mode === 'volume' ? formatVolume(m.area * s.height) : formatArea(m.area);
-      this.pill(cx, cy, text, k, ink, true);
-    }
+    this.drawMeasure(view, s, pts, k, ink, s.activeIndex);
 
     // 長押し中のプレビュー
     if (s.preview) {
@@ -365,6 +330,82 @@ export class Overlay {
           ctx.stroke();
         }
       }
+    }
+  }
+
+  /**
+   * 計測の線・印・辺の長さ・面積の値を描く。いま測っているものと、札を押して見せている記録に使う。
+   * pts は点の画面座標（null なら求める）。active は大きく描く点の番号（null なら最後の点、-1 ならどれも大きくしない）
+   */
+  private drawMeasure(
+    view: View, s: MeasureShape, pts: Array<[number, number]> | null, k: number, ink: MeasureInk, active: number | null,
+  ): void {
+    const ctx = this.ctx;
+    pts ??= s.points.map((p) => this.toScreen(view, p.x, p.y));
+    // 面積・体積では、3 点以上で最後の点から最初の点へ戻して囲む
+    const closed = (s.mode === 'area' || s.mode === 'volume') && pts.length >= 3;
+
+    // 囲んだ範囲を薄く塗る
+    if (closed) {
+      ctx.fillStyle = ink.fill;
+      ctx.beginPath();
+      ctx.moveTo(pts[0][0], pts[0][1]);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // 測線。囲むときの最後の点から最初の点へ戻る辺は点線にして、置いた辺と見分ける
+    if (pts.length >= 2) {
+      ctx.strokeStyle = ink.line;
+      ctx.lineWidth = 2 * k;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(pts[0][0], pts[0][1]);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+      ctx.stroke();
+      if (closed) {
+        ctx.setLineDash([7 * k, 6 * k]);
+        ctx.beginPath();
+        ctx.moveTo(pts[pts.length - 1][0], pts[pts.length - 1][1]);
+        ctx.lineTo(pts[0][0], pts[0][1]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+
+    // 角度は、頂点ごとに 2 辺のあいだへ弧を描き、角度の札を添える（辺の長さは出さず、角度を読みやすくする）
+    if (s.mode === 'angle' && pts.length >= 3) this.drawAngles(s.points, pts, k, ink);
+
+    // 辺の長さ。下の計測結果と同じ縮尺で実寸に直す
+    // （距離は区間ごとに両端が乗っている図の縮尺、面積・体積は囲んだ範囲全体で一つの縮尺）
+    if (pts.length >= 2 && s.mode !== 'angle') {
+      const n = pts.length;
+      const edges = s.mode === 'length'
+        ? measureLengths(s.points, s.scale, s.fixedScale).segments
+        : measureArea(s.points, s.scale, s.fixedScale).edges;
+      for (let i = 0; i < edges.length; i++) {
+        // 同じ所に重ねた点のあいだ（長さ 0）は、印の上に「0.0 mm」が重なるだけなので出さない
+        if (!(edges[i] > 1e-6)) continue;
+        const a = pts[i];
+        const b = pts[(i + 1) % n];
+        this.pill((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, formatLength(edges[i]), k, ink);
+      }
+    }
+
+    // 確定した点。動かしている点は大きく描く
+    for (let i = 0; i < pts.length; i++) {
+      const strong = i === active || (active === null && i === pts.length - 1);
+      this.marker(pts[i][0], pts[i][1], k, strong, ink);
+    }
+
+    // 面積・体積の値は、囲んだ範囲の真ん中に大きめに出す（辺の長さより手前に）
+    if (closed) {
+      const m = measureArea(s.points, s.scale, s.fixedScale);
+      const c = polygonCenter(s.points);
+      const [cx, cy] = this.toScreen(view, c.x, c.y);
+      const text = s.mode === 'volume' ? formatVolume(m.area * s.height) : formatArea(m.area);
+      this.pill(cx, cy, text, k, ink, true);
     }
   }
 
@@ -584,6 +625,29 @@ export class Overlay {
     }
     ctx.fillStyle = ink ? ink.text : '#c9cfda';
     // 揃え方はこの札の中だけで変える。残すと、あとで同じキャンバスに描く拡大鏡の中の図面の文字がずれる
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, x, y + 0.5 * k);
+    ctx.restore();
+  }
+
+  /**
+   * 記録の札。図面の線や計測の札に紛れないよう、濃い地に記録の色の太めの縁と文字にする。
+   * 押して見せている記録の札は、地を記録の色で塗って（文字は濃く）どれを見ているかを示す
+   */
+  private badge(x: number, y: number, text: string, k: number, focused: boolean): void {
+    const ctx = this.ctx;
+    ctx.font = `700 ${14 * k}px -apple-system, "Hiragino Sans", system-ui, sans-serif`;
+    const h = 24 * k;
+    const w = Math.max(h, ctx.measureText(text).width + 14 * k);
+    this.roundRect(x - w / 2, y - h / 2, w, h, h / 2);
+    ctx.fillStyle = focused ? RECORD_COLOR : 'rgba(11,12,16,0.92)';
+    ctx.fill();
+    ctx.strokeStyle = focused ? 'rgba(11,12,16,0.92)' : RECORD_COLOR;
+    ctx.lineWidth = 2 * k;
+    ctx.stroke();
+    ctx.fillStyle = focused ? '#0b0c10' : RECORD_COLOR;
     ctx.save();
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';

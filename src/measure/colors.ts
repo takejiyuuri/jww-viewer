@@ -80,3 +80,19 @@ export function measureInk(id: string, background: Background): MeasureInk {
       dot: 'rgba(11,12,16,0.65)',
     };
 }
+
+/**
+ * 記録した計測の札と、札を押して見せる記録の色。選べる計測の色（上の 8 色）にも「前の範囲」の橙にもない青緑にして、
+ * いま測っているものと見分ける
+ */
+export const RECORD_COLOR = '#5eead4';
+
+export const RECORD_INK: MeasureInk = {
+  stroke: RECORD_COLOR,
+  line: rgba(RECORD_COLOR, 0.9),
+  guide: rgba(RECORD_COLOR, 0.38),
+  fill: rgba(RECORD_COLOR, 0.14),
+  text: RECORD_COLOR,
+  label: 'rgba(11,12,16,0.9)',
+  dot: 'rgba(11,12,16,0.65)',
+};

@@ -1,12 +1,12 @@
 import { NoWebGL2Error, Renderer, type View } from './render/renderer.ts';
 import { TextLayer } from './render/textlayer.ts';
-import { Overlay, type Highlight, type MagnifierBox, type OverlayState } from './render/overlay.ts';
+import { Overlay, type Highlight, type MagnifierBox, type OverlayState, type RecordBadge } from './render/overlay.ts';
 import type { Scene } from './render/geometry.ts';
 import type { LoadResponse, LoadedInfo } from './jww/worker.ts';
 import { SnapIndex, type Axis, type SnapResult } from './measure/snap.ts';
 import {
   MEASURE_MODES, SNAP_LABEL, formatAngle, formatArea, formatLength, formatVolume, inclination, measureAngles, measureArea,
-  measureLengths, parseLength, type MeasureMode, type MeasurePoint,
+  measureLengths, parseLength, polygonCenter, type MeasureMode, type MeasurePoint,
 } from './measure/measure.ts';
 import { MEASURE_COLORS, measureColor, measureInk } from './measure/colors.ts';
 import {
@@ -60,8 +60,43 @@ interface Insets {
   /** 右に寄せたパネルの上端（CSS ピクセル）。無ければ画面の高さ */
   rightTop: number;
 }
-type Sheet = 'info-panel' | 'display-panel' | 'layer-panel' | 'files-panel';
-const SHEETS: Sheet[] = ['info-panel', 'display-panel', 'layer-panel', 'files-panel'];
+type Sheet = 'info-panel' | 'display-panel' | 'layer-panel' | 'files-panel' | 'records-panel';
+const SHEETS: Sheet[] = ['info-panel', 'display-panel', 'layer-panel', 'files-panel', 'records-panel'];
+
+/** 計測の記録。図面を開いているあいだだけ覚えておき、端末には残さない */
+interface MeasureRecord {
+  /** 図面ごとの通し番号（①②…） */
+  no: number;
+  mode: MeasureMode;
+  /** 記録したときの値と内訳（一覧とコピーに使う） */
+  value: string;
+  detail: string;
+  /** 点の写し（図面座標・吸着の種類・レイヤグループ・縮尺） */
+  points: MeasurePoint[];
+  /** 計測に使った縮尺と、利用者が選んだ縮尺か（見せるときに辺の長さを出し直すのに使う） */
+  scale: number;
+  fixedScale: boolean;
+  /** 縮尺のボタンに出ていた縮尺（1/50 など） */
+  scaleText: string;
+  /** 計測の色 */
+  color: string;
+  /** 体積の高さ（mm） */
+  height: number;
+  /** 記録した時刻 */
+  time: number;
+}
+
+/** 覚えておける記録の数 */
+const MAX_RECORDS = 50;
+/** 記録の札を押したとみなす、札の中心からの距離（CSS ピクセル） */
+const RECORD_HIT = 22;
+/**
+ * 記録へ図面を動かすときに見せる枠の最小の大きさ（図面座標＝用紙上の mm）。
+ * 短い距離や 1 本の線の記録を、線しか見えないほど拡大しないように
+ */
+const RECORD_MIN_SIZE = 30;
+
+const MODE_NAME: Record<MeasureMode, string> = { length: '距離', area: '面積', volume: '体積', angle: '角度' };
 
 /** レイヤの表示の変更の履歴の 1 段。そのときのレイヤの状態と、見ていた図形 */
 interface LayerStep {
@@ -180,6 +215,19 @@ class App {
   private swallowTap = false;
   /** 高さの窓を、ほかの種類から体積に切り替えるために開いている。高さを決めたときに体積にする */
   private heightSwitch = false;
+
+  /** 計測の記録（記録した順）。別の図面を開くと消える */
+  private records: MeasureRecord[] = [];
+  /** 次に記録するときの番号 */
+  private nextRecordNo = 1;
+  /** 押して見せている記録の番号。null なら無し */
+  private focusNo: number | null = null;
+  /** 図面に記録の札を出す */
+  private showBadges = true;
+  /** ファイルの選択を出す前に、記録が消えることを確かめてある（選んだのが ZIP で、中から選ぶときに聞き直さない） */
+  private pickAgreed = false;
+  /** 一覧に並べた ZIP の中の図面は、記録が消えることを確かめてから開いたもの */
+  private zipAgreed = false;
 
   /** 背景の白黒と単色表示。端末ごとの好みとして次回も使う */
   private display: DisplaySettings = loadDisplay();
@@ -534,9 +582,10 @@ class App {
 
   /**
    * 選んだ（落とした）ファイルを開く。中身を丸ごと読む前に、大きさと先頭 8 バイトを確かめる
-   * （動画などを誤って選んだとき、読み込みと複製でメモリを使い果たしてページごと落ちないように）
+   * （動画などを誤って選んだとき、読み込みと複製でメモリを使い果たしてページごと落ちないように）。
+   * agreed は、選ぶ前に記録が消えることを確かめてあるか
    */
-  private async openPicked(f: File): Promise<void> {
+  private async openPicked(f: File, agreed = false): Promise<void> {
     try {
       const head = new Uint8Array(await f.slice(0, 8).arrayBuffer());
       // ZIP は中の図面を取り出してから確かめる（大きさだけ先に見る）
@@ -546,7 +595,7 @@ class App {
         this.fail(reason);
         return;
       }
-      await this.openBuffer(await f.arrayBuffer(), f.name);
+      await this.openBuffer(await f.arrayBuffer(), f.name, agreed);
     } catch {
       this.fail('ファイルを読み取れませんでした');
     }
@@ -554,9 +603,10 @@ class App {
 
   /**
    * 受け取ったファイルを開く。ZIP なら中の .jww を取り出す（LINE などは .jww を ZIP にして届けるため）。
-   * 1 つならそのまま開き、いくつもあれば「図面を開く」の一覧に並べて選んでもらう
+   * 1 つならそのまま開き、いくつもあれば「図面を開く」の一覧に並べて選んでもらう。
+   * agreed は、記録が消えることを確かめてあるか（一覧から選ぶときに聞き直さない）
    */
-  private async openBuffer(buffer: ArrayBuffer, name: string): Promise<void> {
+  private async openBuffer(buffer: ArrayBuffer, name: string, agreed = false): Promise<void> {
     if (!isZipHead(new Uint8Array(buffer, 0, Math.min(4, buffer.byteLength)))) return this.load(buffer, name);
     this.loadSeq++;
     this.showLoading(name);
@@ -575,6 +625,7 @@ class App {
     }
     if (entries.length === 1) return this.load(entries[0].buffer, entries[0].name);
     this.zipChoices = entries;
+    this.zipAgreed = agreed;
     const size = (b: number): string => (b >= 1024 * 1024 ? `${(b / 1024 / 1024).toFixed(1)}MB` : `${Math.max(1, Math.round(b / 1024))}KB`);
     el('zip-caption').textContent = `${name} の中の図面（${entries.length} 件）`;
     el('zip-list').innerHTML = entries.map((e, i) => '<div class="recent-row">'
@@ -589,6 +640,7 @@ class App {
 
   /** アプリに入れた見本の図面を開く。最近の一覧や次の起動には残さない */
   private async openSample(): Promise<void> {
+    if (!this.confirmDiscard()) return;
     try {
       const res = await fetch(`${import.meta.env.BASE_URL}sample.jww`);
       if (!res.ok) throw new Error(String(res.status));
@@ -602,6 +654,7 @@ class App {
   private openZipChoice(index: number): void {
     const entry = this.zipChoices[index];
     if (!entry) return;
+    if (!this.zipAgreed && !this.confirmDiscard()) return;
     this.clearZipChoices();
     this.openSheet(null);
     void this.load(entry.buffer, entry.name);
@@ -656,6 +709,12 @@ class App {
     this.fitBasis = null;
     clearTimeout(this.fitCheckTimer);
     this.layers.useCounts(scene.layerCounts);
+    // 計測の記録はその図面のものなので、別の図面では消す（同じ図面を開き直したときも、縮尺などが変わりうるので消す）
+    const droppedRecords = this.records.length;
+    this.records = [];
+    this.nextRecordNo = 1;
+    this.focusNo = null;
+    this.updateRecordsUi();
 
     // 同じ図面を開き直したときは、前に隠していた色とレイヤをそのまま隠す。
     // 記録がなければ、レイヤは Jw_cad で保存したときの表示状態から始める。
@@ -712,6 +771,8 @@ class App {
     const hiddenLayers = this.layers.hiddenCount(scene.layerCounts);
     if (hiddenLayers > 0) notes.push(`${hiddenLayers} 個のレイヤが非表示です`);
     if (this.hiddenGroups.size > 0) notes.push(`前回隠した ${this.hiddenGroups.size} 色の線を隠しています`);
+    // 渡された図面（共有・ドラッグ）では開く前に聞けないので、前の図面の記録が消えたことをここで知らせる
+    if (droppedRecords > 0) notes.push(`前の図面の計測の記録（${droppedRecords} 件）は消えました`);
     if (info.warnings.includes(TRUNCATED_WARNING)) {
       // 図形が多すぎて途中で打ち切ったときは、欠けていることを長めに知らせる（欠けた所の線は測れない）
       this.hint(['図形が多すぎるため、途中までしか表示していません', ...notes].join('\n'), 8000);
@@ -740,11 +801,14 @@ class App {
     return bounds;
   }
 
-  /** 図形の範囲 b（既定は見えている図形の範囲）がちょうど収まる表示（いまの画面の大きさとパネルで） */
-  private fitView(b: Bounds = this.visibleFit()): View {
+  /**
+   * 図形の範囲 b（既定は見えている図形の範囲）がちょうど収まる表示（いまの画面の大きさとパネルで）。
+   * withSheets なら開いているシートも避ける（記録へ動かすとき。全体表示では一時的なシートは数えない）
+   */
+  private fitView(b: Bounds = this.visibleFit(), withSheets = false): View {
     // 見えている図形（色・レイヤ）だけで範囲を決める。隠したレイヤに残った図形で図面が小さくならないように
     // 上のバーと下（横向きでは右）のパネルに隠れない範囲に収める。狭すぎるときは画面全体に
-    const ins = this.measureInsets();
+    const ins = this.measureInsets(withSheets);
     const bw = Math.max(b.maxX - b.minX, 1e-6);
     const bh = Math.max(b.maxY - b.minY, 1e-6);
     // 収める枠の候補（CSS ピクセル）。横向きで縦に並べたツールバーの列は、どの枠でもいつも避ける
@@ -1091,6 +1155,8 @@ class App {
       mode: this.measurePrefs.mode,
       height: this.measurePrefs.height,
       ink: measureInk(this.measurePrefs.color, this.display.background),
+      badges: this.recordBadges(),
+      focus: this.focusedShape(),
     };
     this.overlay.render(this.view, state);
   }
@@ -1254,8 +1320,13 @@ class App {
       // 置いた点の近くを動かさずにすぐ離したときは、点のつまみ直しではなく、ふつうのタップとして扱う。
       // 点を置き直すのは、指でずらしたときと、長押ししてから離したときだけ
       const tap = index !== null && this.moved < 9 && performance.now() - this.downAt < 400;
+      // 置いた点の近くでも、記録の札を押したのならその記録を見せる
+      const badge = tap ? this.badgeAt(e.clientX, e.clientY) : null;
       this.cancelHold();
-      if (inspecting) {
+      if (badge !== null) {
+        this.focusRecord(badge, false);
+        tapFeedback();
+      } else if (inspecting) {
         this.select(entity);
         if (entity >= 0) tapFeedback();
       } else if (tap) {
@@ -1278,12 +1349,24 @@ class App {
 
     clearTimeout(this.holdTimer);
     const quick = performance.now() - this.downAt < 400;
+    // 2 本以上触れていた操作はピンチなので、点を打たない。色の一覧を閉じるためのタップでも打たない
+    const tap = this.pointers.size === 0 && this.maxPointers === 1 && quick && this.moved < 9 && !this.swallowTap;
+    // 記録の札を押したら、その記録へ図面を動かして見せる（点は置かず、図形も選ばない）。見るだけなので、ボタンを隠していても働く
+    const badge = tap ? this.badgeAt(e.clientX, e.clientY) : null;
+    if (badge !== null) {
+      this.focusRecord(badge, false);
+      tapFeedback();
+      this.finishStroke();
+      this.requestDraw(true);
+      return;
+    }
+    // 札のない所を押したら、見せていた記録はしまう
+    if (tap) this.clearFocus();
     // ボタンを隠しているあいだに図面を押したときは、点を置かずに戻し方を知らせる
     if (this.uiHidden() && this.pointers.size === 0 && this.maxPointers === 1 && this.moved < 9 && !this.swallowTap) {
       this.hint(`ボタンを隠しているあいだは見るだけです。右上のボタンで戻すと${this.tool === 'inspect' ? '図形を選べます' : '点を置けます'}`);
     }
-    // 2 本以上触れていた操作はピンチなので、点を打たない。色の一覧を閉じるためのタップでも打たない
-    if (this.pointers.size === 0 && this.maxPointers === 1 && quick && this.moved < 9 && !this.swallowTap && !this.uiHidden()) {
+    if (tap && !this.uiHidden()) {
       if (this.tool === 'inspect') {
         this.select(this.pickAt(e.clientX, e.clientY));
         if (this.selected >= 0) tapFeedback();
@@ -1348,11 +1431,15 @@ class App {
 
   private setZoom(z: number): void {
     if (!this.scene) return;
-    const b = this.scene.bounds;
-    const span = Math.max(b.maxX - b.minX, b.maxY - b.minY, 1e-6);
-    const min = (this.cssW * this.dpr) / (span * 40);
-    const max = (this.cssW * this.dpr) / 0.02;
+    const { min, max } = this.zoomLimits(this.scene);
     this.view.zoom = Math.max(min, Math.min(max, z));
+  }
+
+  /** 倍率の範囲。図面全体の 40 倍の広さまで引け、画面の幅が図面上の 0.02 mm になるまで寄れる */
+  private zoomLimits(scene: Scene): { min: number; max: number } {
+    const b = scene.bounds;
+    const span = Math.max(b.maxX - b.minX, b.maxY - b.minY, 1e-6);
+    return { min: (this.cssW * this.dpr) / (span * 40), max: (this.cssW * this.dpr) / 0.02 };
   }
 
   private pinchState(): { dist: number; midX: number; midY: number } | null {
@@ -1586,6 +1673,8 @@ class App {
     }
 
     this.points.push(p);
+    // 新しく測り始めたら、見せていた記録はしまう（色の違う 2 つの計測が重なって紛れないように）
+    this.clearFocus();
     // 最初の点が乗ったレイヤグループの縮尺を既定にする
     if (this.points.length === 1) this.syncAutoScale();
     this.updateReadout();
@@ -1650,6 +1739,25 @@ class App {
    * fromButton は戻す・消去で点を減らしたとき（点がなくなっても値の段を少しのあいだ残す）
    */
   private updateReadout(fromButton = false): void {
+    const value = el('readout-value');
+    value.style.fontSize = '';
+    this.fillReadout(fromButton);
+    // 記録は値が出ているときだけ押せる
+    const v = value.textContent;
+    el<HTMLButtonElement>('btn-record').disabled = !v || v === '—';
+    // 体積の内訳を詰めても収まらないとき（狭い画面の大きな体積）は、値の字を小さくして内訳の幅を空ける。
+    // 値の段には記録・戻す・消去が並ぶので、内訳に残る幅が狭い
+    const detail = el('readout-detail');
+    if (!detail.classList.contains('compact')) return;
+    let size = parseFloat(getComputedStyle(value).fontSize);
+    while (detail.scrollHeight > detail.clientHeight + 1 && size > 14) {
+      size -= 1;
+      value.style.fontSize = `${size}px`;
+    }
+  }
+
+  /** 計測パネルの値と内訳を、点といまの種類（距離・面積・体積・角度）に合わせて書く */
+  private fillReadout(fromButton: boolean): void {
     const value = el('readout-value');
     const detail = el('readout-detail');
     const scale = el('btn-scale');
@@ -1904,6 +2012,274 @@ class App {
     window.setTimeout(() => {
       if (window.scrollX !== 0 || window.scrollY !== 0) window.scrollTo(0, 0);
     }, 350);
+  }
+
+  // ---------- 計測の記録 ----------
+
+  /** いまの計測の値と内訳（記録に残す文）。値が出ていなければ null */
+  private resultTexts(): { value: string; detail: string } | null {
+    const value = el('readout-value').textContent ?? '';
+    if (!this.scene || value === '' || value === '—') return null;
+    // 距離を続けて測ったときは、パネルには最後の区間を大きく出しているが、記録には合計を残し、内訳に区間を並べる
+    if (this.measurePrefs.mode === 'length' && this.points.length > 2) {
+      const m = measureLengths(this.points, this.measureScale, this.manualScale);
+      return {
+        value: formatLength(m.total),
+        detail: (m.mixed ? '※縮尺の違う図をまたいでいます ' : '') + m.segments.map((s) => formatLength(s)).join(' ＋ '),
+      };
+    }
+    // 内訳の改行（体積の底面と高さ）や全角の空きは、一覧とコピーでは 1 つの空きにする
+    return { value, detail: (el('readout-detail').textContent ?? '').replace(/\s+/g, ' ').trim() };
+  }
+
+  /** いまの計測を記録し、消去と同じく点を消して次を測れるようにする */
+  private recordMeasure(): void {
+    const texts = this.resultTexts();
+    if (!texts) return;
+    if (this.records.length >= MAX_RECORDS) {
+      this.hint(`記録は ${MAX_RECORDS} 件までです。「記録」の一覧から要らないものを消してください`);
+      return;
+    }
+    const no = this.nextRecordNo++;
+    const p = this.measurePrefs;
+    this.records.push({
+      no,
+      mode: p.mode,
+      ...texts,
+      points: this.points.map((q) => ({ ...q })),
+      scale: this.measureScale,
+      fixedScale: this.manualScale,
+      scaleText: el('btn-scale').textContent ?? '',
+      color: p.color,
+      height: p.height,
+      time: Date.now(),
+    });
+    this.points = [];
+    this.syncAutoScale();
+    this.updateReadout(true);
+    this.updateRecordsUi();
+    this.hint(`${circled(no)} を記録しました`);
+  }
+
+  /** 上のバーの「記録 N」と、開いていれば記録の一覧を、いまの記録に合わせる */
+  private updateRecordsUi(): void {
+    const n = this.records.length;
+    const chip = el('btn-records');
+    chip.classList.toggle('hidden', n === 0);
+    chip.textContent = `記録 ${n}`;
+    chip.setAttribute('aria-label', `計測の記録（${n} 件）`);
+    this.renderRecords();
+    this.requestDraw();
+  }
+
+  /** 記録の一覧（開いているときだけ書き直す） */
+  private renderRecords(): void {
+    if (el('records-panel').classList.contains('hidden')) return;
+    const n = this.records.length;
+    el('records-summary').textContent = n === 0 ? '' : `${n} 件・別の図面を開くと消えます`;
+    const badges = el('btn-records-badges');
+    badges.setAttribute('aria-pressed', String(this.showBadges));
+    el<HTMLButtonElement>('btn-records-copy').disabled = n === 0;
+    el<HTMLButtonElement>('btn-records-clear').disabled = n === 0;
+    const pad = (v: number): string => String(v).padStart(2, '0');
+    const rows = this.records.map((r) => {
+      const no = circled(r.no);
+      const d = new Date(r.time);
+      const meta = [r.detail, r.mode === 'angle' ? '' : r.scaleText, `${d.getHours()}:${pad(d.getMinutes())}`].filter((t) => t !== '');
+      return `<div class="recent-row record-row${r.no === this.focusNo ? ' current' : ''}">`
+        + `<button class="recent-open" data-focus="${r.no}">`
+        + `<span class="recent-name"><span class="record-no">${no}</span>${MODE_NAME[r.mode]} ${escapeHtml(r.value)}</span>`
+        + `<span class="recent-meta">${escapeHtml(meta.join('・'))}</span>`
+        + '</button>'
+        + `<button class="icon-btn recent-remove" data-delete="${r.no}" aria-label="${no} を消す">×</button>`
+        + '</div>';
+    });
+    el('records-list').innerHTML = n === 0
+      ? '<p class="sub">記録はありません。計測の値の横の「記録」を押すと、ここに残ります</p>'
+      : rows.join('');
+  }
+
+  /** 記録を 1 つ消す */
+  private deleteRecord(no: number): void {
+    this.records = this.records.filter((r) => r.no !== no);
+    if (this.focusNo === no) this.focusNo = null;
+    // すべて消えたら、次の記録は ① から
+    if (this.records.length === 0) this.nextRecordNo = 1;
+    this.updateRecordsUi();
+  }
+
+  /** 記録をすべて消す（先に確かめる） */
+  private clearRecords(): void {
+    const n = this.records.length;
+    if (n === 0 || !window.confirm(`計測の記録（${n} 件）をすべて消しますか？`)) return;
+    this.records = [];
+    this.nextRecordNo = 1;
+    this.focusNo = null;
+    this.updateRecordsUi();
+    this.hint('計測の記録をすべて消しました');
+  }
+
+  /** 記録をすべて文にして写す（図面の名前を 1 行目に）。クリップボードが使えなければ古い仕組みで写す */
+  private copyRecords(): void {
+    const n = this.records.length;
+    if (n === 0) return;
+    const text = [`${this.info?.name ?? ''} 計測の記録`, ...this.records.map(recordLine)].join('\n');
+    const done = (): void => this.hint(`${n} 件の記録をコピーしました`);
+    const fallback = (): void => {
+      if (copyByCommand(text)) done();
+      else this.hint('コピーできませんでした');
+    };
+    const clip = navigator.clipboard;
+    if (clip?.writeText) clip.writeText(text).then(done, fallback);
+    else fallback();
+  }
+
+  /**
+   * 別の図面を開くと記録が消えるので、記録があれば開いてよいかを聞く。開いてよければ true。
+   * 共有やドラッグで渡された図面では聞けないので、開いたあとで消えたことを知らせる（onLoaded）
+   */
+  private confirmDiscard(): boolean {
+    const n = this.records.length;
+    return n === 0 || window.confirm(`計測の記録（${n} 件）は消えます。別の図面を開きますか？`);
+  }
+
+  /** 記録の札を置く所（図面座標）。面積・体積は囲んだ範囲の真ん中、距離はいちばん長い区間の中点、角度は頂点 */
+  private recordAnchor(r: MeasureRecord): { x: number; y: number } {
+    const p = r.points;
+    if (r.mode === 'area' || r.mode === 'volume') return polygonCenter(p);
+    if (r.mode === 'angle') return p[p.length - 2];
+    let best = 0;
+    let len = -1;
+    for (let i = 0; i + 1 < p.length; i++) {
+      const d = Math.hypot(p[i + 1].x - p[i].x, p[i + 1].y - p[i].y);
+      if (d > len) {
+        len = d;
+        best = i;
+      }
+    }
+    return { x: (p[best].x + p[best + 1].x) / 2, y: (p[best].y + p[best + 1].y) / 2 };
+  }
+
+  /** 図面座標 → CSS ピクセル */
+  private toCss(x: number, y: number): [number, number] {
+    const k = this.view.zoom / this.dpr;
+    return [(x - this.view.cx) * k + this.cssW / 2, this.cssH / 2 - (y - this.view.cy) * k];
+  }
+
+  /**
+   * 図面に出す記録の札（CSS ピクセル）。札を隠していても、押して見せている記録の札は出す。
+   * 見せている記録は線や値の札も描くので、その札は値の札（角度は弧）に重ならない所へずらす
+   */
+  private recordBadges(): Array<RecordBadge & { no: number }> {
+    const out: Array<RecordBadge & { no: number }> = [];
+    for (const r of this.records) {
+      const focused = r.no === this.focusNo;
+      if (!this.showBadges && !focused) continue;
+      const a = this.recordAnchor(r);
+      let [x, y] = this.toCss(a.x, a.y);
+      // 札そのものが丸いので、番号だけの札には丸数字でなくそのままの数字を書く（丸が二重に見えないように）
+      let label = String(r.no);
+      if (focused) {
+        const o = this.badgeShift(r);
+        x += o.x;
+        y += o.y;
+        // 続けて測った距離は、区間の長さしか描かないので、合計を札に添える
+        if (r.mode === 'length' && r.points.length > 2) label = `${circled(r.no)} 合計 ${r.value}`;
+      }
+      out.push({ no: r.no, x, y, label, focused });
+    }
+    return out;
+  }
+
+  /** 見せている記録の札をずらす向きと量（CSS ピクセル）。面積・体積と距離は値の札の上、角度は角の外側 */
+  private badgeShift(r: MeasureRecord): { x: number; y: number } {
+    if (r.mode !== 'angle') return { x: 0, y: r.mode === 'length' ? -25 : -28 };
+    const p = r.points;
+    const v = p[p.length - 2];
+    const unit = (q: MeasurePoint): { x: number; y: number } => {
+      const d = Math.hypot(q.x - v.x, q.y - v.y) || 1;
+      return { x: (q.x - v.x) / d, y: (q.y - v.y) / d };
+    };
+    const a = unit(p[p.length - 3]);
+    const b = unit(p[p.length - 1]);
+    // 2 辺の真ん中の向き（画面では上下が逆）の反対へ。一直線（180°）なら上へ
+    const bx = a.x + b.x;
+    const by = -(a.y + b.y);
+    const len = Math.hypot(bx, by);
+    return len < 1e-6 ? { x: 0, y: -26 } : { x: (-bx / len) * 26, y: (-by / len) * 26 };
+  }
+
+  /** 指の位置にある記録の札の番号。無ければ null */
+  private badgeAt(cssX: number, cssY: number): number | null {
+    let best: number | null = null;
+    let bestD = RECORD_HIT;
+    for (const b of this.recordBadges()) {
+      const d = Math.hypot(b.x - cssX, b.y - cssY);
+      if (d <= bestD) {
+        bestD = d;
+        best = b.no;
+      }
+    }
+    return best;
+  }
+
+  /** 見せている記録の形（記録の色で描く）。無ければ null */
+  private focusedShape(): OverlayState['focus'] {
+    const r = this.records.find((x) => x.no === this.focusNo);
+    return r ? { points: r.points, mode: r.mode, scale: r.scale, fixedScale: r.fixedScale, height: r.height } : null;
+  }
+
+  /**
+   * 記録を見せる。線・点・辺の長さ・値を記録の色で描き、図面をその記録がちょうどよい大きさで見える所へ動かす。
+   * 利用者が選んだ移動なので、指で動かしたときと同じく「全体」から大きく動けば「前の範囲」の戻り先は忘れる。
+   * 縦向きで下から出す一覧は画面の半分を覆い、その上の狭い所に収めると小さくしか見えないので閉じる（「記録 N」で開き直せる）。
+   * 横向きで右に出す一覧は左に図面が広く見えるので開いたままにし、続けてほかの記録を押して見比べられるようにする
+   */
+  private focusRecord(no: number, fromList: boolean): void {
+    const r = this.records.find((x) => x.no === no);
+    if (!r || !this.scene) return;
+    this.focusNo = no;
+    const sheet = el('records-panel');
+    if (!sheet.classList.contains('hidden') && sheet.getBoundingClientRect().width >= this.cssW * 0.6) this.openSheet(null);
+    this.view = this.recordView(r, this.scene);
+    this.textLayer.render(this.view);
+    this.requestDraw(true);
+    this.updateFitButton();
+    this.renderRecords();
+    if (!fromList) this.hint(`${circled(no)} ${MODE_NAME[r.mode]} ${r.value}`);
+  }
+
+  /**
+   * 記録がちょうどよい大きさで見える表示。記録の範囲に 25% ずつ余白を足し、上のバー・パネル・開いているシート・
+   * 横向きのツールバーに隠れない所へ収める。小さな記録は最低限の大きさの枠で見せ、倍率は寄れる・引ける範囲に収める
+   */
+  private recordView(r: MeasureRecord, scene: Scene): View {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const p of r.points) {
+      minX = Math.min(minX, p.x);
+      maxX = Math.max(maxX, p.x);
+      minY = Math.min(minY, p.y);
+      maxY = Math.max(maxY, p.y);
+    }
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    const w = Math.max((maxX - minX) * 1.5, RECORD_MIN_SIZE);
+    const h = Math.max((maxY - minY) * 1.5, RECORD_MIN_SIZE);
+    const box = (f: number): Bounds => ({ minX: cx - (w * f) / 2, maxX: cx + (w * f) / 2, minY: cy - (h * f) / 2, maxY: cy + (h * f) / 2 });
+    let v = this.fitView(box(1), true);
+    const { min, max } = this.zoomLimits(scene);
+    const z = Math.max(min, Math.min(max, v.zoom));
+    // 倍率が範囲を外れたら、枠をその分だけ広げて（狭めて）収め直す（記録は見える所の真ん中のまま）
+    if (z !== v.zoom) v = this.fitView(box(v.zoom / z), true);
+    return v;
+  }
+
+  /** 見せていた記録をしまう */
+  private clearFocus(): void {
+    if (this.focusNo === null) return;
+    this.focusNo = null;
+    this.renderRecords();
+    this.requestDraw();
   }
 
   // ---------- 属性 ----------
@@ -2177,6 +2553,7 @@ class App {
       el(btn).classList.toggle('open', id === sheet);
     }
     el('btn-open').setAttribute('aria-expanded', String(id === 'files-panel'));
+    el('btn-records').setAttribute('aria-expanded', String(id === 'records-panel'));
   }
 
   private toggleSheet(id: Sheet): boolean {
@@ -2194,7 +2571,10 @@ class App {
     this.undoRemove = null;
     this.clearZipChoices();
     if (this.recent.length === 0) {
+      // 記録が消えることは、選択を出す前に聞く（iOS は押したその場でないと選択を出せないが、confirm はその場で答えが返る）
+      if (!this.confirmDiscard()) return;
       this.openSheet(null);
+      this.pickAgreed = true;
       el<HTMLInputElement>('file').click();
       return;
     }
@@ -2251,6 +2631,7 @@ class App {
   private async openRecent(key: string): Promise<void> {
     const entry = this.recent.find((r) => r.key === key);
     if (!entry) return;
+    if (!this.confirmDiscard()) return;
     let buffer: ArrayBuffer | null;
     try {
       buffer = await loadRecent(key);
@@ -2323,8 +2704,10 @@ class App {
     el('btn-sample').addEventListener('click', () => void this.openSample());
     el('btn-files-close').addEventListener('click', () => this.closeFiles());
     el('btn-pick-file').addEventListener('click', () => {
+      if (!this.confirmDiscard()) return;
       // 選ばずにやめたときに、図面がなければ最初の画面が見えているように
       this.closeFiles();
+      this.pickAgreed = true;
       file.click();
     });
     el('zip-list').addEventListener('click', (e) => {
@@ -2342,8 +2725,10 @@ class App {
 
     file.addEventListener('change', () => {
       const f = file.files?.[0];
+      const agreed = this.pickAgreed;
+      this.pickAgreed = false;
       if (!f) return;
-      void this.openPicked(f);
+      void this.openPicked(f, agreed);
       file.value = '';
     });
 
@@ -2372,6 +2757,31 @@ class App {
       this.syncAutoScale();
       this.updateReadout(true);
       this.requestDraw();
+    });
+
+    // ---- 計測の記録 ----
+    el('btn-record').addEventListener('click', () => {
+      if (this.topJustShown()) return;
+      this.recordMeasure();
+    });
+    el('btn-records').addEventListener('click', () => {
+      if (this.toggleSheet('records-panel')) this.renderRecords();
+    });
+    el('btn-records-close').addEventListener('click', () => this.openSheet(null));
+    el('btn-records-copy').addEventListener('click', () => this.copyRecords());
+    el('btn-records-badges').addEventListener('click', () => {
+      this.showBadges = !this.showBadges;
+      this.renderRecords();
+      this.requestDraw();
+      this.hint(this.showBadges ? '図面に記録の札を出します' : '記録の札を隠しました（一覧で押した記録は出します）');
+    });
+    el('btn-records-clear').addEventListener('click', () => this.clearRecords());
+    el('records-list').addEventListener('click', (e) => {
+      const target = e.target as HTMLElement;
+      const remove = target.closest<HTMLElement>('[data-delete]');
+      const focus = target.closest<HTMLElement>('[data-focus]');
+      if (remove) this.deleteRecord(Number(remove.dataset.delete));
+      else if (focus) this.focusRecord(Number(focus.dataset.focus), true);
     });
 
     // ---- 計測の色・種類 ----
@@ -2905,6 +3315,41 @@ function formatScale(scale: number): string {
 
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c] as string));
+}
+
+/** 記録の番号（①〜㊿）。丸数字のない 51 からは (51) と書く */
+function circled(n: number): string {
+  if (n >= 1 && n <= 20) return String.fromCharCode(0x2460 + n - 1);
+  if (n >= 21 && n <= 35) return String.fromCharCode(0x3251 + n - 21);
+  if (n >= 36 && n <= 50) return String.fromCharCode(0x32b1 + n - 36);
+  return `(${n})`;
+}
+
+/** 記録を写すときの 1 行（① 距離 8.490 m（3.555 m ＋ 4.935 m）1/50）。角度は縮尺によらないので縮尺を書かない */
+function recordLine(r: MeasureRecord): string {
+  const scale = r.mode === 'angle' ? '' : r.scaleText;
+  const detail = r.detail ? `（${r.detail}）` : scale ? ' ' : '';
+  return `${circled(r.no)} ${MODE_NAME[r.mode]} ${r.value}${detail}${scale}`;
+}
+
+/** クリップボードの仕組みが使えないときに、選んだ文を写す古いやり方。写せたら true */
+function copyByCommand(text: string): boolean {
+  const area = document.createElement('textarea');
+  area.value = text;
+  area.setAttribute('readonly', '');
+  area.style.position = 'fixed';
+  area.style.top = '0';
+  area.style.left = '0';
+  area.style.opacity = '0';
+  document.body.appendChild(area);
+  try {
+    area.select();
+    return document.execCommand('copy');
+  } catch {
+    return false;
+  } finally {
+    area.remove();
+  }
 }
 
 /**
