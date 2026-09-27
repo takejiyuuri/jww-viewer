@@ -22,6 +22,7 @@ import { describeEntity, entityShape, pickEntity } from './ui/inspect.ts';
 import { KIND, TRUNCATED_WARNING, fitScene, type Bounds } from './render/geometry.ts';
 import { hex1, layerTag } from './jww/names.ts';
 import { isJwwHead } from './jww/header.ts';
+import { isZipHead, jwwInZip, type ZipEntry } from './jww/zip.ts';
 
 /** 吸着先を探す半径（CSS ピクセル） */
 const SNAP_RADIUS = 22;
@@ -132,6 +133,8 @@ class App {
    * 読み込み・保存のたびに先に読んでおく
    */
   private recent: RecentFile[] = [];
+  /** 開いた ZIP に .jww がいくつも入っていたときの、選んでもらう図面 */
+  private zipChoices: ZipEntry[] = [];
   /** 表示している図面の、最近の一覧での鍵（名前と中身から作る）。同じ名前の別の図面と取り違えずに「表示中」を付ける */
   private shownKey: string | null = null;
   /** 一覧から外した直後の図面と、外す前の行の位置。一覧を閉じるまで「元に戻す」で戻せる */
@@ -335,7 +338,7 @@ class App {
           this.loadSeq++;
           this.showLoading(name);
         },
-        open: (buffer, name) => this.load(buffer, name),
+        open: (buffer, name) => this.openBuffer(buffer, name),
         fail: (m) => {
           launchFailed = true;
           this.fail(m);
@@ -533,16 +536,68 @@ class App {
    */
   private async openPicked(f: File): Promise<void> {
     try {
-      const reason = rejectReason(f.size, new Uint8Array(await f.slice(0, 8).arrayBuffer()));
+      const head = new Uint8Array(await f.slice(0, 8).arrayBuffer());
+      // ZIP は中の図面を取り出してから確かめる（大きさだけ先に見る）
+      const reason = isZipHead(head) && f.size <= MAX_FILE_BYTES ? null : rejectReason(f.size, head);
       if (reason) {
         this.loadSeq++;
         this.fail(reason);
         return;
       }
-      this.load(await f.arrayBuffer(), f.name);
+      await this.openBuffer(await f.arrayBuffer(), f.name);
     } catch {
       this.fail('ファイルを読み取れませんでした');
     }
+  }
+
+  /**
+   * 受け取ったファイルを開く。ZIP なら中の .jww を取り出す（LINE などは .jww を ZIP にして届けるため）。
+   * 1 つならそのまま開き、いくつもあれば「図面を開く」の一覧に並べて選んでもらう
+   */
+  private async openBuffer(buffer: ArrayBuffer, name: string): Promise<void> {
+    if (!isZipHead(new Uint8Array(buffer, 0, Math.min(4, buffer.byteLength)))) return this.load(buffer, name);
+    this.loadSeq++;
+    this.showLoading(name);
+    let entries: ZipEntry[];
+    try {
+      entries = await jwwInZip(buffer, MAX_FILE_BYTES);
+    } catch (e) {
+      el('loading').classList.add('hidden');
+      this.fail(e instanceof Error && e.message ? e.message : 'ZIP を展開できませんでした');
+      return;
+    }
+    el('loading').classList.add('hidden');
+    if (entries.length === 0) {
+      this.fail(`${name} の中に .jww がありません`);
+      return;
+    }
+    if (entries.length === 1) return this.load(entries[0].buffer, entries[0].name);
+    this.zipChoices = entries;
+    const size = (b: number): string => (b >= 1024 * 1024 ? `${(b / 1024 / 1024).toFixed(1)}MB` : `${Math.max(1, Math.round(b / 1024))}KB`);
+    el('zip-caption').textContent = `${name} の中の図面（${entries.length} 件）`;
+    el('zip-list').innerHTML = entries.map((e, i) => '<div class="recent-row">'
+      + `<button class="recent-open" data-zip="${i}"><span class="recent-name">${escapeHtml(e.name)}</span>`
+      + `<span class="recent-meta">${size(e.buffer.byteLength)}</span></button></div>`).join('');
+    el('zip-choices').classList.remove('hidden');
+    this.undoRemove = null;
+    this.renderRecent();
+    el('welcome').classList.add('hidden');
+    this.openSheet('files-panel');
+  }
+
+  /** ZIP の中から選んだ図面を開く */
+  private openZipChoice(index: number): void {
+    const entry = this.zipChoices[index];
+    if (!entry) return;
+    this.clearZipChoices();
+    this.openSheet(null);
+    void this.load(entry.buffer, entry.name);
+  }
+
+  private clearZipChoices(): void {
+    this.zipChoices = [];
+    el('zip-choices').classList.add('hidden');
+    el('zip-list').innerHTML = '';
   }
 
   /** 最初の画面を出す。note があれば、はじめの案内の文の代わりに出す（読み込めなかった知らせなど） */
@@ -2122,8 +2177,9 @@ class App {
    * ファイルの選択は押したその場で出す（iOS は待ったあとでは出せない）ので、一覧は先に読んでおいたものを使う
    */
   private openFiles(): void {
-    // 前に外した図面の「元に戻す」は、一覧を出し直したら出さない
+    // 前に外した図面の「元に戻す」と、前に開いた ZIP の中の図面は、一覧を出し直したら出さない
     this.undoRemove = null;
+    this.clearZipChoices();
     if (this.recent.length === 0) {
       this.openSheet(null);
       el<HTMLInputElement>('file').click();
@@ -2138,6 +2194,7 @@ class App {
   /** 図面を開くシートを閉じる。図面をまだ開いていなければ、最初の画面に戻す */
   private closeFiles(): void {
     this.undoRemove = null;
+    this.clearZipChoices();
     this.openSheet(null);
     if (!this.scene) el('welcome').classList.remove('hidden');
   }
@@ -2195,6 +2252,7 @@ class App {
       return;
     }
     this.undoRemove = null;
+    this.clearZipChoices();
     this.openSheet(null);
     void this.load(buffer, entry.name);
   }
@@ -2254,6 +2312,10 @@ class App {
       // 選ばずにやめたときに、図面がなければ最初の画面が見えているように
       this.closeFiles();
       file.click();
+    });
+    el('zip-list').addEventListener('click', (e) => {
+      const open = (e.target as HTMLElement).closest<HTMLElement>('[data-zip]');
+      if (open) this.openZipChoice(Number(open.dataset.zip));
     });
     el('recent-list').addEventListener('click', (e) => {
       const target = e.target as HTMLElement;

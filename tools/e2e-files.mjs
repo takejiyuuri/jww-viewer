@@ -3,6 +3,7 @@
 import { chromium, devices } from 'playwright';
 import path from 'node:path';
 import fs from 'node:fs';
+import zlib from 'node:zlib';
 import { startServer, projectRoot as root } from './serve.mjs';
 
 const srv = await startServer({ port: 5321, host: false, quiet: true });
@@ -535,6 +536,85 @@ await recentHas(1);
     };
   });
   check('端末に保存できなかったときは知らせ、図面はそのまま見られる', /保存できませんでした/.test(r.hint ?? '') && r.scene && !r.last, { ...r, before: listed });
+}
+
+// ---------- 11. ZIP（LINE などは .jww を ZIP にして届ける）----------
+{
+  // 名前は UTF-8 のまま、UTF-8 の印を付けずに入れる（Mac の ZIP と同じ）。store が真なら圧縮しない
+  const makeZip = (files) => {
+    const locals = [];
+    const centrals = [];
+    let offset = 0;
+    for (const f of files) {
+      const name = Buffer.from(f.name, 'utf8');
+      const data = f.store ? f.data : zlib.deflateRawSync(f.data);
+      const crc = zlib.crc32(f.data);
+      const head = Buffer.alloc(30);
+      head.writeUInt32LE(0x04034b50, 0);
+      head.writeUInt16LE(20, 4);
+      head.writeUInt16LE(f.store ? 0 : 8, 8);
+      head.writeUInt32LE(crc, 14);
+      head.writeUInt32LE(data.length, 18);
+      head.writeUInt32LE(f.data.length, 22);
+      head.writeUInt16LE(name.length, 26);
+      const cen = Buffer.alloc(46);
+      cen.writeUInt32LE(0x02014b50, 0);
+      cen.writeUInt16LE(20, 4);
+      cen.writeUInt16LE(20, 6);
+      cen.writeUInt16LE(f.store ? 0 : 8, 10);
+      cen.writeUInt32LE(crc, 16);
+      cen.writeUInt32LE(data.length, 20);
+      cen.writeUInt32LE(f.data.length, 24);
+      cen.writeUInt16LE(name.length, 28);
+      cen.writeUInt32LE(offset, 42);
+      locals.push(head, name, data);
+      centrals.push(cen, name);
+      offset += 30 + name.length + data.length;
+    }
+    const central = Buffer.concat(centrals);
+    const end = Buffer.alloc(22);
+    end.writeUInt32LE(0x06054b50, 0);
+    end.writeUInt16LE(files.length, 8);
+    end.writeUInt16LE(files.length, 10);
+    end.writeUInt32LE(central.length, 12);
+    end.writeUInt32LE(offset, 16);
+    return Buffer.concat([...locals, central, end]);
+  };
+  const a = fs.readFileSync(fileA);
+  const b = fs.readFileSync(fileB);
+  const pickZip = (name, files) => page.setInputFiles('#file', { name, mimeType: 'application/zip', buffer: makeZip(files) });
+  const chooser = () => page.evaluate(() => ({
+    shown: !document.getElementById('zip-choices').classList.contains('hidden')
+      && !document.getElementById('files-panel').classList.contains('hidden'),
+    rows: [...document.querySelectorAll('#zip-list .recent-name')].map((n) => n.textContent),
+  }));
+
+  // .jww が 1 つだけ：そのまま開く（名前は ZIP の中の名前。フォルダは除く）
+  await pickZip('one.zip', [{ name: 'フォルダ/図面テスト.jww', data: a }]);
+  await opened('図面テスト.jww');
+  const one = await chooser();
+  check('ZIP に .jww が 1 つなら、そのまま開く（名前は中の図面の名前）', !one.shown, one);
+
+  // いくつも入っている：一覧から選ぶ。Mac の付け足しや .jww でないものは並べない。圧縮していないものも読める
+  await pickZip('many.zip', [
+    { name: 'readme.txt', data: Buffer.from('x') },
+    { name: 'zip-a.jww', data: a, store: true },
+    { name: '__MACOSX/._zip-a.jww', data: Buffer.from('mac') },
+    { name: 'zip-b.jww', data: b },
+  ]);
+  await page.waitForFunction(() => !document.getElementById('zip-choices').classList.contains('hidden'), null, { timeout: 10000 });
+  const many = await chooser();
+  check('ZIP に .jww がいくつもあれば、図面を開く一覧に並べる（.jww だけ）', many.shown && many.rows.join() === 'zip-a.jww,zip-b.jww', many);
+  await page.click('#zip-list [data-zip="1"]');
+  await opened('zip-b.jww');
+  const after = await chooser();
+  check('一覧で選んだ図面を開き、ZIP の一覧はしまう', !after.shown && after.rows.length === 0, after);
+
+  // .jww が入っていない
+  await pickZip('none.zip', [{ name: 'readme.txt', data: Buffer.from('x') }]);
+  await page.waitForFunction(() => /\.jww がありません/.test(document.getElementById('hint').textContent ?? ''), null, { timeout: 10000 }).catch(() => {});
+  const none = await page.evaluate(() => ({ hint: document.getElementById('hint').textContent, title: document.getElementById('title').textContent }));
+  check('.jww の入っていない ZIP は理由を出し、表示中の図面はそのまま', /none\.zip の中に \.jww がありません/.test(none.hint ?? '') && none.title === 'zip-b.jww', none);
 }
 
 check('コンソールにエラーがない', errors.length === 0, { errors: errors.slice(0, 5) });
