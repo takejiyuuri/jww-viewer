@@ -617,6 +617,16 @@ await recentHas(1);
   check('.jww の入っていない ZIP は理由を出し、表示中の図面はそのまま', /none\.zip の中に \.jww がありません/.test(none.hint ?? '') && none.title === 'zip-b.jww', none);
 }
 
+// ---------- 12. 見本の図面（最初の画面のボタン）----------
+{
+  const listed = await page.evaluate(() => window.__jww.recent.length);
+  await page.evaluate(() => document.getElementById('btn-sample').click());
+  await opened('見本（住戸の電気平面図）.jww');
+  await page.waitForTimeout(500);
+  const r = await page.evaluate(() => ({ scene: !!window.__jww.scene, texts: window.__jww.scene?.texts.length ?? 0, listed: window.__jww.recent.length }));
+  check('「見本の図面を開く」でアプリに入れた見本を開き、最近の一覧には足さない', r.scene && r.texts > 0 && r.listed === listed, { ...r, before: listed });
+}
+
 check('コンソールにエラーがない', errors.length === 0, { errors: errors.slice(0, 5) });
 
 const failed = results.filter((r) => !r.ok);

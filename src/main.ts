@@ -76,6 +76,8 @@ const LAYER_HISTORY = 50;
 
 /** 開けるファイルの大きさの上限。実際の図面は数 MB で、画像を同梱した図面でも十分に収まる */
 const MAX_FILE_BYTES = 200 * 1024 * 1024;
+/** アプリに入れた見本の図面の、表示する名前 */
+const SAMPLE_NAME = '見本（住戸の電気平面図）.jww';
 
 /** 解析をあきらめるまでの、画面が見えていた秒数 */
 const LOAD_TIMEOUT_S = 60;
@@ -583,6 +585,17 @@ class App {
     this.renderRecent();
     el('welcome').classList.add('hidden');
     this.openSheet('files-panel');
+  }
+
+  /** アプリに入れた見本の図面を開く。最近の一覧や次の起動には残さない */
+  private async openSample(): Promise<void> {
+    try {
+      const res = await fetch(`${import.meta.env.BASE_URL}sample.jww`);
+      if (!res.ok) throw new Error(String(res.status));
+      void this.load(await res.arrayBuffer(), SAMPLE_NAME, false);
+    } catch {
+      this.fail('見本の図面を読み出せませんでした');
+    }
   }
 
   /** ZIP の中から選んだ図面を開く */
@@ -2307,6 +2320,7 @@ class App {
     if (isNative) file.accept = '.jww,application/octet-stream';
     el('btn-open').addEventListener('click', () => this.openFiles());
     el('btn-open-2').addEventListener('click', () => this.openFiles());
+    el('btn-sample').addEventListener('click', () => void this.openSample());
     el('btn-files-close').addEventListener('click', () => this.closeFiles());
     el('btn-pick-file').addEventListener('click', () => {
       // 選ばずにやめたときに、図面がなければ最初の画面が見えているように
@@ -2911,6 +2925,7 @@ function showStartupError(err: unknown): void {
   }
   // 開くボタンは動かないので出さない
   document.getElementById('btn-open-2')?.classList.add('hidden');
+  document.getElementById('btn-sample')?.classList.add('hidden');
 }
 
 let app: App | null = null;

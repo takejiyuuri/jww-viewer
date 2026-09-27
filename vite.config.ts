@@ -4,7 +4,8 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 /** public/ にあって、名前にハッシュが付かないまま取り込むファイル */
-const PUBLIC_FILES = ['manifest.webmanifest', 'icon-180.png', 'icon-192.png', 'icon-512.png', 'icon-maskable-512.png'];
+// sample.jww は最初の画面の「見本の図面を開く」で開く図面（電波がなくても開けるよう取り込んでおく）
+const PUBLIC_FILES = ['manifest.webmanifest', 'icon-180.png', 'icon-192.png', 'icon-512.png', 'icon-maskable-512.png', 'sample.jww'];
 
 /**
  * ビルド結果のファイル名を Service Worker に埋め込み、install 時にまとめて取り込ませる。
