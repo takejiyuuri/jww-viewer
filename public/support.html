@@ -2,38 +2,622 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>サポート｜JWWミテハカール</title>
+<meta name="description" content="JWWミテハカールの使い方とよくある質問。Jw_cad の図面（.jww）を iPhone で開き、距離・面積・体積・角度を実寸で測るアプリです。">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="./icon-192.png">
+<link rel="apple-touch-icon" href="./icon-180.png">
 <style>
-  :root { color-scheme: light dark; }
-  body { margin: 0 auto; max-width: 720px; padding: 24px 18px 48px; font: 15px/1.75 -apple-system, "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif; }
-  h1 { font-size: 22px; margin: 0 0 4px; }
-  h2 { font-size: 17px; margin: 28px 0 6px; }
-  p, li { margin: 6px 0; }
-  .sub { color: #888; font-size: 13px; }
+  :root {
+    --bg: #f6f7f5;
+    --surface: #ffffff;
+    --surface-2: #eef2ef;
+    --text: #17201b;
+    --muted: #55605a;
+    --line: #d9dfdb;
+    --accent: #35d07f;
+    --accent-ink: #0f7a43;
+    --accent-soft: #e2f7ea;
+    --on-accent: #06200f;
+    --orange: #c86a10;
+    --frame: #1b1f1d;
+    --shadow: 0 1px 2px rgba(0,0,0,.05), 0 6px 20px rgba(0,0,0,.06);
+    --radius: 16px;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1110;
+      --surface: #161b19;
+      --surface-2: #1d2421;
+      --text: #e9efeb;
+      --muted: #a4b0aa;
+      --line: #2b3430;
+      --accent: #35d07f;
+      --accent-ink: #5ee39b;
+      --accent-soft: #15301f;
+      --on-accent: #06200f;
+      --orange: #f0a04b;
+      --frame: #3a423e;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
+      color-scheme: dark;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.8 -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", "YuGothic", "Meiryo", sans-serif;
+    overflow-wrap: anywhere;
+    line-break: strict;
+  }
+  a { color: var(--accent-ink); text-underline-offset: 3px; }
+  img { max-width: 100%; height: auto; display: block; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 0 16px; }
+
+  /* 上の見出し */
+  .hero {
+    padding: 40px 0 28px;
+    background:
+      radial-gradient(120% 80% at 50% 0%, var(--accent-soft), transparent 70%);
+  }
+  .hero-grid { display: grid; gap: 28px; align-items: center; }
+  .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+  .brand img { width: 56px; height: 56px; border-radius: 13px; box-shadow: var(--shadow); }
+  .brand .kicker { font-size: 14px; color: var(--muted); line-height: 1.4; }
+  h1 { font-size: 30px; line-height: 1.3; margin: 0; letter-spacing: .01em; }
+  .pitch { font-size: 18px; margin: 12px 0 18px; }
+  .pitch strong { color: var(--accent-ink); }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; list-style: none; }
+  .chips li {
+    font-size: 14px; padding: 4px 12px; border-radius: 999px;
+    background: var(--surface); border: 1px solid var(--line);
+  }
+
+  /* 目次 */
+  .toc {
+    position: sticky; top: 0; z-index: 10;
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    -webkit-backdrop-filter: saturate(1.4) blur(10px);
+    backdrop-filter: saturate(1.4) blur(10px);
+    border-bottom: 1px solid var(--line);
+  }
+  .toc ol {
+    display: flex; gap: 6px; margin: 0 auto; padding: 10px 16px; list-style: none;
+    max-width: 760px; overflow-x: auto; scrollbar-width: none;
+  }
+  .toc ol::-webkit-scrollbar { display: none; }
+  .toc a {
+    display: block; white-space: nowrap; text-decoration: none; color: var(--text);
+    font-size: 14px; padding: 6px 12px; border-radius: 999px;
+    background: var(--surface); border: 1px solid var(--line);
+  }
+  .toc a:hover, .toc a:focus-visible { border-color: var(--accent); color: var(--accent-ink); }
+  .toc-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+  /* 本文 */
+  section { padding: 40px 0 8px; scroll-margin-top: 64px; }
+  h2 {
+    font-size: 24px; line-height: 1.4; margin: 0 0 16px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  h2 .num {
+    flex: none; display: inline-grid; place-items: center;
+    width: 32px; height: 32px; border-radius: 10px;
+    background: var(--accent); color: var(--on-accent); font-size: 16px; font-weight: 700;
+  }
+  h3 { font-size: 19px; line-height: 1.5; margin: 28px 0 8px; }
+  p { margin: 8px 0; }
+  ul, ol { padding-left: 1.4em; margin: 8px 0; }
+  li { margin: 4px 0; }
+  .muted { color: var(--muted); }
+  .small { font-size: 14px; }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 18px; box-shadow: var(--shadow);
+  }
+
+  /* できること */
+  .features { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 0; padding: 0; list-style: none; }
+  .features li { margin: 0; padding: 14px; }
+  .features svg { width: 28px; height: 28px; color: var(--accent-ink); display: block; margin-bottom: 6px; }
+  .features b { display: block; font-size: 16px; line-height: 1.45; }
+  .features span { display: block; font-size: 14px; line-height: 1.6; color: var(--muted); margin-top: 2px; }
+
+  /* 画面の写し */
+  .phone {
+    width: 100%; max-width: 210px; margin: 0 auto;
+    border: 7px solid var(--frame); border-radius: 30px; overflow: hidden;
+    background: #000; box-shadow: var(--shadow);
+  }
+  .phone img { width: 100%; }
+  .wide {
+    border: 6px solid var(--frame); border-radius: 22px; overflow: hidden;
+    background: #000; box-shadow: var(--shadow); max-width: 620px; margin: 0 auto;
+  }
+  figure { margin: 18px 0; }
+  figcaption { text-align: center; font-size: 14px; color: var(--muted); margin-top: 10px; line-height: 1.5; }
+  .hero figure { margin: 0; }
+  .hero .phone { max-width: 250px; }
+
+  .split { display: grid; gap: 16px; align-items: start; margin: 12px 0 8px; }
+  .shots { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin: 18px 0; }
+  .shots figure { margin: 0; }
+
+  /* 手順 */
+  .steps { counter-reset: s; list-style: none; padding: 0; }
+  .steps > li {
+    position: relative; padding: 14px 16px 14px 56px; margin: 10px 0;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
+  }
+  .steps > li::before {
+    counter-increment: s; content: counter(s);
+    position: absolute; left: 14px; top: 14px;
+    width: 28px; height: 28px; border-radius: 50%;
+    display: grid; place-items: center; font-weight: 700; font-size: 15px;
+    background: var(--accent-soft); color: var(--accent-ink); border: 1px solid var(--accent);
+  }
+  .steps b { display: block; }
+
+  .btn {
+    display: inline-block; font-size: .92em; line-height: 1.4; padding: 1px 8px; margin: 0 1px;
+    border-radius: 7px; border: 1px solid var(--line); background: var(--surface-2);
+    white-space: nowrap; font-weight: 600;
+  }
+  .btn.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+
+  .note {
+    border-left: 4px solid var(--accent); background: var(--accent-soft);
+    padding: 12px 14px; border-radius: 0 12px 12px 0; margin: 14px 0;
+  }
+  .note.warn { border-left-color: var(--orange); background: color-mix(in srgb, var(--orange) 12%, var(--surface)); }
+
+  /* 手の動き */
+  .gestures { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+  .gestures .card { padding: 12px 8px 14px; text-align: center; }
+  .gestures svg { width: 100%; max-width: 140px; height: auto; margin: 0 auto 6px; display: block; }
+  .gestures b { display: block; font-size: 15px; line-height: 1.45; }
+  .gestures span { display: block; font-size: 13px; color: var(--muted); line-height: 1.5; margin-top: 2px; }
+  .g-screen { fill: var(--surface-2); stroke: var(--line); stroke-width: 2; }
+  .g-finger { fill: var(--accent); fill-opacity: .9; stroke: var(--surface); stroke-width: 3; }
+  .g-ring { fill: none; stroke: var(--accent); stroke-width: 2; }
+  .g-arrow { fill: none; stroke: var(--text); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+  .g-lens { fill: var(--surface); stroke: var(--accent-ink); stroke-width: 3; }
+  .g-grid { stroke: var(--muted); stroke-width: 1.5; opacity: .6; }
+
+  /* 表 */
+  .table { width: 100%; border-collapse: collapse; font-size: 15px; margin: 12px 0; }
+  .table th, .table td { text-align: left; vertical-align: top; padding: 10px 8px; border-bottom: 1px solid var(--line); }
+  .table th { white-space: nowrap; font-weight: 700; width: 6.5em; }
+
+  /* よくある質問 */
+  details {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
+    margin: 10px 0; overflow: hidden;
+  }
+  summary {
+    cursor: pointer; list-style: none; padding: 14px 44px 14px 16px; position: relative;
+    font-weight: 700; line-height: 1.55;
+  }
+  summary::-webkit-details-marker { display: none; }
+  summary::before { content: "Q"; color: var(--accent-ink); margin-right: 8px; font-weight: 800; }
+  summary::after {
+    content: ""; position: absolute; right: 18px; top: 50%; width: 9px; height: 9px;
+    border-right: 2.5px solid var(--muted); border-bottom: 2.5px solid var(--muted);
+    transform: translateY(-70%) rotate(45deg); transition: transform .2s;
+  }
+  details[open] summary::after { transform: translateY(-30%) rotate(-135deg); }
+  summary:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; }
+  details > div { padding: 0 16px 14px; border-top: 1px solid var(--line); }
+
+  /* お問い合わせ */
+  #contact {
+    border: 1px solid var(--accent); background: var(--accent-soft);
+    border-radius: var(--radius); padding: 18px; margin: 12px 0; text-align: center;
+  }
+  .form-link {
+    display: inline-block; padding: 14px 28px; border-radius: 14px;
+    background: var(--accent); color: var(--on-accent); font-weight: 700; font-size: 17px; text-decoration: none;
+  }
+  .form-link:focus-visible { outline: 3px solid var(--accent-ink); outline-offset: 3px; }
+  #contact .small { margin: 10px 0 0; }
+
+  footer {
+    margin-top: 48px; padding: 24px 0 calc(32px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--line); font-size: 14px; color: var(--muted);
+  }
+  footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 20px; justify-content: space-between; }
+
+  :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+  @media (min-width: 640px) {
+    h1 { font-size: 36px; }
+    .hero { padding: 56px 0 36px; }
+    .hero-grid { grid-template-columns: 1fr 250px; }
+    .phone { max-width: 230px; }
+    .toc ol { flex-wrap: wrap; justify-content: center; }
+    .steps { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .steps > li { margin: 0; }
+    .split { grid-template-columns: 1fr 230px; gap: 28px; }
+    .split.rev { grid-template-columns: 230px 1fr; }
+    .split.rev > figure { order: -1; }
+    .split > figure { margin: 0; }
+    .shots { grid-template-columns: repeat(2, 230px); justify-content: center; gap: 28px; }
+  }
+  @media (max-width: 359px) {
+    .gestures { grid-template-columns: 1fr; }
+    .features { grid-template-columns: 1fr; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    summary::after { transition: none; }
+  }
 </style>
 </head>
 <body>
-<h1>JWWミテハカール サポート</h1>
-<p class="sub">Jw_cad の図面（.jww）を iPhone で見て、実寸で測るアプリ</p>
 
-<h2>できること</h2>
-<ul>
-  <li>.jww を開いて表示（「ファイル」アプリや、メール・チャットの共有メニューからも開けます）</li>
-  <li>指で移動・拡大縮小、「全体」で図面全体を表示</li>
-  <li>レイヤグループ・レイヤ、線色ごとの表示・非表示</li>
-  <li>距離・面積・体積・角度の計測（端点・交点などへの吸着、長押しの拡大鏡、置いた点の移動）</li>
-  <li>図形をタップして属性（レイヤ・線色・線種・長さ）を見る</li>
-  <li>電波のない所でも使えます</li>
-</ul>
+<header class="hero">
+  <div class="wrap hero-grid">
+    <div>
+      <div class="brand">
+        <img src="./icon-180.png" width="56" height="56" alt="">
+        <div class="kicker">サポートページ<br>使い方とよくある質問</div>
+      </div>
+      <h1>JWWミテハカール</h1>
+      <p class="pitch">Jw_cad の図面（.jww）を iPhone でそのまま開いて、<strong>実寸で長さを測れる</strong>アプリです。</p>
+      <ul class="chips">
+        <li>距離・面積・体積・角度</li>
+        <li>電波がなくても使える</li>
+        <li>図面はどこにも送らない</li>
+      </ul>
+    </div>
+    <figure>
+      <div class="phone">
+        <img src="support/01-overview.webp" width="480" height="1043" alt="JWWミテハカールで見本の図面（住戸の電気平面図）を開いた画面。下に計測・属性・レイヤ・表示・全体のボタンが並ぶ" fetchpriority="high">
+      </div>
+    </figure>
+  </div>
+</header>
 
-<h2>よくある質問</h2>
-<p><strong>図面が開けない</strong><br>Jw_cad で保存した .jww ファイルかどうかをご確認ください。ほかの形式（.jwc・.dxf など）には対応していません。</p>
-<p><strong>最近開いた図面を消したい</strong><br>「ファイル」を押して出る一覧で、図面の右の × を押すと一覧から外れ、端末に取っておいた図面も消えます（一覧を閉じるまでは「元に戻す」で戻せます）。</p>
+<nav class="toc" aria-labelledby="toc-label">
+  <h2 id="toc-label" class="toc-label">目次</h2>
+  <ol>
+    <li><a href="#features">できること</a></li>
+    <li><a href="#open">図面を開く</a></li>
+    <li><a href="#gestures">基本の操作</a></li>
+    <li><a href="#measure">測る</a></li>
+    <li><a href="#view">見やすくする</a></li>
+    <li><a href="#faq">よくある質問</a></li>
+    <li><a href="#env">動作環境</a></li>
+    <li><a href="#contact-section">お問い合わせ</a></li>
+  </ol>
+</nav>
 
-<h2>お問い合わせ</h2>
-<p>不具合やご要望は、<a href="https://github.com/takejiyuuri/jww-viewer/issues">GitHub の Issues</a> からお知らせください。</p>
+<main class="wrap">
 
-<p class="sub"><a href="./privacy.html">プライバシーポリシー</a></p>
+<!-- できること -->
+<section id="features">
+  <h2><span class="num" aria-hidden="true">1</span>できること</h2>
+  <ul class="features">
+    <li class="card">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+      <b>図面を開く</b><span>「ファイル」アプリ、メールや LINE、ZIP からも</span>
+    </li>
+    <li class="card">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 16 16 3l5 5L8 21z"/><path d="m7 12 2 2M10 9l2 2M13 6l2 2"/></svg>
+      <b>実寸で測る</b><span>距離・面積・体積・角度</span>
+    </li>
+    <li class="card">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10" cy="10" r="6.5"/><path d="m15 15 6 6M10 7v6M7 10h6"/></svg>
+      <b>拡大鏡で吸着</b><span>長押しで端点・交点にぴたり</span>
+    </li>
+    <li class="card">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 8h6M9 12h6M9 16h3"/></svg>
+      <b>計測の記録</b><span>①②…と残して一覧・コピー</span>
+    </li>
+    <li class="card">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12V4a1 1 0 0 1 1-1h8l9 9-9 9z"/><circle cx="8" cy="8" r="1.5"/></svg>
+      <b>属性</b><span>タップでレイヤ・線色・長さ</span>
+    </li>
+    <li class="card">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/></svg>
+      <b>レイヤ</b><span>グループ・レイヤごとに表示を切り替え</span>
+    </li>
+    <li class="card">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 3v18a9 9 0 0 0 0-18z" fill="currentColor"/></svg>
+      <b>表示</b><span>白背景・単色・線色ごと</span>
+    </li>
+    <li class="card">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+      <b>全体と前の範囲</b><span>全体を見て、元の場所へ戻る</span>
+    </li>
+    <li class="card">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="7" width="20" height="11" rx="2"/><path d="M6 3h4M14 3h4"/></svg>
+      <b>横向き・ボタンを隠す</b><span>図面を大きく見る</span>
+    </li>
+    <li class="card">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 8.5a15 15 0 0 1 20 0M5 12a10 10 0 0 1 14 0M8.5 15.5a5 5 0 0 1 7 0"/><circle cx="12" cy="19" r="1"/><path d="M3 3l18 18"/></svg>
+      <b>電波がなくても</b><span>地下や現場でもそのまま使える</span>
+    </li>
+  </ul>
+</section>
+
+<!-- 図面を開く -->
+<section id="open">
+  <h2><span class="num" aria-hidden="true">2</span>図面を開く</h2>
+  <ol class="steps">
+    <li><b>アプリの中から開く</b>最初の画面の <span class="btn on">図面を開く</span>、または左上の <span class="btn">ファイル</span> を押して、.jww を選びます。前に開いた図面（10 件まで）も一覧から開き直せます。</li>
+    <li><b>「ファイル」アプリから</b>「ファイル」アプリで .jww を押すだけで、ミテハカールが開きます。</li>
+    <li><b>メール・LINE などから</b>届いた図面を長押し（または共有ボタン）して、共有メニューから「ミテハカール」を選びます。</li>
+    <li><b>ZIP で届いたとき</b>LINE などは .jww を ZIP にして届けることがあります。ZIP のまま開けます。中に図面がいくつもあれば、一覧から選べます。</li>
+  </ol>
+  <div class="note"><b>手元に図面がなくても大丈夫。</b>最初の画面の <span class="btn">見本の図面を開く</span> で、住戸の電気平面図を開いて試せます（電波がなくても開けます）。</div>
+</section>
+
+<!-- 基本の操作 -->
+<section id="gestures">
+  <h2><span class="num" aria-hidden="true">3</span>基本の操作</h2>
+  <p>指の動かし方は 3 つだけ。写真アプリや地図と同じ感覚です。</p>
+  <div class="gestures">
+    <div class="card">
+      <svg viewBox="0 0 140 140" role="img" aria-label="1 本の指で画面をなぞって、図面を動かす絵">
+        <rect class="g-screen" x="20" y="10" width="100" height="120" rx="14"/>
+        <path class="g-grid" d="M40 40h60M40 70h60M40 100h60M55 30v80M85 30v80"/>
+        <path class="g-arrow" d="M48 92 L92 48"/>
+        <path class="g-arrow" d="M78 46 L93 47 L92 62"/>
+        <circle class="g-ring" cx="48" cy="92" r="17"/>
+        <circle class="g-finger" cx="48" cy="92" r="11"/>
+      </svg>
+      <b>1 本指</b><span>ずらして図面を動かす</span>
+    </div>
+    <div class="card">
+      <svg viewBox="0 0 140 140" role="img" aria-label="2 本の指を広げたり縮めたりして、拡大・縮小する絵">
+        <rect class="g-screen" x="20" y="10" width="100" height="120" rx="14"/>
+        <path class="g-arrow" d="M62 78 L40 100 M40 86 L40 100 L54 100"/>
+        <path class="g-arrow" d="M78 62 L100 40 M86 40 L100 40 L100 54"/>
+        <circle class="g-finger" cx="60" cy="80" r="11"/>
+        <circle class="g-finger" cx="80" cy="60" r="11"/>
+      </svg>
+      <b>2 本指</b><span>広げて拡大、縮めて縮小</span>
+    </div>
+    <div class="card">
+      <svg viewBox="0 0 140 140" role="img" aria-label="指で長く押すと、指の上に丸い拡大鏡が出る絵">
+        <rect class="g-screen" x="20" y="10" width="100" height="120" rx="14"/>
+        <circle class="g-lens" cx="70" cy="48" r="26"/>
+        <path class="g-grid" d="M52 48h36M70 30v36" style="opacity:1"/>
+        <circle cx="70" cy="48" r="5" fill="none" stroke="var(--accent)" stroke-width="3"/>
+        <circle class="g-ring" cx="70" cy="98" r="17" stroke-dasharray="4 4"/>
+        <circle class="g-ring" cx="70" cy="98" r="23" opacity=".5"/>
+        <circle class="g-finger" cx="70" cy="98" r="11"/>
+      </svg>
+      <b>長押し</b><span>拡大鏡を見ながら指す</span>
+    </div>
+  </div>
+  <div class="split rev" style="margin-top:20px">
+    <div>
+      <h3>拡大鏡でぴったり指す</h3>
+      <p>長押しすると、指の上に拡大鏡が出ます。拡大鏡の中心が指の位置で、<b style="color:var(--accent-ink)">緑の印</b>が吸着する先（端点・交点・中点・円の中心・線の上）です。</p>
+      <p>そのまま指をずらして、ねらいの点に合ったら指を離すと、そこに点が置かれます。指に隠れる細かい所も正確に指せます。</p>
+      <p class="muted small">軽くタップしたときも、近くの端点や交点に吸着します。</p>
+    </div>
+    <figure>
+      <div class="phone"><img src="support/03-magnifier.webp" width="480" height="1043" loading="lazy" alt="長押しで出た拡大鏡。図面の一部が大きく映り、中心の十字と緑の印で吸着先の端点が分かる"></div>
+      <figcaption>長押しで出る拡大鏡</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- 測る -->
+<section id="measure">
+  <h2><span class="num" aria-hidden="true">4</span>測る</h2>
+  <p>下の <span class="btn on">計測</span> を選んで、図面の上をタップすると点が置かれます。測るものは <span class="btn">距離</span><span class="btn">面積</span><span class="btn">体積</span><span class="btn">角度</span> で切り替えます。縮尺は図面の設定から自動で読むので、表示されるのは<b>実寸</b>です。</p>
+
+  <div class="split">
+    <div>
+      <h3>距離</h3>
+      <p>点を 2 つ置くと、その間の長さが出ます。続けて点を置くと<b>連続計測</b>になり、<b>合計</b>と、区間ごとの<b>内訳</b>が出ます。</p>
+      <p><span class="btn">直交</span> が入っていると（最初から入っています）、直前の点から<b>真横か真下</b>にだけ伸び、その線が壁や芯と交わる所に吸着します。「この面から真横に、あの壁まで」がそのまま測れます。斜めに測るときは直交を切ります。</p>
+      <p class="muted small">色の丸ボタンで、計測の印・線・数字の色を 8 色から選べます。</p>
+    </div>
+    <figure>
+      <div class="phone"><img src="support/02-distance.webp" width="480" height="1043" loading="lazy" alt="距離の計測。2 区間を測り、下のパネルに 8.490 m、合計 12.045 m（3.555 m と 8.490 m）と出ている"></div>
+      <figcaption>距離：合計と内訳</figcaption>
+    </figure>
+  </div>
+
+  <div class="shots">
+    <figure>
+      <div class="phone"><img src="support/04-area.webp" width="480" height="1043" loading="lazy" alt="面積の計測。4 つの点で囲んだ部屋が薄い緑に塗られ、9.646 m² と各辺の長さ、外周 12.435 m が出ている"></div>
+      <figcaption>面積</figcaption>
+    </figure>
+    <figure>
+      <div class="phone"><img src="support/05-angle.webp" width="480" height="1043" loading="lazy" alt="角度の計測。3 点で作った角に弧が描かれ、34.91° と外側の角 325.09° が出ている"></div>
+      <figcaption>角度</figcaption>
+    </figure>
+  </div>
+
+  <h3>面積</h3>
+  <p>囲みたい範囲の角を順にタップします。3 点目から囲みが閉じて中が薄く塗られ、面積・外周・各辺の長さが出ます。最初の点まで戻らなくてかまいません。</p>
+  <h3>体積</h3>
+  <p><span class="btn">体積</span> を押すと、高さ（実寸 mm）を聞かれます。囲んだ面積に、その高さを掛けた値が出ます。高さを変えるときは、選んである <span class="btn">体積</span> をもう一度押します。</p>
+  <h3>角度</h3>
+  <p>一方の辺の上の点 → 角の頂点 → もう一方の辺の上の点、の順にタップします。頂点の角（0〜180°）と、外側の角が出ます。</p>
+  <div class="note">距離・面積・体積・角度を切り替えても、置いた点はそのまま。同じ点で長さと面積を見比べられます。</div>
+
+  <h3>置いた点を動かす</h3>
+  <p>置いた点は、あとから直せます。点の上から<b>指をずらす</b>か、点の上を<b>長押ししてから離す</b>と、その点をつかめます。拡大鏡を見ながら置き直してください。軽く押しただけのときは、点は動かさずに新しい点を足します。</p>
+  <p>最後の点を取り消すときは戻すボタン <span class="btn">↶</span>、点を全部消すときは消去ボタン（ごみ箱の絵）を押します。</p>
+
+  <div class="split">
+    <div>
+      <h3>計測の記録</h3>
+      <ol>
+        <li>測った値の横の <span class="btn">記録</span> を押すと、①②…と番号を付けて残し、次を測れるようになります（50 件まで）。</li>
+        <li>上のバーの <span class="btn">記録 N</span> で一覧が出ます。まとめて<b>コピー</b>して、メモやメッセージに貼れます。</li>
+        <li>一覧の行や、図面の上の<b>番号の札</b>を押すと、その寸法の所へ図面が動いて見せてくれます。</li>
+      </ol>
+      <div class="note warn">記録は図面を開いているあいだだけのものです。<b>別の図面を開くと消えます</b>（開く前に確かめます）。アプリを閉じたときも残りません。残したいものはコピーしておいてください。</div>
+    </div>
+    <figure>
+      <div class="phone"><img src="support/11-records.webp" width="480" height="1043" loading="lazy" alt="記録した寸法が図面の上に番号の札「① 合計 12.045 m」として出ている。上のバーに「記録 2」のボタン"></div>
+      <figcaption>番号の札と「記録 N」</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- 属性・レイヤ・表示 -->
+<section id="view">
+  <h2><span class="num" aria-hidden="true">5</span>図面を見やすくする</h2>
+
+  <div class="split">
+    <div>
+      <h3>属性</h3>
+      <p><span class="btn">属性</span> を選んで図形をタップすると、その図形が緑で目立ち、<b>レイヤ・線色・線種・長さ（実寸）</b>、文字や寸法値、部品の名前が分かります。</p>
+      <p>パネルの「レイヤだけ表示」「レイヤを隠す」「表示を反転」で、その図形のレイヤだけを見たり隠したりできます。丸矢印で 1 つずつ戻せます。</p>
+    </div>
+    <figure>
+      <div class="phone"><img src="support/06-inspect.webp" width="480" height="1043" loading="lazy" alt="属性のパネル。タップした円弧のレイヤ、線色 2・実線、半径 792.0 mm、円弧の長さ 1.244 m が出ている"></div>
+      <figcaption>属性のパネル</figcaption>
+    </figure>
+  </div>
+
+  <div class="split rev">
+    <div>
+      <h3>レイヤ</h3>
+      <p><span class="btn">レイヤ</span> で、レイヤグループとレイヤが並びます（番号は Jw_cad と同じ 0〜F）。右のスイッチで、グループごと・レイヤごとに隠せます。</p>
+      <p>開いたときは、Jw_cad で保存したときと同じ表示です。「反転」「Jw_cad の状態」「すべて表示」もあります。隠したレイヤには吸着しません。</p>
+    </div>
+    <figure>
+      <div class="phone"><img src="support/07-layers.webp" width="480" height="1043" loading="lazy" alt="レイヤの一覧。レイヤグループ「天井伏図」の中のレイヤが並び、右にそれぞれの表示スイッチがある"></div>
+      <figcaption>レイヤの一覧</figcaption>
+    </figure>
+  </div>
+
+  <div class="split">
+    <div>
+      <h3>表示</h3>
+      <p><span class="btn">表示</span> で、背景を<b>黒・白</b>で切り替えられます。白背景では、白い線は黒く、黄色や水色は読める濃さで描きます。</p>
+      <p>「単色」にすると紙に印刷したような見え方に。<b>線色ごと</b>に表示・非表示も切り替えられます。</p>
+    </div>
+    <figure>
+      <div class="phone"><img src="support/08-display-light.webp" width="480" height="1043" loading="lazy" alt="表示のシート。背景を白にした図面と、背景・線の色・色ごとの表示のスイッチ"></div>
+      <figcaption>白背景と線色ごとの表示</figcaption>
+    </figure>
+  </div>
+
+  <div class="split rev">
+    <div>
+      <h3>全体と前の範囲</h3>
+      <p><span class="btn">全体</span> で図面全体を表示します。押す前に見ていた所は<b style="color:var(--orange)">橙の枠</b>で囲まれ、ボタンが <span class="btn">前の範囲</span> に変わります。もう一度押すと、元の位置と倍率にそのまま戻ります。</p>
+      <p class="muted small">大きく動かしたり拡大・縮小したりすると、ボタンは「全体」に戻ります。</p>
+    </div>
+    <figure>
+      <div class="phone"><img src="support/09-fit-back.webp" width="480" height="1043" loading="lazy" alt="全体を表示した図面に、前に見ていた範囲が橙の枠と「前の範囲」の札で示され、右下のボタンが橙の「前の範囲」になっている"></div>
+      <figcaption>橙の枠が「前の範囲」</figcaption>
+    </figure>
+  </div>
+
+  <h3>横向き・ボタンを隠す</h3>
+  <p>iPhone を横にすると、ボタンが縦に並んで端に寄り、図面を上から下まで広く使えます。上のバーの <span class="btn">⤢</span> を押すと、ボタンやパネルを隠して図面を画面いっぱいに見られます（右上の <span class="btn">⤡</span> で戻ります）。</p>
+  <figure>
+    <div class="wide"><img src="support/10-landscape.webp" width="960" height="442" loading="lazy" alt="横向きの画面。右端にボタンが縦に並び、右下の計測パネルに 2.710 m、合計 15.390 m が出ている"></div>
+    <figcaption>横向きの画面</figcaption>
+  </figure>
+</section>
+
+<!-- よくある質問 -->
+<section id="faq">
+  <h2><span class="num" aria-hidden="true">6</span>よくある質問</h2>
+
+  <details>
+    <summary>図面が開けません</summary>
+    <div>
+      <ul>
+        <li>開けるのは Jw_cad で保存した <b>.jww</b> です（Ver.2.30〜7.x の形式）。.jwc・.dxf・.pdf などには対応していません。</li>
+        <li>ZIP は、中に .jww が入っていればそのまま開けます。<b>パスワード付きの ZIP</b> は開けません。パソコンなどで展開してから、.jww を送ってもらってください。</li>
+        <li>メールやチャットでは、共有メニューから「ミテハカール」を選んでください。一覧に見えないときは、共有メニューの右端の「その他」から探せます。</li>
+        <li>壊れた図面や大きすぎる図面は、途中で止めて理由をお知らせします。</li>
+      </ul>
+    </div>
+  </details>
+
+  <details>
+    <summary>最近開いた図面を一覧から消したい</summary>
+    <div>
+      <p><span class="btn">ファイル</span> を押して出る一覧で、図面の右の <b>×</b> を押します。一覧から外れ、端末に取っておいた図面も消えます。</p>
+      <p>間違えて押したときは、一覧を閉じるまでは「元に戻す」で戻せます。</p>
+    </div>
+  </details>
+
+  <details>
+    <summary>計測の記録はいつ消えますか</summary>
+    <div>
+      <p>記録は、図面を開いているあいだだけのものです。<b>別の図面を開いたとき</b>（開く前に確かめます）と、<b>アプリを閉じたとき</b>に消えます。端末には残しません。</p>
+      <p>残したいときは、<span class="btn">記録 N</span> の一覧のコピーで、メモやメッセージに貼っておいてください。</p>
+    </div>
+  </details>
+
+  <details>
+    <summary>測った長さが Jw_cad と違います</summary>
+    <div>
+      <p>計測に使う縮尺は、ふだんは<b>「自動」</b>です。区間ごとに、両端の点が乗った図形のレイヤグループの縮尺を使います。縮尺の違う図が並んだ図面では、何もない所に置いた点などで、思った縮尺にならないことがあります。</p>
+      <p>計測パネルの左下の <span class="btn">1/○○</span> を押して、測りたい図のレイヤグループを選ぶと、すべての区間をその縮尺で測ります（「自動」で元に戻ります）。</p>
+      <p class="muted small">直交が入っていると真横・真下にしか測れません。斜めに測るときは直交を切ってください。</p>
+    </div>
+  </details>
+
+  <details>
+    <summary>電波が入らない所でも使えますか</summary>
+    <div>
+      <p>はい。iPhone のアプリは、図面の表示と計測にインターネットを使いません。地下や機内モードでもそのまま使えます。</p>
+      <p>Web 版は、Safari で開いてから共有ボタンの「ホーム画面に追加」をし、電波のある所で一度アイコンから開いておけば、電波がなくても起動します。</p>
+    </div>
+  </details>
+
+  <details>
+    <summary>図面はどこかへ送られますか</summary>
+    <div>
+      <p>いいえ。図面はすべて端末の中で読み込み・表示・計測し、開発者やほかの会社へ送ることはありません。利用状況の収集や広告もありません。</p>
+      <p>くわしくは <a href="./privacy.html">プライバシーポリシー</a> をご覧ください。</p>
+    </div>
+  </details>
+</section>
+
+<!-- 動作環境 -->
+<section id="env">
+  <h2><span class="num" aria-hidden="true">7</span>動作環境</h2>
+  <table class="table">
+    <tr><th scope="row">iPhone</th><td>iOS 16.4 以降をおすすめします（ZIP で届いた図面を開くのに必要です）。</td></tr>
+    <tr><th scope="row">Web 版</th><td>iPhone の Safari で <a href="https://takejiyuuri.github.io/jww-viewer/">https://takejiyuuri.github.io/jww-viewer/</a> を開いても使えます。</td></tr>
+    <tr><th scope="row">図面</th><td>Jw_cad の .jww（Ver.2.30〜7.x の形式）。ZIP に入ったものも開けます。</td></tr>
+  </table>
+</section>
+
+<!-- お問い合わせ -->
+<section id="contact-section">
+  <h2><span class="num" aria-hidden="true">8</span>お問い合わせ</h2>
+  <p>不具合やご要望は、こちらからお知らせください。うまくいかないときは、iPhone の機種と iOS のバージョン、どの操作で困ったかを書いていただけると助かります。</p>
+  <div id="contact">
+    <!-- お問い合わせは Google フォームで受け付ける（Google アカウントがなくても送れる） -->
+    <a class="form-link" href="https://forms.gle/cUrjDEjkj9LBsNcw7" target="_blank" rel="noopener">お問い合わせフォームを開く</a>
+    <p class="muted small">Google フォームが開きます。返信はご入力のメールアドレスにお送りします。</p>
+  </div>
+  <p class="muted small">お客様の図面をお送りいただく必要はありません。画面の写しを添えていただく場合は、図面の中身が写らないようご注意ください。</p>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <a href="./privacy.html">プライバシーポリシー</a>
+    <span>© 2026 JWWミテハカール</span>
+  </div>
+</footer>
+
 </body>
 </html>
