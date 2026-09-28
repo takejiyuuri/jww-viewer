@@ -105,8 +105,8 @@ Windows（開発・テスト） → GitHub（main に push） → Codemagic（�
 | 著作権 | App 情報 | 例：`2026 takejiyuuri` | 要決定 |
 | 年齢制限 | App 情報 → 年齢制限 | 質問にすべて「なし」→ 4+ の見込み | 要回答 |
 | App のプライバシー | App のプライバシー | 「データを収集しない」 | 決定 |
-| プライバシーポリシー URL | App 情報 | https://takejiyuuri.github.io/jww-viewer/privacy.html | 用意済み |
-| サポート URL | バージョン情報 | https://takejiyuuri.github.io/jww-viewer/support.html（問い合わせ先は GitHub Issues。メールにするなら直す） | 用意済み（要確認） |
+| プライバシーポリシー URL | App 情報 | https://takejiyuuri.github.io/mitehakaru-support/privacy.html（リポジトリ takejiyuuri/mitehakaru-support） | 用意済み |
+| サポート URL | バージョン情報 | https://takejiyuuri.github.io/mitehakaru-support/support.html（問い合わせは Google フォーム。Web 版へたどれないよう別のリポジトリに置く） | 用意済み |
 | 説明文・キーワード・このバージョンの新機能 | バージョン情報 | 説明文 4,000 文字以内、キーワード 100 文字以内 | 要作成 |
 | スクリーンショット | バージョン情報 | iPhone 6.9 インチ（1320×2868 など）を 3〜10 枚。**顧客の図面は使わない**（アプリに入れた見本の図面で撮る） | 要作成 |
 | 輸出コンプライアンス（暗号） | ビルドごと | 暗号を使っていないので「いいえ」。`ITSAppUsesNonExemptEncryption = NO` を入れてあるので毎回は聞かれない | 設定済み |

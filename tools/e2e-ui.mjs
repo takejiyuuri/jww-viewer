@@ -527,8 +527,8 @@ const covered = (page, ids) => page.evaluate((ids) => ids.filter((id) => {
     links: [...document.querySelectorAll('#info-body .about-links a')].map((a) => ({ href: a.href, target: a.target, rel: a.rel })),
   }));
   check('図面情報に、プライバシーポリシーとサポートへの案内があり、新しいタブ（iOS アプリでは Safari）で開く',
-    info.links.length === 2 && info.links.some((l) => l.href === 'https://takejiyuuri.github.io/jww-viewer/privacy.html')
-      && info.links.some((l) => l.href === 'https://takejiyuuri.github.io/jww-viewer/support.html')
+    info.links.length === 2 && info.links.some((l) => l.href === 'https://takejiyuuri.github.io/mitehakaru-support/privacy.html')
+      && info.links.some((l) => l.href === 'https://takejiyuuri.github.io/mitehakaru-support/support.html')
       && info.links.every((l) => l.target === '_blank' && l.rel.includes('noopener')), info.links);
   await page.click('#btn-info-close');
 

@@ -41,8 +41,8 @@ const PAPER_NAMES = ['A0', 'A1', 'A2', 'A3', 'A4', '', '', '', '2A', '3A', '4A',
  * 新しいタブ（iOS アプリでは Capacitor が外のサイトとして Safari）で開き、図面の画面はそのまま残す
  */
 const ABOUT_LINKS = '<p class="about-links">'
-  + '<a href="https://takejiyuuri.github.io/jww-viewer/privacy.html" target="_blank" rel="noopener">プライバシーポリシー</a>'
-  + '<a href="https://takejiyuuri.github.io/jww-viewer/support.html" target="_blank" rel="noopener">サポート・お問い合わせ</a>'
+  + '<a href="https://takejiyuuri.github.io/mitehakaru-support/privacy.html" target="_blank" rel="noopener">プライバシーポリシー</a>'
+  + '<a href="https://takejiyuuri.github.io/mitehakaru-support/support.html" target="_blank" rel="noopener">サポート・お問い合わせ</a>'
   + '</p>';
 
 type Tool = 'measure' | 'inspect';
