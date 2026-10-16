@@ -607,7 +607,7 @@ class App {
   }
 
   /**
-   * 受け取ったファイルを開く。ZIP なら中の図面（.jww・.dxf）を取り出す（LINE などは .jww を ZIP にして届けるため）。
+   * 受け取ったファイルを開く。ZIP なら中の図面（.jww・.dxf・.sfc・.p21）を取り出す（LINE などは .jww を ZIP にして届けるため）。
    * 1 つならそのまま開き、いくつもあれば「図面を開く」の一覧に並べて選んでもらう。
    * agreed は、記録が消えることを確かめてあるか（一覧から選ぶときに聞き直さない）
    */
@@ -625,7 +625,7 @@ class App {
     }
     el('loading').classList.add('hidden');
     if (entries.length === 0) {
-      this.fail(`${name} の中に図面（.jww・.dxf）がありません`);
+      this.fail(`${name} の中に図面（.jww・.dxf・.sfc・.p21）がありません`);
       return;
     }
     if (entries.length === 1) return this.load(entries[0].buffer, entries[0].name);
@@ -2710,7 +2710,7 @@ class App {
   private bindUI(): void {
     const file = el<HTMLInputElement>('file');
     // iOS アプリでは、写真の選び方を挟まずに「ファイル」の選択を出す（図面と ZIP と、念のためどのファイルも選べるように）
-    if (isNative) file.accept = '.jww,.dxf,.zip,application/octet-stream';
+    if (isNative) file.accept = '.jww,.dxf,.sfc,.p21,.zip,application/octet-stream';
     el('btn-open').addEventListener('click', () => this.openFiles());
     el('btn-open-2').addEventListener('click', () => this.openFiles());
     el('btn-sample').addEventListener('click', () => void this.openSample());
@@ -3324,6 +3324,61 @@ class App {
     el('dxf-scale').addEventListener('change', change);
   }
 
+  /**
+   * SXF の情報パネル。縮尺は図形の載った部分図で自動に決まる（枠 0 は用紙で 1/1）。
+   * JWW のレイヤグループと同じく、枠を選べばすべての区間をその縮尺で測る
+   */
+  private buildSxfInfoPanel(body: HTMLElement, info: LoadedInfo): void {
+    const counts = Object.entries(info.extraCounts ?? {})
+      .filter(([k, n]) => n > 0 && SXF_KIND_NAMES[k])
+      .map(([k, n]) => `${SXF_KIND_NAMES[k]} ${n.toLocaleString()}`);
+    const rows: string[] = [
+      `<dl class="kv">`,
+      `<dt>ファイル</dt><dd>${escapeHtml(info.name)}</dd>`,
+      `<dt>形式</dt><dd>${escapeHtml(info.formatLabel)}</dd>`,
+      info.memo.trim() ? `<dt>図面名</dt><dd>${escapeHtml(info.memo.trim())}</dd>` : '',
+      info.paperLabel ? `<dt>用紙</dt><dd>${escapeHtml(info.paperLabel)}</dd>` : '',
+      `<dt>図形</dt><dd>${escapeHtml(counts.join(' ／ ') || 'なし')}</dd>`,
+      `<dt>読み込み</dt><dd>${Math.round(info.parseMs)} ms</dd>`,
+      `</dl>`,
+    ];
+    if (info.warnings.length) rows.push(`<p class="sub">${escapeHtml(info.warnings.join(' / '))}</p>`);
+    rows.push('<div class="group-list"><div class="sub">計測に使う縮尺</div>');
+    rows.push(
+      `<div class="group-row pick${this.manualScale ? '' : ' active'}" data-auto="1">`
+      + '<span>自動（点が乗った部分図の縮尺）</span><span></span></div>',
+    );
+    for (const slot of info.scaleSlots) {
+      if (!slot.used) continue;
+      const active = this.manualScale && Math.abs(slot.scale - this.measureScale) < 1e-9 ? ' active' : '';
+      rows.push(
+        `<div class="group-row pick${active}" data-scale="${slot.scale}">`
+        + `<span>${escapeHtml(slot.label)}</span><span>1/${formatScale(slot.scale)}</span></div>`,
+      );
+    }
+    rows.push('</div>', ABOUT_LINKS);
+    body.innerHTML = rows.join('');
+    this.bindScalePicks(body);
+  }
+
+  /** 情報パネルの「計測に使う縮尺」の行を押したとき */
+  private bindScalePicks(body: HTMLElement): void {
+    for (const row of body.querySelectorAll<HTMLElement>('.group-row.pick')) {
+      row.addEventListener('click', () => {
+        if (row.dataset.auto) {
+          this.manualScale = false;
+          this.measureScale = this.points[0]?.scale ?? this.defaultScale;
+        } else {
+          this.measureScale = Number(row.dataset.scale);
+          this.manualScale = true;
+        }
+        this.updateReadout();
+        this.buildInfoPanel();
+        this.requestDraw();
+      });
+    }
+  }
+
   private buildInfoPanel(): void {
     const body = el('info-body');
     const info = this.info;
@@ -3333,6 +3388,10 @@ class App {
     }
     if (info.format === 'dxf') {
       this.buildDxfInfoPanel(body, info);
+      return;
+    }
+    if (info.format === 'sfc' || info.format === 'p21') {
+      this.buildSxfInfoPanel(body, info);
       return;
     }
     const c = info.counts;
@@ -3370,21 +3429,7 @@ class App {
     rows.push('</div>');
     rows.push(ABOUT_LINKS);
     body.innerHTML = rows.join('');
-
-    for (const row of body.querySelectorAll<HTMLElement>('.group-row.pick')) {
-      row.addEventListener('click', () => {
-        if (row.dataset.auto) {
-          this.manualScale = false;
-          this.measureScale = this.points[0]?.scale ?? this.defaultScale;
-        } else {
-          this.measureScale = Number(row.dataset.scale);
-          this.manualScale = true;
-        }
-        this.updateReadout();
-        this.buildInfoPanel();
-        this.requestDraw();
-      });
-    }
+    this.bindScalePicks(body);
   }
 }
 
@@ -3392,6 +3437,13 @@ class App {
 const DXF_KIND_NAMES: Record<string, string> = {
   LINE: '線', POLYLINE: '折れ線', ARC: '円弧', CIRCLE: '円', ELLIPSE: '楕円', TEXT: '文字', SOLID: 'ソリッド',
   POINT: '点', INSERT: '部品の配置',
+};
+
+/** 情報パネルに出す、SXF の図形の種類の呼び名 */
+const SXF_KIND_NAMES: Record<string, string> = {
+  line: '線', polyline: '折れ線', arc: '円弧', circle: '円', ellipse: '楕円', ellipseArc: '楕円弧', spline: 'スプライン',
+  clothoid: 'クロソイド', text: '文字', point: '点', dim: '寸法', label: '引出し線', balloon: 'バルーン',
+  'hatch:fill': '塗り', 'hatch:pattern': 'ハッチング', locate: '複合図形の配置',
 };
 
 /**

@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import zlib from 'node:zlib';
 import { startServer, projectRoot as root } from './serve.mjs';
 import { unitlessDxf } from './dxf-synth.mjs';
+import { basicSfc } from './sxf-synth.mjs';
 
 const srv = await startServer({ port: 5321, host: false, quiet: true });
 const samples = fs.readdirSync(path.join(root, 'samples')).filter((f) => f.endsWith('.jww')).sort();
@@ -603,10 +604,11 @@ await recentHas(1);
     { name: '__MACOSX/._zip-a.jww', data: Buffer.from('mac') },
     { name: 'zip-b.jww', data: b },
     { name: 'zip-c.dxf', data: Buffer.from(unitlessDxf()) },
+    { name: 'zip-d.sfc', data: Buffer.from(basicSfc()) },
   ]);
   await page.waitForFunction(() => !document.getElementById('zip-choices').classList.contains('hidden'), null, { timeout: 10000 });
   const many = await chooser();
-  check('ZIP に図面がいくつもあれば、図面を開く一覧に並べる（.jww・.dxf だけ）', many.shown && many.rows.join() === 'zip-a.jww,zip-b.jww,zip-c.dxf', many);
+  check('ZIP に図面がいくつもあれば、図面を開く一覧に並べる（.jww・.dxf・.sfc だけ）', many.shown && many.rows.join() === 'zip-a.jww,zip-b.jww,zip-c.dxf,zip-d.sfc', many);
   await page.click('#zip-list [data-zip="1"]');
   await opened('zip-b.jww');
   const after = await chooser();
@@ -614,9 +616,9 @@ await recentHas(1);
 
   // .jww が入っていない
   await pickZip('none.zip', [{ name: 'readme.txt', data: Buffer.from('x') }]);
-  await page.waitForFunction(() => /図面（\.jww・\.dxf）がありません/.test(document.getElementById('hint').textContent ?? ''), null, { timeout: 10000 }).catch(() => {});
+  await page.waitForFunction(() => /図面（\.jww・\.dxf・\.sfc・\.p21）がありません/.test(document.getElementById('hint').textContent ?? ''), null, { timeout: 10000 }).catch(() => {});
   const none = await page.evaluate(() => ({ hint: document.getElementById('hint').textContent, title: document.getElementById('title').textContent }));
-  check('図面の入っていない ZIP は理由を出し、表示中の図面はそのまま', /none\.zip の中に図面（\.jww・\.dxf）がありません/.test(none.hint ?? '') && none.title === 'zip-b.jww', none);
+  check('図面の入っていない ZIP は理由を出し、表示中の図面はそのまま', /none\.zip の中に図面（\.jww・\.dxf・\.sfc・\.p21）がありません/.test(none.hint ?? '') && none.title === 'zip-b.jww', none);
 }
 
 // ---------- 12. 見本の図面（最初の画面のボタン）----------

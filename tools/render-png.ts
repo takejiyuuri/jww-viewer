@@ -1,8 +1,7 @@
-// 描画結果を PNG に焼いて目視確認するための検証スクリプト（ブラウザ非依存）
+// 描画結果を PNG に焼いて目視確認するための検証スクリプト（ブラウザ非依存。JWW・DXF・SXF）
 import { readFileSync, writeFileSync } from 'node:fs';
 import { deflateSync } from 'node:zlib';
-import { parseJww } from '../src/jww/parser.ts';
-import { buildScene } from '../src/render/geometry.ts';
+import { loadDrawing } from '../src/formats/load.ts';
 import { BACKGROUND_RGB, buildPalette, type DisplaySettings } from '../src/render/theme.ts';
 
 const W = 1400;
@@ -23,8 +22,8 @@ const hidePens = new Set(
 
 const raw = readFileSync(file);
 const ab = raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength) as ArrayBuffer;
-const doc = parseJww(ab);
-const scene = buildScene(doc);
+// 形式は中身で見分ける（JWW・DXF・SXF）
+const { scene } = await loadDrawing(ab, file);
 const hidden = new Set<number>();
 scene.groups.forEach((g, i) => { if (hidePens.has(g.penColor)) hidden.add(i); });
 const palette = buildPalette(scene.colors, scene.colorGroup, hidden, display);

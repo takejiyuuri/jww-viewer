@@ -1,5 +1,5 @@
 /**
- * ZIP から図面（.jww・.dxf）を取り出す。LINE などは .jww をそのまま送れず、ZIP にして届けるため。
+ * ZIP から図面（.jww・.dxf・.sfc・.p21）を取り出す。LINE などは .jww をそのまま送れず、ZIP にして届けるため。
  * 展開はブラウザの DecompressionStream（deflate-raw、iOS 16.4 以降）に任せる。ZIP64・パスワード付きには対応しない
  */
 
@@ -15,10 +15,10 @@ export function isZipHead(b: Uint8Array): boolean {
 }
 
 /** ZIP の中から取り出す図面の拡張子 */
-const DRAWING_EXT = /\.(jww|dxf)$/i;
+const DRAWING_EXT = /\.(jww|dxf|sfc|p21)$/i;
 
 /**
- * ZIP の中の図面（.jww・.dxf）をすべて取り出す（名前は ZIP の並び順）。図面がなければ空の配列。
+ * ZIP の中の図面（.jww・.dxf・.sfc・.p21）をすべて取り出す（名前は ZIP の並び順）。図面がなければ空の配列。
  * 展開後の合計が maxBytes を超えるもの（ZIP 爆弾など）は、展開しきる前に止める
  */
 export async function drawingsInZip(buffer: ArrayBuffer, maxBytes: number): Promise<ZipEntry[]> {

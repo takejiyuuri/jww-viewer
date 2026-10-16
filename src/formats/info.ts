@@ -24,7 +24,7 @@ export interface LayerGroupInfo {
 /** 図面の形式 */
 export type DrawingFormat = 'jww' | 'dxf' | 'sfc' | 'p21';
 
-/** 縮尺の枠（JWW はレイヤグループ 16 個。DXF は 1 個） */
+/** 縮尺の枠（JWW はレイヤグループ 16 個。DXF は 1 個。SXF は用紙と部分図ごと） */
 export interface ScaleSlot {
   no: number;
   label: string;
@@ -49,7 +49,9 @@ export interface LoadedInfo {
   scaleSlots: ScaleSlot[];
   /** 図面の単位（DXF）。guessed は図面に指定がなく mm とみなしたもの。code は $INSUNITS */
   units?: { name: string; toMm: number; guessed: boolean; code: number };
-  /** 線種番号ごとの名前（DXF） */
+  /** 用紙の呼び名（SXF。A1 横、自由 700 × 400 mm など） */
+  paperLabel?: string;
+  /** 線種番号ごとの名前（DXF・SXF） */
   lineTypeNames?: string[];
   /** 形式ごとの図形の数（情報パネルに出す） */
   extraCounts?: Record<string, number>;

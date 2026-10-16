@@ -19,5 +19,11 @@ export async function loadDrawing(
     const { loadDxf } = await import('../dxf/load.ts');
     return loadDxf(buffer, name);
   }
+  if (format === 'sfc' || format === 'p21') {
+    // SXF の読み取りも別のチャンクにする
+    const { loadSxf } = await import('../sxf/load.ts');
+    const { scene, info } = loadSxf(buffer, name, format);
+    return { scene, info };
+  }
   throw new Error(unsupportedReason(format) ?? '対応していない形式です');
 }

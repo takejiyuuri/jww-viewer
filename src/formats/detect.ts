@@ -14,7 +14,8 @@ export function detectFormat(head: Uint8Array, name = ''): DetectedFormat | null
   // DWG は "AC10" と版の数字で始まる
   if (/^AC10\d\d/.test(text)) return 'dwg';
   if (/^﻿?\s*ISO-10303-21;/.test(text) || text.startsWith('ï»¿ISO-10303-21;')) {
-    return /\/\*SXF/.test(text) ? 'sfc' : 'p21';
+    // SFC は DATA 節の図形を /*SXF … SXF*/ の注釈に書く（FILE_DESCRIPTION は 'SCADEC level2 feature_mode'）
+    return /\/\*SXF/.test(text) || /feature_mode/i.test(text) ? 'sfc' : 'p21';
   }
   if (/^\s*\/\*SXF/.test(text)) return 'sfc';
   if (isDxfText(text)) return 'dxf';
@@ -35,10 +36,10 @@ function isDxfText(text: string): boolean {
 /** 開けない形式なら、その理由（開ける形式なら null） */
 export function unsupportedReason(format: DetectedFormat | null): string | null {
   switch (format) {
-    case 'jww': case 'dxf': case 'zip': return null;
+    case 'jww': case 'dxf': case 'sfc': case 'zip': return null;
     case 'dwg': return 'DWG ファイルは開けません。CAD で DXF 形式に保存し直してから開いてください';
     case 'dxfb': return 'バイナリ形式の DXF には対応していません。ASCII（テキスト）形式の DXF で保存し直してください';
-    case 'sfc': case 'p21': return 'SXF（.sfc・.p21）にはまだ対応していません';
-    default: return 'JWW・DXF ファイルではありません';
+    case 'p21': return 'SXF の P21 形式にはまだ対応していません。SFC 形式で保存し直してください';
+    default: return 'JWW・DXF・SXF ファイルではありません';
   }
 }
