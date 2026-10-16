@@ -5,6 +5,7 @@ import { detectFormat, unsupportedReason } from '../src/formats/detect.ts';
 import { KIND, type Scene } from '../src/render/builder.ts';
 import { TRUE_COLOR_PEN } from '../src/dxf/aci.ts';
 import type { LoadedInfo } from '../src/formats/info.ts';
+import { arcMidpoint, curveIndex, onlinePoint } from '../src/measure/snap.ts';
 import { basicDxf, unitlessDxf, utf8Dxf } from './dxf-synth.mjs';
 
 let failures = 0;
@@ -96,6 +97,25 @@ check('ほかの形式は null', detectFormat(enc('hello world'), 'a.txt') === n
       if (p[i * 4] >= 0 && p[i * 4] <= 200 && p[i * 4 + 1] > 150 && p[i * 4 + 1] <= 300) low = Math.min(low, p[i * 4 + 1]);
     }
     check('半円は下へふくらむ', near(low, 200, 0.05), low);
+    // 吸着は弦ではなく弧の上（中心 (100,300)、半径 100）。中点は (100,200)
+    const curveOf = curveIndex(scene);
+    let worst = 0, arcLines = 0, mid: [number, number] | null = null;
+    for (let i = 0; i < p.length / 4; i++) {
+      if (e.kind[scene.lineEntity[i]] !== KIND.polyline || curveOf[i] < 0) continue;
+      if (!(p[i * 4] >= 0 && p[i * 4] <= 200 && p[i * 4 + 1] <= 300 && p[i * 4 + 1] > 150)) continue;
+      arcLines++;
+      const q = onlinePoint(scene, curveOf, i, (p[i * 4] + p[i * 4 + 2]) / 2, (p[i * 4 + 1] + p[i * 4 + 3]) / 2);
+      if (q) worst = Math.max(worst, Math.abs(Math.hypot(q[0] - 100, q[1] - 300) - 100));
+      mid ??= arcMidpoint(scene, curveOf, i);
+    }
+    check('ふくらみの弧の線上は弧の上', arcLines > 4 && worst < 1e-6, [arcLines, worst]);
+    check('ふくらみの弧の中点', mid !== null && near(mid[0], 100, 1e-6) && near(mid[1], 200, 1e-6), mid);
+    // POLYLINE の直線の辺は式を持たない
+    let straight = 0;
+    for (let i = 0; i < p.length / 4; i++) {
+      if (e.kind[scene.lineEntity[i]] === KIND.polyline && near(p[i * 4], 100, 1e-6) && near(p[i * 4 + 2], 100, 1e-6) && curveOf[i] < 0) straight++;
+    }
+    check('折れ線の直線の辺は直線のまま', straight === 1, straight);
   }
 
   // 楕円の 1/4

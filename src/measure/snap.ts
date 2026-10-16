@@ -230,11 +230,30 @@ function arcMidAngle(c: Curve): number {
   return c.start + (c.sweep * (k - 1 + f)) / steps;
 }
 
-/** 図形ごとの元の式の番号（Scene.curves の何件目か）。円・円弧・楕円でなければ -1 */
+/**
+ * 線分ごとの元の式の番号（Scene.curves の何件目か）。円・円弧・楕円を折った線分でなければ -1。
+ * 1 つの図形が複数の式を持てる（折れ線の中のふくらみの弧）ので、図形ではなく線分で引く
+ */
 export function curveIndex(scene: Scene): Int32Array {
-  const out = new Int32Array(scene.entities.count).fill(-1);
+  const lines = scene.lineEntity.length;
+  const out = new Int32Array(lines).fill(-1);
   const curves = scene.curves;
-  for (let k = 0; k < curves.length / CURVE_STRIDE; k++) out[curves[k * CURVE_STRIDE]] = k;
+  const ranges = scene.curveLines;
+  const e = scene.entities;
+  for (let k = 0; k < curves.length / CURVE_STRIDE; k++) {
+    let from: number, count: number;
+    if (ranges && ranges.length >= (k + 1) * 2) {
+      from = ranges[k * 2];
+      count = ranges[k * 2 + 1];
+    } else {
+      // 範囲の無い古い形は、図形の線分すべて
+      const ent = curves[k * CURVE_STRIDE];
+      from = e.lineStart[ent] ?? 0;
+      count = e.lineCount[ent] ?? 0;
+    }
+    const to = Math.min(lines, from + count);
+    for (let i = from; i < to; i++) out[i] = k;
+  }
   return out;
 }
 
@@ -251,7 +270,7 @@ export function onlinePoint(scene: Scene, curveOf: Int32Array, i: number, x: num
   let t = ((x - ax) * dx + (y - ay) * dy) / len2;
   t = t < 0 ? 0 : t > 1 ? 1 : t;
   const qx = ax + dx * t, qy = ay + dy * t;
-  const k = curveOf[scene.lineEntity[i]];
+  const k = curveOf[i];
   if (k < 0) return [qx, qy];
   // 弦は曲線より内側を通るので、弦の上の点を曲線の上へ移す
   const c = curveAt(scene.curves, k);
@@ -261,8 +280,9 @@ export function onlinePoint(scene: Scene, curveOf: Int32Array, i: number, x: num
 /** 線分 i が円弧（両端のある曲線）の一部なら、その円弧の中点。そうでなければ null */
 export function arcMidpoint(scene: Scene, curveOf: Int32Array, i: number): [number, number] | null {
   const e = scene.lineEntity[i];
-  const k = curveOf[e];
-  if (k < 0 || scene.entities.kind[e] !== KIND.arc) return null;
+  const k = curveOf[i];
+  // 円弧と、折れ線の中のふくらみの弧
+  if (k < 0 || (scene.entities.kind[e] !== KIND.arc && scene.entities.kind[e] !== KIND.polyline)) return null;
   const c = curveAt(scene.curves, k);
   if (Math.abs(c.sweep) >= TAU - 1e-12) return null;
   return curvePoint(c, arcMidAngle(c));
@@ -280,7 +300,7 @@ export function segmentCrossings(
   const ei = scene.lineEntity[i], ej = scene.lineEntity[j];
   if (ei === ej) return;
   const pos = scene.linePos;
-  const ci = curveOf[ei], cj = curveOf[ej];
+  const ci = curveOf[i], cj = curveOf[j];
   if (ci < 0 && cj < 0) {
     const p = intersect(
       pos[i * 4], pos[i * 4 + 1], pos[i * 4 + 2], pos[i * 4 + 3],
@@ -293,7 +313,7 @@ export function segmentCrossings(
     const line = ci < 0 ? i : j;
     const k = ci < 0 ? cj : ci;
     if (solved) {
-      const key = line * (curveOf.length + 1) + k;
+      const key = line * (scene.curves.length / CURVE_STRIDE + 1) + k;
       if (solved.has(key)) return;
       solved.add(key);
     }
@@ -616,7 +636,7 @@ export class SnapIndex {
       if (f & SNAP_FLAG.end) consider(bx, by, 'endpoint', g);
       if (f & SNAP_FLAG.mid) consider((ax + bx) / 2, (ay + by) / 2, 'midpoint', g);
       // 円弧の中点は元の式から求める（図形ごとに一度だけ）
-      const k = this.curveOf[lineEntity[i]];
+      const k = this.curveOf[i];
       if (k >= 0 && !this.arcMid.has(k)) this.arcMid.set(k, arcMidpoint(this.scene, this.curveOf, i));
       const m = k >= 0 ? this.arcMid.get(k) : null;
       if (m) consider(m[0], m[1], 'midpoint', g);
@@ -628,7 +648,7 @@ export class SnapIndex {
 
     // 交点は組み合わせが増えるので、指に近い順に並んだ先頭だけを掛け合わせる
     const cross = segs.length > CROSS_MAX ? segs.slice(0, CROSS_MAX) : segs;
-    const curved = cross.map((i) => this.curveOf[lineEntity[i]] >= 0);
+    const curved = cross.map((i) => this.curveOf[i] >= 0);
     const hits: number[] = [];
     const solved = new Set<number>();
     for (let a = 0; a < cross.length; a++) {
@@ -754,7 +774,7 @@ export class SnapIndex {
       const f = snap[i];
 
       // 円・円弧・楕円は、折れ線ではなく元の曲線と拘束線との交点にする（曲線ごとに一度だけ）
-      const k = this.curveOf[lineEntity[i]];
+      const k = this.curveOf[i];
       if (k >= 0) {
         if (solved.has(k)) continue;
         solved.add(k);

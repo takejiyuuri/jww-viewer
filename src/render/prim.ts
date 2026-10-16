@@ -29,7 +29,7 @@ export function conicAxes(ux: number, uy: number, vx: number, vy: number): [numb
 
 /**
  * 円弧・楕円弧を折れ線にして積む。ends が true なら両端を図形の端として吸着させる。
- * curve が true なら吸着用の元の式も残す（1 つの図形に式は 1 つだけ持てるので、折れ線の中の弧では残さない）。
+ * curve が true なら吸着用の元の式も残す（この呼び出しで積んだ線分の範囲と一緒に。1 つの図形に複数あってよい）。
  * 戻り値は長さと、変換後の半径（長いほう・短いほう）
  */
 export function emitConic(
@@ -40,6 +40,7 @@ export function emitConic(
   const [vx, vy] = linear(t, c.vx, c.vy);
   const [major, minor] = conicAxes(ux, uy, vx, vy);
   const n = b.arcSegments(major, c.sweep);
+  const from = b.lineCount;
   let px = 0, py = 0;
   let chords = 0;
   for (let i = 0; i <= n; i++) {
@@ -57,7 +58,7 @@ export function emitConic(
   }
   if (curve) {
     b.addPoint(cx, cy, layer, color);
-    b.addCurve(cx, cy, ux, uy, vx, vy, c.start, c.sweep);
+    b.addCurve(cx, cy, ux, uy, vx, vy, c.start, c.sweep, from);
   }
   return { length: conicLength(cx, cy, ux, uy, vx, vy, c.start, c.sweep, major, minor, chords), major, minor };
 }
@@ -114,7 +115,8 @@ export function emitPolyline(
     const x1 = xy[i * 2], y1 = xy[i * 2 + 1], x2 = xy[j * 2], y2 = xy[j * 2 + 1];
     const arc = bulge ? bulgeArc(x1, y1, x2, y2, bulge[i] ?? 0) : null;
     if (arc) {
-      length += emitConic(b, arc, t, color, layer, true, false).length;
+      // 弧の上の吸着は元の式で（中心も吸着点にする）
+      length += emitConic(b, arc, t, color, layer, true, true).length;
       continue;
     }
     const [ax, ay] = apply(t, x1, y1);

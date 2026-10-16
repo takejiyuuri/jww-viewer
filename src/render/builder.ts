@@ -82,6 +82,12 @@ export interface Scene {
    */
   curves: Float64Array;
   /**
+   * curves の 1 件ごとの、その式で描いた線分の範囲 [最初の線分, 本数, ...]。
+   * 1 つの図形が複数の式を持つ（折れ線の中のふくらみの弧など）ので、吸着では「線分 → 式」で引く。
+   * 無ければ図形の線分すべてがその式のもの（古い形）
+   */
+  curveLines?: Uint32Array;
+  /**
    * 書き出す前に座標から引いた量（図面の元の座標 = 座標 + origin）。大きな座標の図面を
    * Float32 で持つと桁が落ちるので、図面の中ほどを原点に寄せる。ずらしていなければ無い
    */
@@ -155,6 +161,10 @@ export const KIND = {
   dimAux: 8,
   /** 折れ線（DXF の LWPOLYLINE・POLYLINE） */
   polyline: 9,
+  /** スプライン（DXF の SPLINE） */
+  spline: 10,
+  /** ハッチング（DXF の HATCH。模様の線は吸着しない） */
+  hatch: 11,
 } as const;
 
 /**
@@ -413,6 +423,8 @@ export class Builder {
   snapPointEntity = new Buf(u32);
   /** 円・円弧・楕円の元の式（Scene.curves と同じ並び） */
   curves: number[] = [];
+  /** curves の 1 件ごとの線分の範囲 [最初の線分, 本数, ...] */
+  curveLines: number[] = [];
   layerCounts = new Uint32Array(256);
 
   // 図形ごとの属性
@@ -568,12 +580,24 @@ export class Builder {
     this.snapPointEntity.push(this.cur);
   }
 
-  /** いま書き出している図形（円・円弧）の元の式を残す。式が壊れていれば残さない（吸着は折れ線のまま） */
-  addCurve(cx: number, cy: number, ux: number, uy: number, vx: number, vy: number, start: number, sweep: number): void {
+  /** いま積んである線分の数（曲線の式に線分の範囲を持たせるときの始まり） */
+  get lineCount(): number {
+    return this.lineLayer.len;
+  }
+
+  /**
+   * いま書き出している図形（円・円弧）の元の式を残す。式が壊れていれば残さない（吸着は折れ線のまま）。
+   * from はこの式で描いた最初の線分（省けば図形の最初の線分）。from から今までの線分がこの式のもの
+   */
+  addCurve(
+    cx: number, cy: number, ux: number, uy: number, vx: number, vy: number, start: number, sweep: number,
+    from = this.entLineStart.data[this.cur],
+  ): void {
     const v = [cx, cy, ux, uy, vx, vy, start, sweep];
     if (!v.every(Number.isFinite)) return;
     if (!(Math.abs(ux * vy - uy * vx) > 1e-9 * (ux * ux + uy * uy + vx * vx + vy * vy))) return;
     this.curves.push(this.cur, ...v);
+    this.curveLines.push(from, this.lineLayer.len - from);
   }
 
   /** 実点を描くための丸。radius は用紙上の mm（0 なら画面で決めた大きさ） */
@@ -652,6 +676,7 @@ export function finishScene(b: Builder, x: SceneExtras): Scene {
     },
     blockNames: b.blockNames,
     curves: Float64Array.from(b.curves),
+    curveLines: Uint32Array.from(b.curveLines),
   };
   if (x.origin) scene.origin = x.origin;
   scene.fitBounds = fitScene(scene, () => true);

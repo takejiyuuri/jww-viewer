@@ -44,14 +44,16 @@ function segDist2(pos: Float32Array, i: number, x: number, y: number): number {
   return px * px + py * py;
 }
 
-/** 円弧の中点（楕円は求めるのが重いので、図形ごとに覚えておく） */
+/** 円弧の中点（楕円は求めるのが重いので、式ごとに覚えておく） */
 const midCache = new WeakMap<Scene, Map<number, [number, number] | null>>();
 function arcMid(scene: Scene, curveOf: Int32Array, i: number): [number, number] | null {
   let m = midCache.get(scene);
   if (!m) midCache.set(scene, (m = new Map()));
-  const e = scene.lineEntity[i];
-  if (!m.has(e)) m.set(e, arcMidpoint(scene, curveOf, i));
-  return m.get(e) ?? null;
+  // 1 つの図形が複数の式を持てるので、式の番号ごとに覚える
+  const k = curveOf[i];
+  if (k < 0) return null;
+  if (!m.has(k)) m.set(k, arcMidpoint(scene, curveOf, i));
+  return m.get(k) ?? null;
 }
 
 interface Best {
