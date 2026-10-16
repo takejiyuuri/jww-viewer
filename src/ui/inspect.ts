@@ -18,10 +18,11 @@ const KIND_LABEL: Record<number, string> = {
   [KIND.dim]: '寸法線',
   [KIND.dimText]: '寸法値',
   [KIND.dimAux]: '寸法補助線',
+  [KIND.polyline]: '折れ線',
 };
 
 /** 線種に意味がある図形 */
-const HAS_LINE_TYPE = new Set<number>([KIND.line, KIND.arc, KIND.circle, KIND.dim, KIND.dimAux]);
+const HAS_LINE_TYPE = new Set<number>([KIND.line, KIND.arc, KIND.circle, KIND.dim, KIND.dimAux, KIND.polyline]);
 
 /** 文字の矩形（回転を考慮）に点が入っているか。pad だけ外側に甘く取る */
 export function textContains(t: SceneText, x: number, y: number, pad: number): boolean {
@@ -189,12 +190,18 @@ export function describeEntity(
   const gName = group?.name?.trim() || `グループ ${hex1(g)}`;
   const lInfo = group?.layers[l];
   const lName = lInfo?.name?.trim() || `レイヤ ${hex1(l)}`;
-  const jw = lInfo && lInfo.state === 0 ? `<span class="lflag">Jw で${layerStateName(0)}</span>` : '';
-  rows.push({
-    label: 'レイヤ',
-    html: `<span class="lno">${hex1(g)}</span>${escapeHtml(gName)}`
-      + `<span class="sep">›</span><span class="lno">${hex1(l)}</span>${escapeHtml(lName)}${jw}`,
-  });
+  if (info.layerMode === 'flat') {
+    // 平らな形式（DXF）はレイヤの名前だけ。グループと番号は仮のものなので出さない
+    const off = lInfo && lInfo.state === 0 ? '<span class="lflag">元の図面で非表示</span>' : '';
+    rows.push({ label: 'レイヤ', html: `${escapeHtml(lInfo?.name ?? '')}${off}` });
+  } else {
+    const jw = lInfo && lInfo.state === 0 ? `<span class="lflag">Jw で${layerStateName(0)}</span>` : '';
+    rows.push({
+      label: 'レイヤ',
+      html: `<span class="lno">${hex1(g)}</span>${escapeHtml(gName)}`
+        + `<span class="sep">›</span><span class="lno">${hex1(l)}</span>${escapeHtml(lName)}${jw}`,
+    });
+  }
 
   // 線色と線種
   const color = e.color[i];
@@ -206,7 +213,9 @@ export function describeEntity(
     : '';
   let penHtml = `<span class="dot" style="${swatch(color)}"></span>${escapeHtml(colorName)}${custom}`;
   if (HAS_LINE_TYPE.has(kind)) {
-    penHtml += `<span class="sep">／</span>${escapeHtml(lineTypeName(e.style[i], info.sxfLineTypeNames))}`;
+    const style = e.style[i];
+    const typeName = info.lineTypeNames ? (info.lineTypeNames[style] ?? '実線') : lineTypeName(style, info.sxfLineTypeNames);
+    penHtml += `<span class="sep">／</span>${escapeHtml(typeName)}`;
   }
   rows.push({ label: kind === KIND.text || kind === KIND.dimText ? '文字色' : '線色', html: penHtml });
 
@@ -216,6 +225,7 @@ export function describeEntity(
   const size = e.size[i];
   switch (kind) {
     case KIND.line:
+    case KIND.polyline:
       rows.push({ label: '長さ', html: `${real(size)} ${scaleNote}` });
       break;
     case KIND.arc:
@@ -235,7 +245,9 @@ export function describeEntity(
     case KIND.text: {
       const t = scene.texts[e.text[i]];
       if (t) rows.push({ label: '文字', html: escapeHtml(plainText(t.text)) });
-      rows.push({ label: '文字の高さ', html: `${size.toFixed(2)} mm <span class="sub">図面上</span>` });
+      // 図面上の大きさは、JWW では用紙の mm、DXF では図面の単位
+      const unit = info.units ? info.units.name : 'mm';
+      rows.push({ label: '文字の高さ', html: `${size.toFixed(2)} ${escapeHtml(unit)} <span class="sub">図面上</span>` });
       break;
     }
     case KIND.dim:

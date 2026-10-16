@@ -1,28 +1,25 @@
-import { parseJww } from './parser.ts';
-import { buildScene } from '../render/geometry.ts';
 import type { Scene } from '../render/geometry.ts';
-import { buildInfo, type LoadedInfo } from './info.ts';
+import type { LoadedInfo } from '../formats/info.ts';
+import { loadDrawing } from '../formats/load.ts';
+import type { DetectedFormat } from '../formats/detect.ts';
 
-export type { LayerState, LayerInfo, LayerGroupInfo, LoadedInfo } from './info.ts';
+export type { LayerState, LayerInfo, LayerGroupInfo, LoadedInfo } from '../formats/info.ts';
 
 export interface LoadRequest {
   buffer: ArrayBuffer;
   name: string;
+  /** 見分けた形式（なければ worker で見分ける） */
+  format?: DetectedFormat | null;
 }
 
 export type LoadResponse =
   | { ok: true; scene: Scene; info: LoadedInfo }
   | { ok: false; error: string };
 
-self.onmessage = (ev: MessageEvent<LoadRequest>) => {
-  const { buffer, name } = ev.data;
+self.onmessage = async (ev: MessageEvent<LoadRequest>) => {
+  const { buffer, name, format } = ev.data;
   try {
-    const t0 = performance.now();
-    const doc = parseJww(buffer);
-    const scene = buildScene(doc);
-    const parseMs = performance.now() - t0;
-
-    const info = buildInfo(doc, scene, name, parseMs);
+    const { scene, info } = await loadDrawing(buffer, name, format ?? undefined);
 
     // 型付き配列は複製せずに受け渡す（数十万要素あるので複製すると重い）
     const transfer: Transferable[] = [
