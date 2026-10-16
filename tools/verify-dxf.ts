@@ -383,6 +383,17 @@ check('ほかの形式は null', detectFormat(enc('hello world'), 'a.txt') === n
   check('途中で切れた DXF を読めた（または知らせた）', true, thrown);
 }
 
+// ---------- レイヤが 257 個以上 ----------
+{
+  const rows = ['0', 'SECTION', '2', 'ENTITIES'];
+  for (let k = 1; k <= 300; k++) rows.push('0', 'LINE', '8', `L${k}`, '10', '0', '20', String(k), '11', '10', '21', String(k));
+  rows.push('0', 'ENDSEC', '0', 'EOF');
+  const { scene, info } = await loadDrawing(buf(enc(rows.join('\n'))), 'many.dxf');
+  const last = info.groups[15].layers[15];
+  check('256 個目からは「その他のレイヤ」', last.name.includes('その他のレイヤ（46 個）') && scene.layerCounts[255] === 46, [last.name, scene.layerCounts[255]]);
+  check('レイヤが多い警告', info.warnings.some((w) => w.includes('301 個')), info.warnings);
+}
+
 // ---------- 段階 B の図面を切ったり、数を壊したりしても止まらないこと ----------
 {
   const full = stageBDxf();
