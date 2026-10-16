@@ -1,5 +1,7 @@
 /** SXF（SFC・P21）を読んで Scene と画面に出す情報にする（worker から別のチャンクとして読み込む） */
 import { parseSfc } from './sfc.ts';
+import { parseP21 } from './p21.ts';
+import { ap202ToSxf } from './ap202.ts';
 import { buildSxfScene, type SxfSceneResult } from './scene.ts';
 import type { SxfDocument } from './types.ts';
 import type { Scene } from '../render/builder.ts';
@@ -7,8 +9,7 @@ import type { LoadedInfo } from '../formats/info.ts';
 
 /** 文書モデルまで読む（tools から確かめるのにも使う） */
 export function parseSxf(buffer: ArrayBuffer, format: 'sfc' | 'p21'): SxfDocument {
-  if (format === 'p21') throw new Error('SXF（.p21）にはまだ対応していません');
-  return parseSfc(buffer);
+  return format === 'sfc' ? parseSfc(buffer) : ap202ToSxf(parseP21(buffer));
 }
 
 export function loadSxf(

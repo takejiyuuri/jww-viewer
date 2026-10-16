@@ -65,6 +65,8 @@ export type SxfFeature =
     start: number; end: number;
   }
   | { t: 'spline'; s: SxfStyle; closed: boolean; xy: number[] }
+  /** B スプライン（P21 の B_SPLINE_CURVE_WITH_KNOTS）。knots は重複度を展開したもの、weights は有理のとき */
+  | { t: 'bspline'; s: SxfStyle; degree: number; ctrl: number[]; knots: number[]; weights: number[] }
   /** クロソイド。(x, y) は原点（曲率 0 の点）、a はパラメータ、angle は原点での接線の向き（度）、l0〜l1 の区間を描く */
   | {
     t: 'clothoid'; s: SxfStyle; x: number; y: number; a: number; dir: number; angle: number;

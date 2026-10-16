@@ -36,10 +36,9 @@ function isDxfText(text: string): boolean {
 /** 開けない形式なら、その理由（開ける形式なら null） */
 export function unsupportedReason(format: DetectedFormat | null): string | null {
   switch (format) {
-    case 'jww': case 'dxf': case 'sfc': case 'zip': return null;
+    case 'jww': case 'dxf': case 'sfc': case 'p21': case 'zip': return null;
     case 'dwg': return 'DWG ファイルは開けません。CAD で DXF 形式に保存し直してから開いてください';
     case 'dxfb': return 'バイナリ形式の DXF には対応していません。ASCII（テキスト）形式の DXF で保存し直してください';
-    case 'p21': return 'SXF の P21 形式にはまだ対応していません。SFC 形式で保存し直してください';
     default: return 'JWW・DXF・SXF ファイルではありません';
   }
 }

@@ -9,7 +9,7 @@ import {
   finishScene, type Bounds, type Scene, type Xform,
 } from '../render/builder.ts';
 import {
-  emitConic, emitRings, emitTextItem, fitPoints, hatchSegments, ringArea, type Conic, type PatternFamily,
+  emitConic, emitRings, emitTextItem, fitPoints, hatchSegments, ringArea, splinePoints, type Conic, type PatternFamily,
 } from '../render/prim.ts';
 import { DXF_STYLE_SLOTS, dashPattern } from '../dxf/ltype.ts';
 import { SXF_COLORS, SXF_LINE_TYPES, USER_COLOR_BASE, USER_LINE_TYPE_BASE } from './colors.ts';
@@ -213,6 +213,7 @@ export function buildSxfScene(doc: SxfDocument): SxfSceneResult {
       case 'circle': return conicPoints(arcConic(f.x, f.y, f.r, f.r, 0, 0, 0, 360), false);
       case 'ellipse': return conicPoints(arcConic(f.x, f.y, f.rx, f.ry, f.rot, 0, 0, 360), false);
       case 'spline': return fitPoints(f.xy, f.closed);
+      case 'bspline': return splinePoints(f.degree, f.ctrl, f.knots, f.weights, ARC_TOLERANCE);
       case 'clothoid': return clothoidPoints(f);
       default: return [];
     }
@@ -345,12 +346,13 @@ export function buildSxfScene(doc: SxfDocument): SxfSceneResult {
         break;
       }
       case 'spline':
+      case 'bspline':
       case 'clothoid': {
-        count(f.t);
-        const pts = f.t === 'spline' ? fitPoints(f.xy, f.closed) : clothoidPoints(f);
+        count(f.t === 'bspline' ? 'spline' : f.t);
+        const pts = memberPoints(f);
         if (pts.length < 4) break;
         const { color, layer } = begin(KIND.spline, f.s, ctx);
-        const length = emitPath(pts, t, color, layer, f.t === 'clothoid' || !f.closed, false);
+        const length = emitPath(pts, t, color, layer, f.t !== 'spline' || !f.closed, false);
         b.end(length, length);
         break;
       }

@@ -1,8 +1,11 @@
 // SXF をアプリで開く：合成の SFC（sxf-synth.mjs）を開き、1/100 の部分図の線と用紙の線を測る（縮尺は自動）・
-// 情報パネルの縮尺の枠（用紙・部分図）・レイヤの名前だけの一覧（元の図面で非表示の印）を確かめる
+// 情報パネルの縮尺の枠（用紙・部分図）・レイヤの名前だけの一覧（元の図面で非表示の印）を確かめる。
+// 同じ図面を P21（AP202）に書き直したものも開いて測る
 import { chromium, devices } from 'playwright';
 import { startServer } from './serve.mjs';
 import { basicSfc } from './sxf-synth.mjs';
+import { writeP21 } from './sxf-p21.ts';
+import { parseSfc } from '../src/sxf/sfc.ts';
 
 const srv = await startServer({ port: 5325, host: false, quiet: true });
 const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
@@ -112,6 +115,19 @@ await page.waitForSelector('#layer-list .l-row');
   check('lflag 0 のレイヤは隠し、印を付ける', !!hidden && hidden.off && hidden.flag === '元の図面で非表示', { row: hidden });
 }
 await page.click('#btn-layer-close');
+
+// ---------- 5. P21 ----------
+{
+  const sfc = basicSfc();
+  const doc = parseSfc(sfc.slice().buffer);
+  await pick('basic.p21', writeP21(doc));
+  await opened('basic.p21');
+  await page.waitForTimeout(500);
+  const info = await page.evaluate(() => ({ format: window.__jww.info.format, scales: [...window.__jww.scene.scales.slice(0, 2)] }));
+  check('P21 を開ける（形式 p21、枠 1 は 1/100）', info.format === 'p21' && info.scales[1] === 100, info);
+  const m = await measure(100, 110, 100);
+  check('P21 でも部分図の線は 1.000 m', m.value === '1.000 m' && m.points.every((p) => p.scale === 100), m);
+}
 
 check('コンソールにエラーがない', errors.length === 0, { errors: errors.slice(0, 5) });
 
