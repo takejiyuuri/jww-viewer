@@ -36,6 +36,11 @@ export class LayerVisibility {
    * そのグループを直接切り替えたら（forget）、覚えておいた設定は使えなくなるので捨てる。
    */
   readonly stash = new Map<number, { group: boolean; flags: boolean[] }>();
+  /**
+   * 平らな形式（DXF）。グループは仮のものなので常に表示にしておき、レイヤだけで見え方を決める
+   * （「このレイヤだけ」や反転でグループを隠すと、一覧に出ないスイッチで隠れてしまう）
+   */
+  flat = false;
 
   /** 図形の数を覚えさせる。snapshot() / restore() では持ち回らない */
   useCounts(counts: Uint32Array | null): this {
@@ -95,6 +100,12 @@ export class LayerVisibility {
    */
   only(k: number): void {
     this.stash.clear();
+    if (this.flat) {
+      this.group.fill(true);
+      this.layer.fill(false);
+      this.layer[k] = true;
+      return;
+    }
     const g = k >> 4;
     this.group.fill(false);
     this.group[g] = true;
@@ -109,6 +120,12 @@ export class LayerVisibility {
    * - 一部だけ見えていた → 中のレイヤを 1 枚ずつ入れ替える
    */
   invert(): void {
+    if (this.flat) {
+      // 図形のあるレイヤを 1 枚ずつ入れ替える
+      this.group.fill(true);
+      for (let k = 0; k < 256; k++) if (this.used(k)) this.layer[k] = !this.layer[k];
+      return;
+    }
     for (let g = 0; g < 16; g++) {
       const base = g << 4;
       const flags = this.layer.slice(base, base + 16);
@@ -228,9 +245,61 @@ function formatScale(scale: number): string {
   return Number.isInteger(scale) ? String(scale) : scale.toFixed(3).replace(/0+$/, '');
 }
 
+/** 平らな一覧で、絞り込みの欄を出すレイヤの数 */
+const FILTER_FROM = 30;
+
+/**
+ * 平らな形式（DXF）のレイヤ一覧。図形のあるレイヤを名前の自然順で 1 列に並べる。
+ * レイヤが多いときは名前で絞り込める（絞り込みは行を隠すだけで、一覧は組み直さない）
+ */
+function renderFlatList(
+  container: HTMLElement,
+  groups: readonly LayerGroupInfo[],
+  counts: Uint32Array,
+  vis: LayerVisibility,
+  highlight: number | null,
+): void {
+  const keys: number[] = [];
+  for (let k = 0; k < 256; k++) if (counts[k] > 0) keys.push(k);
+  const nameOf = (k: number): string => groups[k >> 4]?.layers[k & 15]?.name ?? '';
+  const collator = new Intl.Collator('ja', { numeric: true, sensitivity: 'base' });
+  keys.sort((a, b) => collator.compare(nameOf(a), nameOf(b)) || a - b);
+  const filter = container.dataset.filter ?? '';
+  const html: string[] = [];
+  if (keys.length > FILTER_FROM) {
+    html.push(`<input class="layer-filter" type="search" placeholder="レイヤ名で絞り込み" value="${escapeHtml(filter)}">`);
+  }
+  for (const k of keys) {
+    const on = vis.visible(k);
+    const name = nameOf(k) || '（名前なし）';
+    const off = groups[k >> 4]?.layers[k & 15]?.state === 0 ? '<span class="lflag">元の図面で非表示</span>' : '';
+    const mark = highlight === k ? ' mark' : '';
+    const hidden = filter && !name.toLowerCase().includes(filter.toLowerCase()) ? ' hidden' : '';
+    html.push(
+      `<div class="l-row flat${on ? '' : ' off'}${mark}" data-k="${k}" data-name="${escapeHtml(name.toLowerCase())}"${hidden}>`,
+      `<span class="lname">${escapeHtml(name)}</span>`,
+      off,
+      `<span class="count">${counts[k].toLocaleString()}</span>`,
+      `<button class="sw" data-layer="${k}" aria-pressed="${on}" aria-label="${escapeHtml(name)} を表示">`,
+      `<span class="switch"></span></button>`,
+      `</div>`,
+    );
+  }
+  container.innerHTML = keys.length ? html.join('') : '<p class="sub">図形の入ったレイヤがありません。</p>';
+  const input = container.querySelector<HTMLInputElement>('.layer-filter');
+  input?.addEventListener('input', () => {
+    const q = input.value.trim().toLowerCase();
+    container.dataset.filter = q;
+    for (const row of container.querySelectorAll<HTMLElement>('.l-row')) row.hidden = !!q && !(row.dataset.name ?? '').includes(q);
+  });
+  // 絞り込みの欄を触っても、行の切り替えにならないように
+  input?.addEventListener('click', (e) => e.stopPropagation());
+}
+
 /**
  * レイヤ一覧を組み立てる。図形の入っていないグループやレイヤは出さない。
  * グループの行は左側で開閉、右端のスイッチでグループごと表示・非表示。
+ * mode が 'flat' なら、グループを出さずにレイヤの名前だけを並べる
  */
 export function renderLayerList(
   container: HTMLElement,
@@ -239,7 +308,13 @@ export function renderLayerList(
   vis: LayerVisibility,
   expanded: ReadonlySet<number>,
   highlight: number | null,
+  mode: 'jw' | 'flat' = 'jw',
 ): void {
+  if (mode === 'flat') {
+    renderFlatList(container, groups, counts, vis, highlight);
+    return;
+  }
+  delete container.dataset.filter;
   const html: string[] = [];
   for (let g = 0; g < 16; g++) {
     let total = 0;

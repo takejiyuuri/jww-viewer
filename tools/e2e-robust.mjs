@@ -172,7 +172,7 @@ for (const s of SCREENS) {
   await page.waitForFunction(() => !document.getElementById('welcome').classList.contains('hidden'), null, { timeout: 10000 });
   await page.evaluate(() => window.__jww.setUiHidden(true));
   await page.setInputFiles('#file', notJww);
-  await page.waitForFunction(() => /JWW ファイルではありません/.test(document.querySelector('#welcome .welcome-body p')?.textContent ?? ''), null, { timeout: 10000 });
+  await page.waitForFunction(() => /JWW・DXF ファイルではありません/.test(document.querySelector('#welcome .welcome-body p')?.textContent ?? ''), null, { timeout: 10000 });
   {
     const s = await state();
     check('図面がないときに読めないファイルを選ぶと、最初の画面に理由を出し、隠したボタンも戻す',
@@ -185,7 +185,7 @@ for (const s of SCREENS) {
   await page.waitForFunction(() => window.__jww.recent.some((r) => r.name === 'small.jww'), null, { timeout: 10000 });
   await page.waitForFunction(() => localStorage.getItem('jww-viewer:opening') === null, null, { timeout: 10000 });
   await page.evaluate(() => { window.__prevScene = window.__jww.scene; });
-  for (const [label, file, why] of [['JWW でないファイル', notJww, 'JWW ファイルではありません'], ['壊れた .jww', brokenJww, '途中で終わっています']]) {
+  for (const [label, file, why] of [['JWW でないファイル', notJww, 'JWW・DXF ファイルではありません'], ['壊れた .jww', brokenJww, '途中で終わっています']]) {
     await page.setInputFiles('#file', file);
     await hintHas(why);
     await page.waitForFunction(() => document.getElementById('loading').classList.contains('hidden'), null, { timeout: 30000 });

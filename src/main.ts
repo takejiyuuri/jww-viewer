@@ -21,8 +21,9 @@ import { LayerVisibility, renderLayerList, type LayerSnapshot } from './ui/layer
 import { describeEntity, entityShape, pickEntity } from './ui/inspect.ts';
 import { KIND, TRUNCATED_WARNING, fitScene, type Bounds } from './render/geometry.ts';
 import { hex1, layerTag } from './jww/names.ts';
-import { isJwwHead } from './jww/header.ts';
-import { isZipHead, jwwInZip, type ZipEntry } from './jww/zip.ts';
+import { DETECT_BYTES, detectFormat, unsupportedReason, type DetectedFormat } from './formats/detect.ts';
+import { drawingsInZip, isZipHead, type ZipEntry } from './jww/zip.ts';
+import { DXF_SCALES, DXF_UNITS } from './dxf/units.ts';
 
 /** 吸着先を探す半径（CSS ピクセル） */
 const SNAP_RADIUS = 22;
@@ -142,13 +143,12 @@ function openingMark(): string | null {
   }
 }
 
-/** 大きさと先頭 8 バイトから、開けないファイルならその理由を返す（開けそうなら null） */
-function rejectReason(size: number, head: Uint8Array): string | null {
+/** 大きさと先頭のバイト列（DETECT_BYTES まで）から、開けないファイルならその理由を返す（開けそうなら null） */
+function rejectReason(size: number, head: Uint8Array, name: string): string | null {
   if (size > MAX_FILE_BYTES) {
     return `ファイルが大きすぎます（${Math.round(size / 1024 / 1024)}MB。${MAX_FILE_BYTES / 1024 / 1024}MB まで開けます）`;
   }
-  if (!isJwwHead(head)) return 'JWW ファイルではありません';
-  return null;
+  return unsupportedReason(detectFormat(head, name));
 }
 
 const el = <T extends HTMLElement>(id: string): T => {
@@ -170,7 +170,7 @@ class App {
    * 読み込み・保存のたびに先に読んでおく
    */
   private recent: RecentFile[] = [];
-  /** 開いた ZIP に .jww がいくつも入っていたときの、選んでもらう図面 */
+  /** 開いた ZIP に図面がいくつも入っていたときの、選んでもらう図面 */
   private zipChoices: ZipEntry[] = [];
   /** 表示している図面の、最近の一覧での鍵（名前と中身から作る）。同じ名前の別の図面と取り違えずに「表示中」を付ける */
   private shownKey: string | null = null;
@@ -270,6 +270,9 @@ class App {
   private insets: Insets = { top: 52, bottom: 104, left: 0, right: 0, rail: 0, rightTop: 0 };
   /** 読み込み時に決めた既定の縮尺。「自動」に戻したときに使う */
   private defaultScale = 1;
+  /** DXF で選んだ単位（$INSUNITS の番号。null なら図面の指定）と縮尺の分母。図面ごとに覚える */
+  private dxfUnit: number | null = null;
+  private dxfScale = 1;
   /** 「全体」を押す前の表示。「前の範囲」で戻す */
   private viewBeforeFit: View | null = null;
   /** 「全体」を押す前に見えていた範囲（図面座標）。全体を見ているあいだ、図面の上に囲って見せる */
@@ -456,7 +459,9 @@ class App {
     this.loadSettle = settle;
 
     // 中身を確かめてから複製や解析に進む（誤って選んだ大きな別形式のファイルで、メモリを使い果たさないように）
-    const reason = rejectReason(buffer.byteLength, new Uint8Array(buffer, 0, Math.min(8, buffer.byteLength)));
+    const head = new Uint8Array(buffer, 0, Math.min(DETECT_BYTES, buffer.byteLength));
+    const format: DetectedFormat | null = detectFormat(head, name);
+    const reason = rejectReason(buffer.byteLength, head, name) ?? (format === 'zip' ? 'ZIP の中の ZIP は開けません' : null);
     if (reason) {
       this.fail(reason);
       settle();
@@ -540,7 +545,7 @@ class App {
       this.fail(ev.message || '読み込みに失敗しました');
       settle();
     };
-    worker.postMessage({ buffer, name }, [buffer]);
+    worker.postMessage({ buffer, name, format }, [buffer]);
     return settled;
   }
 
@@ -581,15 +586,15 @@ class App {
   }
 
   /**
-   * 選んだ（落とした）ファイルを開く。中身を丸ごと読む前に、大きさと先頭 8 バイトを確かめる
+   * 選んだ（落とした）ファイルを開く。中身を丸ごと読む前に、大きさと先頭のバイト列で形式を確かめる
    * （動画などを誤って選んだとき、読み込みと複製でメモリを使い果たしてページごと落ちないように）。
    * agreed は、選ぶ前に記録が消えることを確かめてあるか
    */
   private async openPicked(f: File, agreed = false): Promise<void> {
     try {
-      const head = new Uint8Array(await f.slice(0, 8).arrayBuffer());
+      const head = new Uint8Array(await f.slice(0, DETECT_BYTES).arrayBuffer());
       // ZIP は中の図面を取り出してから確かめる（大きさだけ先に見る）
-      const reason = isZipHead(head) && f.size <= MAX_FILE_BYTES ? null : rejectReason(f.size, head);
+      const reason = isZipHead(head) && f.size <= MAX_FILE_BYTES ? null : rejectReason(f.size, head, f.name);
       if (reason) {
         this.loadSeq++;
         this.fail(reason);
@@ -602,7 +607,7 @@ class App {
   }
 
   /**
-   * 受け取ったファイルを開く。ZIP なら中の .jww を取り出す（LINE などは .jww を ZIP にして届けるため）。
+   * 受け取ったファイルを開く。ZIP なら中の図面（.jww・.dxf）を取り出す（LINE などは .jww を ZIP にして届けるため）。
    * 1 つならそのまま開き、いくつもあれば「図面を開く」の一覧に並べて選んでもらう。
    * agreed は、記録が消えることを確かめてあるか（一覧から選ぶときに聞き直さない）
    */
@@ -612,7 +617,7 @@ class App {
     this.showLoading(name);
     let entries: ZipEntry[];
     try {
-      entries = await jwwInZip(buffer, MAX_FILE_BYTES);
+      entries = await drawingsInZip(buffer, MAX_FILE_BYTES);
     } catch (e) {
       el('loading').classList.add('hidden');
       this.fail(e instanceof Error && e.message ? e.message : 'ZIP を展開できませんでした');
@@ -620,7 +625,7 @@ class App {
     }
     el('loading').classList.add('hidden');
     if (entries.length === 0) {
-      this.fail(`${name} の中に .jww がありません`);
+      this.fail(`${name} の中に図面（.jww・.dxf）がありません`);
       return;
     }
     if (entries.length === 1) return this.load(entries[0].buffer, entries[0].name);
@@ -721,7 +726,14 @@ class App {
     // 図面の側が変わっていたら（同じ名前の別の図面・保存し直した図面）、色もレイヤも記録は使わない
     // （別の図面で線が黙って隠れ、吸着もしなくならないように）
     const saved = loadViewState(info.name);
-    const sameDrawing = saved.jw === jwFingerprint(info);
+    const sameDrawing = saved.jw === drawingFingerprint(info);
+    // 平らな形式（DXF）はグループを見せないので、グループのスイッチは常に入れておく
+    this.layers.flat = info.layerMode === 'flat';
+    delete el('layer-list').dataset.filter;
+    el('btn-layer-jw').textContent = info.format === 'jww' ? 'Jw_cad の状態' : '元の図面の状態';
+    this.dxfUnit = sameDrawing && info.format === 'dxf' ? saved.dxfUnit ?? null : null;
+    this.dxfScale = sameDrawing && info.format === 'dxf' ? saved.dxfScale ?? 1 : 1;
+    if (info.format === 'dxf') this.applyDxfScale(scene, info);
     const hiddenPens = new Set(sameDrawing ? saved.pens : []);
     this.hiddenGroups = new Set();
     scene.groups.forEach((g, i) => {
@@ -2399,7 +2411,7 @@ class App {
 
     const d = describeEntity(scene, info, i, (c) => this.swatchColor(c));
     kind.textContent = d.kind;
-    tag.textContent = layerTag(d.layer);
+    tag.textContent = this.layerLabel(d.layer);
     tag.classList.remove('hidden');
     body.innerHTML = d.rows
       .map((r) => `<span class="k">${escapeHtml(r.label)}</span><span class="v">${r.html}</span>`)
@@ -2697,8 +2709,8 @@ class App {
 
   private bindUI(): void {
     const file = el<HTMLInputElement>('file');
-    // iOS アプリでは、写真の選び方を挟まずに「ファイル」の選択を出す（.jww と、念のためどのファイルも選べるように）
-    if (isNative) file.accept = '.jww,application/octet-stream';
+    // iOS アプリでは、写真の選び方を挟まずに「ファイル」の選択を出す（図面と ZIP と、念のためどのファイルも選べるように）
+    if (isNative) file.accept = '.jww,.dxf,.zip,application/octet-stream';
     el('btn-open').addEventListener('click', () => this.openFiles());
     el('btn-open-2').addEventListener('click', () => this.openFiles());
     el('btn-sample').addEventListener('click', () => void this.openSample());
@@ -2865,10 +2877,10 @@ class App {
       const k = this.scene.entities.layer[this.selected];
       // もうそのレイヤだけの状態なら何も変わらないので、戻るの履歴に積まない
       if (!this.changeLayers(true, () => this.layers.only(k))) {
-        this.hint(`レイヤ ${layerTag(k)} だけが表示されています`);
+        this.hint(`レイヤ ${this.layerLabel(k)} だけが表示されています`);
         return;
       }
-      this.hint(`レイヤ ${layerTag(k)} だけを表示しています`);
+      this.hint(`レイヤ ${this.layerLabel(k)} だけを表示しています`);
     });
     el('btn-layer-hide').addEventListener('click', () => {
       if (!this.scene || this.selected < 0) return;
@@ -2877,7 +2889,7 @@ class App {
         this.layers.forget(k >> 4);
         this.layers.layer[k] = false;
       });
-      this.hint(`レイヤ ${layerTag(k)} を隠しました`);
+      this.hint(`レイヤ ${this.layerLabel(k)} を隠しました`);
     });
     el('btn-layer-invert').addEventListener('click', () => this.invertLayers(true));
     // 戻る・進むは属性の見出しとレイヤ一覧の見出しの両方にあり、同じ履歴を行き来する
@@ -2897,7 +2909,7 @@ class App {
       const info = this.info;
       if (!info) return;
       this.changeLayers(false, () => this.layers.resetToJw(info.groups, info.writeGroup));
-      this.hint('Jw_cad で保存したときの表示に戻しました');
+      this.hint(info.format === 'jww' ? 'Jw_cad で保存したときの表示に戻しました' : '元の図面の表示に戻しました');
     });
     el('btn-layer-all').addEventListener('click', () => {
       this.changeLayers(false, () => this.layers.showAll());
@@ -3001,7 +3013,8 @@ class App {
       groups: same ? null : hidden.groups,
       layers: same ? null : hidden.layers,
       stash: same || hidden.stash.length === 0 ? null : hidden.stash,
-      jw: jwFingerprint(info),
+      jw: drawingFingerprint(info),
+      ...(info.format === 'dxf' ? { dxfUnit: this.dxfUnit, dxfScale: this.dxfScale } : {}),
     });
   }
 
@@ -3123,6 +3136,30 @@ class App {
     });
   }
 
+  /** レイヤの呼び名。JWW は「グループ-レイヤ」の番号、平らな形式は名前 */
+  private layerLabel(k: number): string {
+    const info = this.info;
+    if (info?.layerMode === 'flat') return `「${info.groups[k >> 4]?.layers[k & 15]?.name ?? ''}」`;
+    return layerTag(k);
+  }
+
+  /**
+   * DXF の計測の縮尺（単位を mm に直す倍率 × 選んだ縮尺の分母）を Scene に入れる。
+   * 置いてある点の縮尺も入れ直す（縮尺の枠は 1 つなので、点の乗った図形の縮尺はどれも同じ）
+   */
+  private applyDxfScale(scene: Scene, info: LoadedInfo): void {
+    const unit = DXF_UNITS.find((u) => u.code === this.dxfUnit);
+    const toMm = unit ? unit.toMm : info.units?.toMm ?? 1;
+    const scale = toMm * this.dxfScale;
+    scene.scales.fill(scale);
+    for (const slot of info.scaleSlots) slot.scale = scale;
+    for (const g of info.groups) g.scale = scale;
+    for (const p of this.points) if (p.scale !== null) p.scale = scale;
+    this.manualScale = false;
+    this.measureScale = scale;
+    this.defaultScale = scale;
+  }
+
   private buildLayerPanel(): void {
     const list = el('layer-list');
     const summary = el('layer-summary');
@@ -3134,7 +3171,7 @@ class App {
       return;
     }
     const mark = this.selected >= 0 ? scene.entities.layer[this.selected] : null;
-    renderLayerList(list, info.groups, scene.layerCounts, this.layers, this.expandedGroups, mark);
+    renderLayerList(list, info.groups, scene.layerCounts, this.layers, this.expandedGroups, mark, info.layerMode);
 
     let used = 0;
     for (let k = 0; k < 256; k++) if (scene.layerCounts[k] > 0) used++;
@@ -3235,11 +3272,67 @@ class App {
       : `${scene.groups.length} 色中 ${hidden} 色を隠しています`;
   }
 
+  /**
+   * DXF の情報パネル。計測の単位と縮尺は図面からは決めきれない（単位の指定がない図面、用紙の大きさで描いた図面）ので、
+   * ここで選べるようにする。選んだものは図面ごとに覚える
+   */
+  private buildDxfInfoPanel(body: HTMLElement, info: LoadedInfo): void {
+    const counts = Object.entries(info.extraCounts ?? {})
+      .filter(([k, n]) => n > 0 && DXF_KIND_NAMES[k])
+      .map(([k, n]) => `${DXF_KIND_NAMES[k]} ${n.toLocaleString()}`);
+    const units = info.units;
+    const unitNow = this.dxfUnit ?? units?.code ?? 0;
+    const unitOptions = DXF_UNITS.map((u) => {
+      const selected = u.code === unitNow || (unitNow === 0 && u.code === 4) ? ' selected' : '';
+      const note = this.dxfUnit === null && units?.guessed && u.code === 4 ? '（図面に指定なし）' : u.code === units?.code ? '（図面の指定）' : '';
+      return `<option value="${u.code}"${selected}>${escapeHtml(u.name + note)}</option>`;
+    }).join('');
+    const scaleOptions = DXF_SCALES.map((n) => `<option value="${n}"${n === this.dxfScale ? ' selected' : ''}>1/${n}</option>`).join('');
+    const scale = this.scene?.scales[0] ?? 1;
+    const rows: string[] = [
+      `<dl class="kv">`,
+      `<dt>ファイル</dt><dd>${escapeHtml(info.name)}</dd>`,
+      `<dt>形式</dt><dd>${escapeHtml(info.formatLabel)}</dd>`,
+      `<dt>図形</dt><dd>${escapeHtml(counts.join(' ／ ') || 'なし')}</dd>`,
+      `<dt>読み込み</dt><dd>${Math.round(info.parseMs)} ms</dd>`,
+      `</dl>`,
+    ];
+    if (info.warnings.length) rows.push(`<p class="sub">${escapeHtml(info.warnings.join(' / '))}</p>`);
+    rows.push(
+      '<div class="group-list"><div class="sub">計測の単位と縮尺</div>',
+      '<label class="group-row">図面の単位<select id="dxf-unit" class="dxf-select">' + unitOptions + '</select></label>',
+      '<label class="group-row">縮尺<select id="dxf-scale" class="dxf-select">' + scaleOptions + '</select></label>',
+      `<p class="sub">図面の 1 単位を ${escapeHtml(formatScale(scale))} mm として測ります。`
+        + '用紙の大きさで描いた図面は、図面の縮尺を選んでください</p>',
+      '</div>',
+      ABOUT_LINKS,
+    );
+    body.innerHTML = rows.join('');
+    const change = (): void => {
+      const scene = this.scene;
+      const current = this.info;
+      if (!scene || !current) return;
+      this.dxfUnit = Number(el<HTMLSelectElement>('dxf-unit').value);
+      this.dxfScale = Number(el<HTMLSelectElement>('dxf-scale').value) || 1;
+      this.applyDxfScale(scene, current);
+      this.saveViewState();
+      this.updateReadout();
+      this.buildInfoPanel();
+      this.requestDraw();
+    };
+    el('dxf-unit').addEventListener('change', change);
+    el('dxf-scale').addEventListener('change', change);
+  }
+
   private buildInfoPanel(): void {
     const body = el('info-body');
     const info = this.info;
     if (!info) {
       body.innerHTML = `<p class="sub">図面が読み込まれていません。</p>${ABOUT_LINKS}`;
+      return;
+    }
+    if (info.format === 'dxf') {
+      this.buildDxfInfoPanel(body, info);
       return;
     }
     const c = info.counts;
@@ -3295,12 +3388,26 @@ class App {
   }
 }
 
+/** 情報パネルに出す、DXF の図形の種類の呼び名 */
+const DXF_KIND_NAMES: Record<string, string> = {
+  LINE: '線', POLYLINE: '折れ線', ARC: '円弧', CIRCLE: '円', ELLIPSE: '楕円', TEXT: '文字', SOLID: 'ソリッド',
+  POINT: '点', INSERT: '部品の配置',
+};
+
 /**
  * 図面に保存されているレイヤの状態と、図形の数の要約。
  * 同じ名前でも中身の違う図面（別の物件の同じ名前の図面、描き足して保存し直した図面）には、
  * 前に覚えた色やレイヤの表示を当てないために使う。同じひな形から描いた図面はレイヤの状態が同じでも、図形の数で分かれる
  */
-function jwFingerprint(info: LoadedInfo): string {
+function drawingFingerprint(info: LoadedInfo): string {
+  // JWW は前の版と同じ形のまま（覚えてある表示の状態をそのまま使えるように）。ほかの形式は形式の名前を前に付ける
+  if (info.format !== 'jww') {
+    return JSON.stringify([
+      info.format,
+      info.groups.map((g) => g.layers.map((l) => [l.name, l.state])),
+      info.counts,
+    ]);
+  }
   return JSON.stringify([
     info.writeGroup,
     info.groups.map((g) => [g.state, g.writeLayer, g.layers.map((l) => l.state)]),

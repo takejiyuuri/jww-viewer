@@ -32,7 +32,8 @@
     "e2e:records": "node tools/e2e-records.mjs",
     "ios:sync": "npm run build && cap sync ios",
     "digest": "node tools/scene-digest.ts",
-    "verify:dxf": "node tools/verify-dxf.ts"
+    "verify:dxf": "node tools/verify-dxf.ts",
+    "e2e:dxf": "node tools/e2e-dxf.mjs"
   },
   "devDependencies": {
     "@capacitor/cli": "^8.5.2",

@@ -848,6 +848,16 @@ body[data-bg="light"] #inspect-panel {
   color: var(--accent);
 }
 
+/* DXF の単位と縮尺の選択 */
+.group-row .dxf-select {
+  font: inherit;
+  color: var(--fg, inherit);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 2px 6px;
+}
+
 /* プライバシーポリシーとサポートへの案内（図面情報と最初の画面の下） */
 .about-links {
   display: flex;
@@ -1430,6 +1440,24 @@ body.ui-hidden .ui-show {
 
 .l-row.mark {
   background: rgba(53, 208, 127, 0.12);
+}
+
+/* 平らな形式（DXF）のレイヤ一覧：グループの段がないので左に寄せる */
+.l-row.flat {
+  padding-left: 10px;
+}
+
+.layer-filter {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0 0 8px;
+  padding: 7px 10px;
+  font: inherit;
+  font-size: 14px;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 8px;
 }
 
 .l-row.off .lname,

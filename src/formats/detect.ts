@@ -39,6 +39,6 @@ export function unsupportedReason(format: DetectedFormat | null): string | null 
     case 'dwg': return 'DWG ファイルは開けません。CAD で DXF 形式に保存し直してから開いてください';
     case 'dxfb': return 'バイナリ形式の DXF には対応していません。ASCII（テキスト）形式の DXF で保存し直してください';
     case 'sfc': case 'p21': return 'SXF（.sfc・.p21）にはまだ対応していません';
-    default: return '対応している図面（JWW・DXF）ではありません';
+    default: return 'JWW・DXF ファイルではありません';
   }
 }

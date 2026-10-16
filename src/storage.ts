@@ -386,6 +386,10 @@ export interface ViewState {
   jw: string | null;
   /** 反転で覚えておいた設定（グループ番号、その中で隠していたレイヤ 0〜15、グループのスイッチが入っていたら 1） */
   stash: Array<[number, number[], number?]> | null;
+  /** DXF で選んだ単位（$INSUNITS の番号。null なら図面の指定） */
+  dxfUnit?: number | null;
+  /** DXF で選んだ縮尺の分母 */
+  dxfScale?: number | null;
 }
 
 const EMPTY_VIEW: ViewState = { pens: [], groups: null, layers: null, jw: null, stash: null };
@@ -423,6 +427,8 @@ export function loadViewState(name: string): ViewState {
       layers: intList(v.layers, 256),
       jw: typeof v.jw === 'string' ? v.jw : null,
       stash: stashList(v.stash),
+      dxfUnit: Number.isInteger(v.dxfUnit) ? v.dxfUnit as number : null,
+      dxfScale: typeof v.dxfScale === 'number' && v.dxfScale > 0 && Number.isFinite(v.dxfScale) ? v.dxfScale : null,
     };
   } catch {
     return { ...EMPTY_VIEW };
