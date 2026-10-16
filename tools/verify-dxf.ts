@@ -6,7 +6,10 @@ import { KIND, type Scene } from '../src/render/builder.ts';
 import { TRUE_COLOR_PEN } from '../src/dxf/aci.ts';
 import type { LoadedInfo } from '../src/formats/info.ts';
 import { arcMidpoint, curveIndex, onlinePoint } from '../src/measure/snap.ts';
-import { basicDxf, unitlessDxf, utf8Dxf } from './dxf-synth.mjs';
+import { basicDxf, stageBDxf, unitlessDxf, utf8Dxf } from './dxf-synth.mjs';
+import { parseDxf } from '../src/dxf/parse.ts';
+import { buildDxfScene } from '../src/dxf/scene.ts';
+import { parseMtext } from '../src/dxf/mtext.ts';
 
 let failures = 0;
 const check = (msg: string, ok: boolean, info?: unknown): void => {
@@ -190,7 +193,163 @@ check('ほかの形式は null', detectFormat(enc('hello world'), 'a.txt') === n
   check('点', point);
 
   check('ペーパー空間の警告', info.warnings.some((w) => w.includes('ペーパー空間')), info.warnings);
-  check('読み飛ばしの警告', info.warnings.some((w) => w.includes('MTEXT')), info.warnings);
+  check('読み飛ばしの警告', info.warnings.some((w) => w.includes('IMAGE')), info.warnings);
+}
+
+// ---------- 段階 B：MTEXT・寄せ・寸法・属性・MINSERT・HATCH・SPLINE・OCS・LEADER・XLINE ----------
+{
+  // 書式記号
+  const lines = parseMtext('{\\fArial|b0;AB}\\PC\\H2x;D\\S1/2;%%d\\U+00B1\\M+193FA', 10);
+  check('MTEXT の行', lines.length === 2 && lines[0].text === 'AB' && lines[1].text === 'CD1/2°±日', lines);
+  check('MTEXT の高さ（\\H2x）', lines[0].height === 10 && lines[1].height === 20, lines);
+  const odd = parseMtext('a\\Lb\\l\\Oc\\o{\\C1;d}\\Q15;e\\~f\\\\g\\{h\\}\\Zi^Jj', 1);
+  check('MTEXT の知らない記号を外す', odd.map((l) => l.text).join('|') === 'abcde f\\g{h}i|j', odd);
+
+  const bytes = stageBDxf();
+  const doc = parseDxf(buf(bytes));
+  const r = buildDxfScene(doc);
+  const scene = r.scene;
+  const e = scene.entities;
+  const textAt = (s: string) => scene.texts.find((t) => t.text === s);
+
+  check('MTEXT の 2 行目', !!textAt('CD1/2°±日'), scene.texts.map((t) => t.text));
+  {
+    const m = scene.texts.find((t) => t.text === 'AB' && near(t.x, 95, 1e-6));
+    check('MTEXT の基点 5（中央）の位置', !!m && near(m.y, 1000 + 21.6667 - 10, 1e-3) && near(m.width, 10, 1e-9), m);
+  }
+  const abcd = textAt('ABCD');
+  check('TEXT の中央・中の寄せ', !!abcd && near(abcd.x, 490, 1e-9) && near(abcd.y, 995, 1e-9) && near(abcd.width, 20, 1e-9), abcd);
+  const fit = scene.texts.find((t) => t.text === 'AB' && near(t.y, 1100, 1e-9));
+  check('TEXT の両端揃え', !!fit && near(fit.x, 0, 1e-9) && near(fit.width, 100, 1e-9) && near(fit.height, 100, 1e-9), fit);
+
+  // 寸法
+  check('寸法が 1 つ', r.dimensions.length === 1 && r.counts.DIMENSION === 1, r.dimensions);
+  const dm = r.dimensions[0];
+  if (dm) {
+    check('寸法の実測値（42）と寸法値・寸法線の長さが合う',
+      dm.measurement === 1000 && Number.parseFloat(dm.text) === dm.measurement && near(dm.length, dm.measurement, 1e-9), dm);
+  }
+  const dims = ofKind(scene, KIND.dim), aux = ofKind(scene, KIND.dimAux), dimTexts = ofKind(scene, KIND.dimText);
+  const dimLine = dims.find((i) => near(e.size[i], 1000, 1e-6));
+  check('寸法線（長さ 1000）', dimLine !== undefined, dims.map((i) => e.size[i]));
+  check('寸法の補助線 2 本（吸着しない）', aux.length === 2 && aux.every((i) => scene.lineSnap[e.lineStart[i]] === 0), aux.length);
+  check('寸法値の文字', dimTexts.length === 1 && scene.texts[e.text[dimTexts[0]]]?.text === '1000');
+  if (dimLine !== undefined) check('寸法線から寸法値をたどれる', scene.texts[e.text[dimLine]]?.text === '1000');
+  check('寸法の中身は線の数に入れない（部品の線 13 本だけ）', r.counts.LINE === 13, r.counts);
+
+  // 属性
+  check('ATTRIB を描く', !!textAt('A-12'));
+  check('見えない ATTRIB は描かない', !textAt('HIDE'));
+  check('定数の ATTDEF を描く', !!textAt('CONST'));
+  check('定数でない ATTDEF は描かない', !textAt('DEF'));
+
+  // MINSERT
+  const bm = scene.blockNames.indexOf('BM');
+  const bmLines = ofKind(scene, KIND.line).filter((i) => e.block[i] === bm);
+  check('MINSERT の 3 × 4', bmLines.length === 12, bmLines.length);
+  check('MINSERT の位置', segmentAt(scene, 3020, 1060, 3021, 1060).length === 1);
+  const bm2 = scene.blockNames.indexOf('BM2');
+  const bm2n = ofKind(scene, KIND.point).filter((i) => e.block[i] === bm2).length;
+  check('MINSERT の上限 1 万', bm2n === 10000, bm2n);
+  check('MINSERT の上限の警告', r.warnings.some((w) => w.includes('MINSERT')), r.warnings);
+
+  // HATCH
+  const hatches = ofKind(scene, KIND.hatch);
+  const filled = hatches.filter((i) => e.triCount[i] > 0);
+  const want = 10000 - 400 * Math.PI;
+  check('塗りの HATCH の面積（穴あり）', filled.length === 1 && near(e.size[filled[0]], want, want * 1e-3), filled.map((i) => e.size[i]));
+  if (filled[0] !== undefined) {
+    // 三角形の面積の合計も同じで、穴の中心を含む三角形はない
+    const tp = scene.triPos;
+    let sum = 0, center = false;
+    for (let k = e.triStart[filled[0]]; k < e.triStart[filled[0]] + e.triCount[filled[0]]; k++) {
+      const [x1, y1, x2, y2, x3, y3] = tp.subarray(k * 6, k * 6 + 6);
+      sum += Math.abs((x2 - x1) * (y3 - y1) - (x3 - x1) * (y2 - y1)) / 2;
+      const d1 = (x2 - x1) * (2050 - y1) - (y2 - y1) * (50 - x1);
+      const d2 = (x3 - x2) * (2050 - y2) - (y3 - y2) * (50 - x2);
+      const d3 = (x1 - x3) * (2050 - y3) - (y1 - y3) * (50 - x3);
+      if ((d1 >= 0 && d2 >= 0 && d3 >= 0) || (d1 <= 0 && d2 <= 0 && d3 <= 0)) center = true;
+    }
+    check('塗りの三角形の面積', near(sum, want, want * 1e-3), sum);
+    check('穴の中は塗らない', !center);
+  }
+  const patterned = hatches.filter((i) => e.lineCount[i] > 0);
+  if (patterned[0] !== undefined) {
+    const i = patterned[0];
+    const p = scene.linePos;
+    let len = 0, snap = 0;
+    for (let k = e.lineStart[i]; k < e.lineStart[i] + e.lineCount[i]; k++) {
+      len += Math.hypot(p[k * 4 + 2] - p[k * 4], p[k * 4 + 3] - p[k * 4 + 1]);
+      snap |= scene.lineSnap[k];
+    }
+    check('模様の線の長さの合計 = 面積 / 間隔', near(len, 2000, 2000 * 0.01), len);
+    check('模様の線は吸着しない', snap === 0);
+  } else {
+    check('模様の HATCH', false);
+  }
+
+  // SPLINE
+  const splines = ofKind(scene, KIND.spline);
+  check('SPLINE が 1 つ', splines.length === 1, splines.length);
+  if (splines[0] !== undefined) {
+    const i = splines[0];
+    const p = scene.linePos;
+    const s = e.lineStart[i], n = e.lineCount[i];
+    let inHull = true, best = Infinity;
+    for (let k = s; k < s + n; k++) {
+      for (const [x, y] of [[p[k * 4], p[k * 4 + 1]], [p[k * 4 + 2], p[k * 4 + 3]]]) {
+        if (x < -1e-6 || x > 300 + 1e-6 || y < 2900 - 1e-6 || y > 3100 + 1e-6) inHull = false;
+        best = Math.min(best, Math.hypot(x - 150, y - 3000));
+      }
+    }
+    check('SPLINE の両端は制御点の両端', near(p[s * 4], 0, 1e-6) && near(p[s * 4 + 1], 3000, 1e-6)
+      && near(p[(s + n - 1) * 4 + 2], 300, 1e-3) && near(p[(s + n - 1) * 4 + 3], 3000, 1e-3));
+    check('SPLINE は制御点の囲みの中', inHull);
+    check('SPLINE は (150,3000) を通る', best < 0.5, best);
+    check('SPLINE の両端は端点', (scene.lineSnap[s] & 2) !== 0 && (scene.lineSnap[s + n - 1] & 4) !== 0);
+  }
+
+  // OCS
+  const sp = scene.snapPoint;
+  const hasPoint = (x: number, y: number): boolean => {
+    for (let k = 0; k < sp.length / 2; k++) if (near(sp[k * 2], x, 1e-6) && near(sp[k * 2 + 1], y, 1e-6)) return true;
+    return false;
+  };
+  check('押し出し -Z の円の中心', hasPoint(-100, 4000));
+  {
+    const arcs = ofKind(scene, KIND.arc).filter((i) => near(e.size[i], 10, 1e-9));
+    const p = scene.linePos;
+    const ends = arcs.map((i) => {
+      const s = e.lineStart[i], n = e.lineCount[i];
+      return [p[s * 4], p[s * 4 + 1], p[(s + n - 1) * 4 + 2], p[(s + n - 1) * 4 + 3]].map((v) => Math.round(v * 1000) / 1000);
+    });
+    check('押し出し -Z の円弧の端', ends.some((v) => v[0] === -210 && v[1] === 4000 && v[2] === -200 && v[3] === 4010), ends);
+  }
+  {
+    const circles = ofKind(scene, KIND.circle);
+    const tilted = circles.filter((i) => near(e.size[i], 10, 1e-6) && near(e.size2[i], 8, 1e-6));
+    check('傾いた押し出しの円は楕円に写る', tilted.length === 1, circles.map((i) => [e.size[i], e.size2[i]]));
+  }
+
+  // LEADER・XLINE
+  const leaders = ofKind(scene, KIND.polyline).filter((i) => near(e.size[i], Math.SQRT2 * 100 + 100, 1e-3));
+  check('LEADER と矢印', leaders.length === 1 && e.triCount[leaders[0]] === 1, leaders.map((i) => e.triCount[i]));
+  {
+    const xl = ofKind(scene, KIND.line).filter((i) => {
+      const k = e.lineStart[i];
+      return near(scene.linePos[k * 4 + 1], 6000, 1e-6) && near(scene.linePos[k * 4 + 3], 6000, 1e-6);
+    });
+    const k = xl[0] !== undefined ? e.lineStart[xl[0]] : -1;
+    const x1 = k >= 0 ? Math.min(scene.linePos[k * 4], scene.linePos[k * 4 + 2]) : NaN;
+    const x2 = k >= 0 ? Math.max(scene.linePos[k * 4], scene.linePos[k * 4 + 2]) : NaN;
+    check('XLINE は図面の範囲で切る', xl.length === 1 && x1 <= -210 && x2 >= 3500 && x2 < 1e6, [x1, x2]);
+    check('XLINE の切った端は端点にしない', k >= 0 && (scene.lineSnap[k] & 6) === 0);
+  }
+  check('段階 B の図面に読み飛ばしの警告はない', !r.warnings.some((w) => w.includes('読み飛ばし')), r.warnings);
+
+  // loadDrawing の数
+  const { info } = await loadDrawing(buf(bytes), 'stage-b.dxf');
+  check('情報の寸法の数', info.counts.dims === 1, info.counts);
 }
 
 // ---------- AC1021・UTF-8・m ----------
@@ -222,6 +381,39 @@ check('ほかの形式は null', detectFormat(enc('hello world'), 'a.txt') === n
     }
   }
   check('途中で切れた DXF を読めた（または知らせた）', true, thrown);
+}
+
+// ---------- 段階 B の図面を切ったり、数を壊したりしても止まらないこと ----------
+{
+  const full = stageBDxf();
+  const text = new TextDecoder().decode(full);
+  const lines = text.split('\r\n');
+  let seed = 12345;
+  const rand = (): number => { seed = (seed * 1103515245 + 12345) >>> 0; return seed / 2 ** 32; };
+  const bad = ['1e308', '-1e308', 'nan', '-1', '0', '999999999', '1e-300', ''];
+  let slowest = 0;
+  for (let round = 0; round < 120; round++) {
+    let data: Uint8Array;
+    if (round < 40) {
+      data = full.subarray(0, Math.floor((full.length * round) / 40));
+    } else {
+      // 値の行（奇数行）をいくつか壊れた数に置き換える
+      const copy = [...lines];
+      for (let k = 0; k < 8; k++) {
+        const at = 1 + 2 * Math.floor(rand() * ((copy.length - 1) / 2));
+        copy[at] = bad[Math.floor(rand() * bad.length)];
+      }
+      data = new TextEncoder().encode(copy.join('\r\n'));
+    }
+    const t0 = performance.now();
+    try {
+      await loadDrawing(buf(data), 'broken.dxf', 'dxf');
+    } catch (err) {
+      if (!(err instanceof Error)) check('壊れた DXF は Error で知らせる', false);
+    }
+    slowest = Math.max(slowest, performance.now() - t0);
+  }
+  check('壊れた段階 B の DXF も 4 秒以内', slowest < 4000, Math.round(slowest));
 }
 
 console.log(failures ? `${failures} 件の不合格` : 'すべて合格');

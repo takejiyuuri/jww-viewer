@@ -1,8 +1,8 @@
 // DXF をアプリで開く：合成の DXF（dxf-synth.mjs）を開き、長さを測る・単位と縮尺を選ぶ（図面ごとに覚える）・
-// レイヤの名前だけの一覧・DWG を断る、を確かめる
+// レイヤの名前だけの一覧・段階 B の図形（寸法・MTEXT・HATCH・SPLINE など）・DWG を断る、を確かめる
 import { chromium, devices } from 'playwright';
 import { startServer } from './serve.mjs';
-import { basicDxf, unitlessDxf } from './dxf-synth.mjs';
+import { basicDxf, stageBDxf, unitlessDxf } from './dxf-synth.mjs';
 
 const srv = await startServer({ port: 5324, host: false, quiet: true });
 const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
@@ -148,12 +148,47 @@ await page.waitForSelector('#dxf-unit');
 }
 await page.click('#btn-info-close');
 
-// ---------- 5. DWG は理由を出して断る ----------
+// ---------- 5. 段階 B の図形（寸法・MTEXT・HATCH・SPLINE など） ----------
+await pick('stage-b.dxf', stageBDxf());
+await opened('stage-b.dxf');
+await page.waitForTimeout(500);
+{
+  const s = await page.evaluate(() => {
+    const a = window.__jww;
+    const e = a.scene.entities;
+    const kinds = new Set();
+    for (let i = 0; i < e.count; i++) kinds.add(e.kind[i]);
+    return { texts: a.scene.texts.map((t) => t.text), kinds: [...kinds].sort((x, y) => x - y), tris: a.scene.triPos.length / 6, dims: a.info.counts.dims };
+  });
+  check('寸法・MTEXT・属性・HATCH・SPLINE を描く', s.texts.includes('CD1/2°±日') && s.texts.includes('1000') && s.texts.includes('A-12')
+    && s.kinds.includes(6) && s.kinds.includes(10) && s.kinds.includes(11) && s.tris > 10 && s.dims === 1, { ...s, texts: s.texts.slice(0, 8) });
+}
+// 寸法線 (0,1300)-(1000,1300) の両端を測る
+await page.evaluate(() => {
+  const a = window.__jww;
+  a.view = { cx: 500, cy: 1300, zoom: (a.cssW * 0.7 * a.dpr) / 1000 };
+  a.requestDraw(true);
+  a.points = [];
+  a.updateReadout();
+});
+await page.waitForTimeout(300);
+for (const [x, y, dx] of [[0, 1300, -4], [1000, 1300, 4]]) {
+  const p = await toScreen(x, y);
+  await page.touchscreen.tap(p.x + dx, p.y);
+  await page.waitForTimeout(250);
+}
+{
+  const v = await readout();
+  const pts = await page.evaluate(() => window.__jww.points.map((p) => ({ x: Math.round(p.x), y: Math.round(p.y), kind: p.kind })));
+  check('寸法線の端から端までを測ると 1.000 m', v === '1.000 m' && pts.length === 2 && pts.every((p) => p.kind === 'endpoint'), { v, pts });
+}
+
+// ---------- 6. DWG は理由を出して断る ----------
 await pick('plan.dwg', Buffer.concat([Buffer.from('AC1027'), Buffer.alloc(200)]));
 await page.waitForFunction(() => /DXF/.test(document.getElementById('hint').textContent ?? ''), null, { timeout: 10000 }).catch(() => {});
 {
   const s = await page.evaluate(() => ({ hint: document.getElementById('hint').textContent, title: document.getElementById('title').textContent }));
-  check('DWG は「DXF で保存し直して」と断り、表示中の図面はそのまま', /DWG/.test(s.hint) && /DXF 形式に保存し直して/.test(s.hint) && s.title === 'unitless.dxf', s);
+  check('DWG は「DXF で保存し直して」と断り、表示中の図面はそのまま', /DWG/.test(s.hint) && /DXF 形式に保存し直して/.test(s.hint) && s.title === 'stage-b.dxf', s);
 }
 
 check('コンソールにエラーがない', errors.length === 0, { errors: errors.slice(0, 5) });

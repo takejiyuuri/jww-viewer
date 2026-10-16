@@ -19,10 +19,12 @@ const KIND_LABEL: Record<number, string> = {
   [KIND.dimText]: '寸法値',
   [KIND.dimAux]: '寸法補助線',
   [KIND.polyline]: '折れ線',
+  [KIND.spline]: 'スプライン',
+  [KIND.hatch]: 'ハッチング',
 };
 
 /** 線種に意味がある図形 */
-const HAS_LINE_TYPE = new Set<number>([KIND.line, KIND.arc, KIND.circle, KIND.dim, KIND.dimAux, KIND.polyline]);
+const HAS_LINE_TYPE = new Set<number>([KIND.line, KIND.arc, KIND.circle, KIND.dim, KIND.dimAux, KIND.polyline, KIND.spline]);
 
 /** 文字の矩形（回転を考慮）に点が入っているか。pad だけ外側に甘く取る */
 export function textContains(t: SceneText, x: number, y: number, pad: number): boolean {
@@ -226,6 +228,7 @@ export function describeEntity(
   switch (kind) {
     case KIND.line:
     case KIND.polyline:
+    case KIND.spline:
       rows.push({ label: '長さ', html: `${real(size)} ${scaleNote}` });
       break;
     case KIND.arc:

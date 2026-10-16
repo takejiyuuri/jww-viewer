@@ -1,15 +1,27 @@
 /**
  * DXF（ASCII）を読む。段は HEADER・TABLES（LAYER・LTYPE）・BLOCKS・ENTITIES だけを見る。
- * 図形は LINE・POINT・CIRCLE・ARC・ELLIPSE・LWPOLYLINE・POLYLINE（2 次元）・TEXT・SOLID・INSERT を読み、
+ * 図形は LINE・POINT・CIRCLE・ARC・ELLIPSE・LWPOLYLINE・POLYLINE（2 次元）・TEXT・MTEXT・ATTRIB・ATTDEF（定数）・
+ * SOLID・TRACE・3DFACE・INSERT（MINSERT）・DIMENSION・SPLINE・HATCH・LEADER・XLINE・RAY を読み、
  * ほかの種類は数だけ数えて読み飛ばす
  */
 import { decodeDxf, tokenize, type DxfPairs } from './tokenize.ts';
+import { decodeText, parseMtext } from './mtext.ts';
 import type {
-  DxfBlock, DxfCommon, DxfDocument, DxfEntity, DxfLayer, DxfLineType,
+  DxfBlock, DxfCommon, DxfDocument, DxfEntity, DxfHatch, DxfInsert, DxfLayer, DxfLineType, DxfText, HatchEdge,
+  HatchLoop, HatchPatternLine,
 } from './types.ts';
 
+export { decodeText };
+
 /** 黙って読み飛ばす種類（描くものがない、または別の図形の一部） */
-const SILENT = new Set(['VIEWPORT', 'ATTRIB', 'SEQEND', 'VERTEX', 'ENDBLK']);
+const SILENT = new Set(['VIEWPORT', 'SEQEND', 'VERTEX', 'ENDBLK', 'ATTDEF']);
+
+/** MINSERT の行 × 列の上限 */
+export const MAX_GRID = 10_000;
+/** SPLINE の制御点の上限 */
+export const MAX_SPLINE_POINTS = 10_000;
+/** HATCH の境界の頂点の上限（図面全体） */
+export const MAX_HATCH_VERTICES = 1_000_000;
 
 /** 数として読む。読めなければ NaN（座標なら Builder が捨てる） */
 function num(v: string): number {
@@ -22,30 +34,11 @@ function int(v: string, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
-/**
- * TEXT の文字列の制御記号を直す。%%c（直径）・%%d（度）・%%p（±）・%%%、
- * 下線・上線の切り替え（%%u・%%o）は外す。\U+XXXX は Unicode の文字
- */
-export function decodeText(s: string): string {
-  return s
-    .replace(/\\U\+([0-9A-Fa-f]{4})/g, (_, h: string) => String.fromCharCode(Number.parseInt(h, 16)))
-    .replace(/%%([cCdDpPuUoO%]|\d{3})/g, (_, c: string) => {
-      switch (c.toLowerCase()) {
-        case 'c': return 'Ø';
-        case 'd': return '°';
-        case 'p': return '±';
-        case '%': return '%';
-        case 'u': case 'o': return '';
-        default: return String.fromCharCode(Number.parseInt(c, 10));
-      }
-    });
-}
-
 export function parseDxf(buffer: ArrayBuffer): DxfDocument {
   const { text, encoding } = decodeDxf(buffer);
   const p = tokenize(text);
   const doc: DxfDocument = {
-    version: '', encoding, insunits: 0, measurement: -1, extents: null,
+    version: '', encoding, insunits: 0, measurement: -1, extents: null, arrowSize: NaN,
     layers: [], ltypes: new Map(), blocks: new Map(), entities: [],
     skipped: new Map(), paperSpace: 0, warnings: [],
   };
@@ -75,6 +68,8 @@ export function parseDxf(buffer: ArrayBuffer): DxfDocument {
 class Reader {
   private p: DxfPairs;
   private doc: DxfDocument;
+  /** 読んだ HATCH の境界の頂点の数（図面全体） */
+  private hatchVertices = 0;
 
   constructor(p: DxfPairs, doc: DxfDocument) {
     this.p = p;
@@ -100,6 +95,7 @@ class Reader {
     const doc = this.doc;
     let name = '';
     let minX = NaN, minY = NaN, maxX = NaN, maxY = NaN;
+    let dimasz = NaN, dimscale = 1;
     for (let i = start; i < end; i++) {
       const c = this.code(i);
       const v = this.value(i).trim();
@@ -111,7 +107,10 @@ class Reader {
       else if (name === '$EXTMIN' && c === 20) minY = num(v);
       else if (name === '$EXTMAX' && c === 10) maxX = num(v);
       else if (name === '$EXTMAX' && c === 20) maxY = num(v);
+      else if (name === '$DIMASZ' && c === 40) dimasz = num(v);
+      else if (name === '$DIMSCALE' && c === 40) dimscale = num(v) > 0 ? num(v) : 1;
     }
+    if (dimasz > 0) doc.arrowSize = dimasz * dimscale;
     // 図形のない図面では $EXTMIN が $EXTMAX より大きい（1e20 と -1e20）ので使わない
     if (minX <= maxX && minY <= maxY && Math.abs(minX) < 1e15 && Math.abs(maxX) < 1e15) {
       doc.extents = { minX, minY, maxX, maxY };
@@ -188,13 +187,16 @@ class Reader {
   /** start〜end の図形を読む。top はモデル空間の図形の一覧か（ペーパー空間の図形を数える） */
   entities(start: number, end: number, top: boolean): DxfEntity[] {
     const out: DxfEntity[] = [];
+    /** 直前の INSERT（続く ATTRIB をつなぐ先）。ほかの図形が来たら切る */
+    let lastInsert: DxfInsert | null = null;
     for (let i = start; i < end;) {
       const j = this.next(i, end);
       if (this.code(i) !== 0) { i = j; continue; }
       const type = this.value(i).trim();
+      if (type !== 'ATTRIB' && type !== 'SEQEND') lastInsert = null;
       const common = this.common(i, j);
       if (common.paper) {
-        if (top) this.doc.paperSpace++;
+        if (top && type !== 'ATTRIB' && type !== 'SEQEND') this.doc.paperSpace++;
         i = type === 'POLYLINE' ? this.skipSeq(j, end) : j;
         continue;
       }
@@ -223,7 +225,7 @@ class Reader {
         case 'ELLIPSE': {
           const f = this.fields(i, j);
           out.push({
-            ...c, type, x: f(10), y: f(20), mx: f(11), my: f(21), ratio: f(40, 1),
+            ...c, type, x: f(10), y: f(20), mx: f(11), my: f(21), mz: f(31, 0), ratio: f(40, 1),
             start: f(41, 0), end: f(42, Math.PI * 2),
           });
           break;
@@ -272,27 +274,116 @@ class Reader {
           continue;
         }
         case 'TEXT': {
+          out.push(this.text(i, j, c, 73));
+          break;
+        }
+        case 'ATTRIB': {
+          // 見えない属性（70 の 1）は描かない
+          const t = this.text(i, j, c, 74);
+          if (lastInsert && !(int(this.fieldText(i, j, 70) ?? '0', 0) & 1)) lastInsert.attribs.push(t);
+          break;
+        }
+        case 'ATTDEF': {
+          // 定数の属性（70 の 2）だけは部品の中の文字として描く。ほかは配置のときの ATTRIB が描く
+          const flags = int(this.fieldText(i, j, 70) ?? '0', 0);
+          if ((flags & 2) && !(flags & 1)) out.push(this.text(i, j, c, 74));
+          break;
+        }
+        case 'MTEXT': {
           const f = this.fields(i, j);
+          let raw = '';
+          let last = '';
+          for (let k = i + 1; k < j; k++) {
+            if (this.code(k) === 3) raw += this.value(k);
+            else if (this.code(k) === 1) last = this.value(k);
+          }
+          raw += last;
+          const height = f(40, 1);
+          const dx = f(11), dy = f(21);
+          const rotation = Number.isFinite(dx) && Number.isFinite(dy) && (dx !== 0 || dy !== 0)
+            ? (Math.atan2(dy, dx) * 180) / Math.PI
+            : f(50, 0);
           out.push({
-            ...c, type, x: f(10), y: f(20), height: f(40), rotation: f(50, 0), widthFactor: f(41, 1),
-            text: decodeText(this.fieldText(i, j, 1) ?? ''),
+            ...c, type, x: f(10), y: f(20), height, width: f(41, 0), attach: f(71, 1), rotation,
+            spacing: f(44, 1), lines: parseMtext(raw, height),
           });
           break;
         }
-        case 'SOLID': {
+        case 'SOLID':
+        case 'TRACE': {
           const f = this.fields(i, j);
           // SOLID の 3 点目と 4 点目は外周の順と逆に並ぶ。3 角形では 4 点目が 3 点目と同じ
           const pts = [f(10), f(20), f(11), f(21), f(13, f(12)), f(23, f(22)), f(12), f(22)];
-          out.push({ ...c, type, pts });
+          out.push({ ...c, type: 'SOLID', pts });
+          break;
+        }
+        case '3DFACE': {
+          const f = this.fields(i, j);
+          const pts = [f(10), f(20), f(11), f(21), f(12), f(22), f(13, f(12)), f(23, f(22))];
+          out.push({ ...c, type, pts, hidden: f(70, 0) });
           break;
         }
         case 'INSERT': {
           const f = this.fields(i, j);
-          if (f(70, 1) > 1 || f(71, 1) > 1) this.skip('MINSERT の繰り返し');
-          out.push({
+          const ins: DxfInsert = {
             ...c, type, block: this.fieldText(i, j, 2)?.trim() ?? '', x: f(10), y: f(20),
             sx: f(41, 1), sy: f(42, 1), rotation: f(50, 0),
+            cols: Math.max(1, Math.floor(f(70, 1))), rows: Math.max(1, Math.floor(f(71, 1))),
+            colSpacing: f(44, 0), rowSpacing: f(45, 0), attribs: [],
+          };
+          out.push(ins);
+          lastInsert = ins;
+          break;
+        }
+        case 'DIMENSION': {
+          const f = this.fields(i, j);
+          out.push({
+            ...c, type, block: this.fieldText(i, j, 2)?.trim() ?? '', x: f(10), y: f(20),
+            x3: f(13), y3: f(23), x4: f(14), y4: f(24), measurement: f(42), dimType: f(70, 0) & 7,
+            text: this.fieldText(i, j, 1) ?? '',
           });
+          break;
+        }
+        case 'SPLINE': {
+          const f = this.fields(i, j);
+          const knots: number[] = [], weights: number[] = [], ctrl: number[] = [], fit: number[] = [];
+          for (let k = i + 1; k < j; k++) {
+            const v = num(this.value(k));
+            switch (this.code(k)) {
+              case 40: knots.push(v); break;
+              case 41: weights.push(v); break;
+              case 10: ctrl.push(v, NaN); break;
+              case 20: if (ctrl.length) ctrl[ctrl.length - 1] = v; break;
+              case 11: fit.push(v, NaN); break;
+              case 21: if (fit.length) fit[fit.length - 1] = v; break;
+            }
+          }
+          if (ctrl.length / 2 > MAX_SPLINE_POINTS || fit.length / 2 > MAX_SPLINE_POINTS) {
+            this.skip('SPLINE（制御点が多すぎる）');
+            break;
+          }
+          out.push({ ...c, type, degree: f(71, 3), closed: (f(70, 0) & 1) !== 0, knots, weights, ctrl, fit });
+          break;
+        }
+        case 'HATCH': {
+          const h = this.hatch(i, j, c);
+          if (h) out.push(h);
+          break;
+        }
+        case 'LEADER': {
+          const f = this.fields(i, j);
+          const xy: number[] = [];
+          for (let k = i + 1; k < j; k++) {
+            if (this.code(k) === 10) xy.push(num(this.value(k)), NaN);
+            else if (this.code(k) === 20 && xy.length) xy[xy.length - 1] = num(this.value(k));
+          }
+          if (xy.length >= 4) out.push({ ...c, type, xy, arrow: f(71, 1) !== 0, spline: f(72, 0) === 1 });
+          break;
+        }
+        case 'XLINE':
+        case 'RAY': {
+          const f = this.fields(i, j);
+          out.push({ ...c, type, x: f(10), y: f(20), dx: f(11), dy: f(21) });
           break;
         }
         default:
@@ -301,6 +392,148 @@ class Reader {
       i = j;
     }
     return out;
+  }
+
+  /** TEXT・ATTRIB・ATTDEF。vcode は縦の寄せのコード（TEXT は 73、属性は 74） */
+  private text(i: number, j: number, c: DxfCommon, vcode: number): DxfText {
+    const f = this.fields(i, j);
+    return {
+      ...c, type: 'TEXT', x: f(10), y: f(20), height: f(40), rotation: f(50, 0), widthFactor: f(41, 1),
+      text: decodeText(this.fieldText(i, j, 1) ?? ''),
+      halign: f(72, 0), valign: f(vcode, 0), x2: f(11), y2: f(21),
+    };
+  }
+
+  /** HATCH を読む。境界と模様の線はコードの並びの順に読む */
+  private hatch(i: number, j: number, c: DxfCommon): DxfHatch | null {
+    let k = i + 1;
+    let solid = false;
+    // 境界の数（91）まで
+    let loopsLeft = 0;
+    for (; k < j; k++) {
+      const code = this.code(k);
+      if (code === 70) solid = int(this.value(k), 0) === 1;
+      else if (code === 91) { loopsLeft = int(this.value(k), 0); k++; break; }
+    }
+    const at = (n: number): number => num(this.value(n));
+    const loops: HatchLoop[] = [];
+    let vertices = 0;
+    while (loopsLeft-- > 0 && k < j) {
+      while (k < j && this.code(k) !== 92) k++;
+      if (k >= j) break;
+      const flags = int(this.value(k), 0);
+      k++;
+      if (flags & 2) {
+        // 折れ線の境界：72 ふくらみの有無、73 閉じ、93 頂点の数、10/20(/42)
+        const xy: number[] = [], bulge: number[] = [];
+        let count = 0;
+        for (; k < j; k++) {
+          const code = this.code(k);
+          if (code === 93) count = int(this.value(k), 0);
+          else if (code === 10) { if (xy.length / 2 >= count) break; xy.push(at(k), NaN); bulge.push(0); }
+          else if (code === 20) { if (xy.length) xy[xy.length - 1] = at(k); }
+          else if (code === 42) { if (bulge.length) bulge[bulge.length - 1] = at(k); }
+          else if (code !== 72 && code !== 73) break;
+        }
+        vertices += xy.length / 2;
+        loops.push({ poly: { xy, bulge } });
+      } else {
+        // 辺の並び：93 辺の数、辺ごとに 72 種類
+        let count = 0;
+        if (this.code(k) === 93) { count = int(this.value(k), 0); k++; }
+        const edges: HatchEdge[] = [];
+        for (let e = 0; e < count && k < j; e++) {
+          if (this.code(k) !== 72) break;
+          const kind = int(this.value(k), 0);
+          k++;
+          /** 決まった数の組を読んでコードごとに引く */
+          const take = (n: number): ((code: number, fb?: number) => number) => {
+            const m = new Map<number, number>();
+            for (let q = 0; q < n && k < j; q++, k++) if (!m.has(this.code(k))) m.set(this.code(k), at(k));
+            return (code, fb = NaN) => m.get(code) ?? fb;
+          };
+          if (kind === 1) {
+            const g = take(4);
+            edges.push({ kind: 'line', x1: g(10), y1: g(20), x2: g(11), y2: g(21) });
+          } else if (kind === 2) {
+            const g = take(6);
+            edges.push({ kind: 'arc', cx: g(10), cy: g(20), r: g(40), start: g(50, 0), end: g(51, 360), ccw: g(73, 1) !== 0 });
+          } else if (kind === 3) {
+            const g = take(8);
+            edges.push({
+              kind: 'ellipse', cx: g(10), cy: g(20), mx: g(11), my: g(21), ratio: g(40, 1),
+              start: g(50, 0), end: g(51, 360), ccw: g(73, 1) !== 0,
+            });
+          } else if (kind === 4) {
+            const edge = this.hatchSpline(k, j);
+            k = edge.k;
+            vertices += edge.edge.ctrl.length / 2 + edge.edge.fit.length / 2;
+            edges.push(edge.edge);
+          } else {
+            break;
+          }
+        }
+        vertices += edges.length;
+        loops.push({ edges });
+      }
+      // 元の図形への参照（97 の数だけ 330）
+      if (k < j && this.code(k) === 97) {
+        k++;
+        while (k < j && this.code(k) === 330) k++;
+      }
+    }
+    // 模様の線（53 角度、43/44 基点、45/46 ずれ、49 破線）
+    const pattern: HatchPatternLine[] = [];
+    let cur: HatchPatternLine | null = null;
+    for (; k < j; k++) {
+      const code = this.code(k);
+      if (code === 98) break;
+      if (code === 53) { cur = { angle: at(k), x: 0, y: 0, dx: 0, dy: 0, dashes: [] }; pattern.push(cur); continue; }
+      if (!cur) continue;
+      if (code === 43) cur.x = at(k);
+      else if (code === 44) cur.y = at(k);
+      else if (code === 45) cur.dx = at(k);
+      else if (code === 46) cur.dy = at(k);
+      else if (code === 49) cur.dashes.push(at(k));
+    }
+    this.hatchVertices += vertices;
+    if (this.hatchVertices > MAX_HATCH_VERTICES) {
+      this.skip('HATCH（境界の頂点が多すぎる）');
+      return null;
+    }
+    return { ...c, type: 'HATCH', solid, loops, pattern };
+  }
+
+  /** HATCH の境界のスプラインの辺（94 次数、73 有理、74 周期、95 節点の数、96 制御点の数、40、10/20(/42)、97 通過点） */
+  private hatchSpline(k: number, j: number): { k: number; edge: Extract<HatchEdge, { kind: 'spline' }> } {
+    const edge: Extract<HatchEdge, { kind: 'spline' }> = { kind: 'spline', degree: 3, knots: [], weights: [], ctrl: [], fit: [] };
+    let nk = 0, nc = 0;
+    for (; k < j; k++) {
+      const code = this.code(k);
+      const v = num(this.value(k));
+      if (code === 94) edge.degree = v;
+      else if (code === 73 || code === 74) continue;
+      else if (code === 95) nk = v;
+      else if (code === 96) nc = v;
+      else if (code === 40 && edge.knots.length < nk) edge.knots.push(v);
+      else if (code === 10 && edge.ctrl.length / 2 < nc) edge.ctrl.push(v, NaN);
+      else if (code === 20 && edge.ctrl.length) edge.ctrl[edge.ctrl.length - 1] = v;
+      else if (code === 42) edge.weights.push(v);
+      else break;
+    }
+    // 通過点（R2010 から。97 のあとが 11 なら通過点、0 なら数だけ）
+    if (k < j && this.code(k) === 97 && (this.code(k + 1) === 11 || (int(this.value(k), -1) === 0 && this.code(k + 1) === 97))) {
+      k++;
+      for (; k < j; k++) {
+        const code = this.code(k);
+        const v = num(this.value(k));
+        if (code === 11) edge.fit.push(v, NaN);
+        else if (code === 21 && edge.fit.length) edge.fit[edge.fit.length - 1] = v;
+        else if (code !== 12 && code !== 22 && code !== 13 && code !== 23) break;
+      }
+    }
+    if (edge.ctrl.length / 2 > MAX_SPLINE_POINTS) { edge.ctrl = []; edge.fit = []; }
+    return { k, edge };
   }
 
   /** 読み飛ばした種類を数える */
@@ -318,8 +551,9 @@ class Reader {
 
   /** 図形に共通の属性 */
   private common(i: number, j: number): { c: DxfCommon; paper: boolean } {
-    const c: DxfCommon = { layer: '0', ltype: 'BYLAYER', color: 256, trueColor: -1, flip: false };
+    const c: DxfCommon = { layer: '0', ltype: 'BYLAYER', color: 256, trueColor: -1, normal: [0, 0, 1], elevation: 0 };
     let paper = false;
+    let elevation = false;
     for (let k = i + 1; k < j; k++) {
       const v = this.value(k);
       switch (this.code(k)) {
@@ -328,7 +562,10 @@ class Reader {
         case 62: c.color = int(v, 256); break;
         case 420: c.trueColor = int(v, -1) & 0xffffff; break;
         case 67: paper = int(v, 0) === 1; break;
-        case 230: c.flip = num(v) < 0; break;
+        case 210: c.normal = [num(v), c.normal[1], c.normal[2]]; break;
+        case 220: c.normal = [c.normal[0], num(v), c.normal[2]]; break;
+        case 230: c.normal = [c.normal[0], c.normal[1], num(v)]; break;
+        case 30: case 38: if (!elevation) { c.elevation = num(v) || 0; elevation = true; } break;
       }
     }
     return { c, paper };
