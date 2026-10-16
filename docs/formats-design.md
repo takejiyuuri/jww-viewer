@@ -57,7 +57,7 @@
 ## 段階
 - **A**：土台（builder.ts・prim.ts の切り出し、ColorSource、Scene/LoadedInfo の追加、detect・load、worker の振り分け）と DXF の基本（文字コード、LAYER・LTYPE、LINE/ARC/CIRCLE/ELLIPSE/LWPOLYLINE/POLYLINE/POINT/TEXT/SOLID、ACI と真の色、INSERT（属性なし））、平らなレイヤ一覧、単位と縮尺の選択、ZIP、accept。
 - **B**：DXF の細部（MTEXT の書式、TEXT の寄せ、ATTRIB、MINSERT、DIMENSION、HATCH、SPLINE、LEADER、OCS の全般、257 レイヤ以上、Jw_cad 書き出しのレイヤ名の組み直し）。
-- **C**：SFC。**D**：P21。**E**：iOS・README・e2e-files・tools を loadDrawing 経由に。**F**（必要なら）：レイヤを Uint16 に。
+- **C**：SFC（済み）。**D**：P21（済み。実データ未確認）。**E**：iOS・README・e2e-files・tools を loadDrawing 経由に。**F**（必要なら）：レイヤを Uint16 に。
 
 ## 検証
 - 合成の見本：tools/dxf-synth.mjs、tools/sxf-synth.mjs（ふくらみの半円＝πr、楕円 1/4、入れ子・回転・反転の INSERT と基点、ATTRIB、R2000＋ANSI_932 の Shift_JIS、AC1021 の UTF-8、\U+、押し出し -1、穴のある HATCH の面積、実測値 42 の DIMENSION、1/100 の部分図の線の実寸、SFC と P21 で同じ Scene のハッシュ、\X2\、循環参照で暴走しないこと）。
