@@ -122,5 +122,7 @@
 			</dict>
 		</dict>
 	</array>
+	<key>UIRequiresFullScreen</key>
+	<true/>
 </dict>
 </plist>

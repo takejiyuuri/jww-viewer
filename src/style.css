@@ -1835,3 +1835,19 @@ body[data-bg="light"] #inspect-actions {
     flex-basis: 40%;
   }
 }
+
+/* iPad など広い画面：下のパネル・シート・ツールバーを横に引き伸ばさず、中央に寄せる（iPhone は対象外） */
+@media (min-width: 700px) and (min-height: 600px) {
+  .panel {
+    width: min(560px, calc(100% - 20px));
+    margin-inline: auto;
+  }
+  .sheet {
+    width: min(640px, 100%);
+    margin-inline: auto;
+  }
+  #toolbar {
+    width: min(640px, 100%);
+    margin-inline: auto;
+  }
+}
