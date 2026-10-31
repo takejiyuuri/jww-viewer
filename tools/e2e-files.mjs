@@ -541,9 +541,11 @@ await recentHas(1);
 }
 
 // ---------- 11. ZIP（LINE などは .jww を ZIP にして届ける）----------
+/** ZIP を作る（13 でも使う） */
+let makeZip;
 {
   // 名前は UTF-8 のまま、UTF-8 の印を付けずに入れる（Mac の ZIP と同じ）。store が真なら圧縮しない
-  const makeZip = (files) => {
+  makeZip = (files) => {
     const locals = [];
     const centrals = [];
     let offset = 0;
@@ -629,6 +631,56 @@ await recentHas(1);
   await page.waitForTimeout(500);
   const r = await page.evaluate(() => ({ scene: !!window.__jww.scene, texts: window.__jww.scene?.texts.length ?? 0, listed: window.__jww.recent.length }));
   check('「見本の図面を開く」でアプリに入れた見本を開き、最近の一覧には足さない', r.scene && r.texts > 0 && r.listed === listed, { ...r, before: listed });
+}
+
+// ---------- 13. iOS アプリの 1.1 は .jww だけを開く（DXF・SXF は Web 版だけ）----------
+// 開発用の ?native-formats でアプリと同じ制限にする（本番の build では効かない）
+{
+  const sample = fs.readFileSync(path.join(root, 'public', 'sample.jww'));
+  const dxf = Buffer.from(unitlessDxf());
+  const app = await (await browser.newContext({ ...devices['iPhone 14 Pro'], hasTouch: true })).newPage();
+  app.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+  app.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
+  await app.goto(`${srv.url}?native-formats`, { waitUntil: 'networkidle' });
+  // 見本を開いておく（開けないときの知らせは、図面を表示しているあいだは上に出る）
+  await app.click('#btn-sample');
+  await app.waitForFunction(() => document.getElementById('title')?.textContent === '見本（住戸の電気平面図）.jww', null, { timeout: 60000 });
+  const hint = (re) => app.waitForFunction((s) => new RegExp(s).test(document.getElementById('hint').textContent ?? ''), re, { timeout: 10000 }).catch(() => {});
+  const state = () => app.evaluate(() => ({
+    hint: document.getElementById('hint').textContent,
+    title: document.getElementById('title').textContent,
+    scene: !!window.__jww.scene,
+    rows: [...document.querySelectorAll('#zip-list .recent-name')].map((n) => n.textContent),
+  }));
+
+  await app.setInputFiles('#file', { name: 'plan.dxf', mimeType: 'application/octet-stream', buffer: dxf });
+  await hint('Jw_cad の図面（\\.jww）だけです');
+  const refused = await state();
+  check('アプリでは DXF を開かず、.jww だけを開けることを知らせる',
+    refused.hint === '読み込めませんでした: このアプリの版で開けるのは Jw_cad の図面（.jww）だけです。DXF・SXF は今後の版で対応します'
+      && refused.title === '見本（住戸の電気平面図）.jww', refused);
+
+  await app.setInputFiles('#file', { name: 'mix.zip', mimeType: 'application/zip', buffer: makeZip([
+    { name: 'a.jww', data: sample },
+    { name: 'b.dxf', data: dxf },
+    { name: 'c.sfc', data: Buffer.from(basicSfc()) },
+    { name: 'd.jww', data: sample, store: true },
+  ]) });
+  await app.waitForFunction(() => !document.getElementById('zip-choices').classList.contains('hidden'), null, { timeout: 10000 }).catch(() => {});
+  const listed = await state();
+  check('アプリでは、ZIP の中の一覧に .jww だけを並べる', listed.rows.join() === 'a.jww,d.jww', listed);
+
+  await app.setInputFiles('#file', { name: 'only.zip', mimeType: 'application/zip', buffer: makeZip([{ name: 'b.dxf', data: dxf }]) });
+  await hint('only\\.zip の中に');
+  const none = await state();
+  check('アプリでは、DXF だけの ZIP は「.jww がない」と知らせる', /only\.zip の中に図面（\.jww）がありません/.test(none.hint ?? ''), none);
+  await app.context().close();
+
+  // Web 版ではこれまでどおり DXF を開く
+  await page.setInputFiles('#file', { name: 'plan.dxf', mimeType: 'application/octet-stream', buffer: dxf });
+  await opened('plan.dxf');
+  const web = await page.evaluate(() => ({ scene: !!window.__jww.scene, n: window.__jww.scene?.entities.count ?? 0 }));
+  check('Web 版では DXF をこれまでどおり開く', web.scene && web.n > 0, web);
 }
 
 check('コンソールにエラーがない', errors.length === 0, { errors: errors.slice(0, 5) });

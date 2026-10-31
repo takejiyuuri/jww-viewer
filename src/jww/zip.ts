@@ -14,14 +14,13 @@ export function isZipHead(b: Uint8Array): boolean {
   return b.length >= 4 && b[0] === 0x50 && b[1] === 0x4b && b[2] === 0x03 && b[3] === 0x04;
 }
 
-/** ZIP の中から取り出す図面の拡張子 */
-const DRAWING_EXT = /\.(jww|dxf|sfc|p21)$/i;
-
 /**
- * ZIP の中の図面（.jww・.dxf・.sfc・.p21）をすべて取り出す（名前は ZIP の並び順）。図面がなければ空の配列。
- * 展開後の合計が maxBytes を超えるもの（ZIP 爆弾など）は、展開しきる前に止める
+ * ZIP の中の図面（拡張子が formats のどれか。既定は .jww・.dxf・.sfc・.p21）をすべて取り出す（名前は ZIP の並び順）。
+ * 図面がなければ空の配列。展開後の合計が maxBytes を超えるもの（ZIP 爆弾など）は、展開しきる前に止める
  */
-export async function drawingsInZip(buffer: ArrayBuffer, maxBytes: number): Promise<ZipEntry[]> {
+export async function drawingsInZip(
+  buffer: ArrayBuffer, maxBytes: number, formats: readonly string[] = ['jww', 'dxf', 'sfc', 'p21'],
+): Promise<ZipEntry[]> {
   const bytes = new Uint8Array(buffer);
   const v = new DataView(buffer);
   // 終わりの記録（EOCD）を後ろから探す。後ろにコメント（最大 65535 バイト）が付くことがある
@@ -54,7 +53,8 @@ export async function drawingsInZip(buffer: ArrayBuffer, maxBytes: number): Prom
 
     const name = path.split(/[/\\]/).pop() ?? '';
     // Mac で作った ZIP の付け足し（__MACOSX/ や ._ で始まるもの）は図面ではない
-    if (!DRAWING_EXT.test(name) || name.startsWith('._') || /(^|[/\\])__MACOSX[/\\]/.test(path)) continue;
+    const ext = /\.([^.]+)$/.exec(name)?.[1]?.toLowerCase() ?? '';
+    if (!formats.includes(ext) || name.startsWith('._') || /(^|[/\\])__MACOSX[/\\]/.test(path)) continue;
     if (flags & 1) throw new Error('パスワード付きの ZIP には対応していません');
     if (method !== 0 && method !== 8) throw new Error('この ZIP の圧縮方式には対応していません');
     total += usize;

@@ -21,7 +21,7 @@ import { LayerVisibility, renderLayerList, type LayerSnapshot } from './ui/layer
 import { describeEntity, entityShape, pickEntity } from './ui/inspect.ts';
 import { KIND, TRUNCATED_WARNING, fitScene, type Bounds } from './render/geometry.ts';
 import { hex1, layerTag } from './jww/names.ts';
-import { DETECT_BYTES, detectFormat, unsupportedReason, type DetectedFormat } from './formats/detect.ts';
+import { DETECT_BYTES, NATIVE_FORMATS, WEB_FORMATS, detectFormat, unsupportedReason, type DetectedFormat } from './formats/detect.ts';
 import { drawingsInZip, isZipHead, type ZipEntry } from './jww/zip.ts';
 import { DXF_SCALES, DXF_UNITS } from './dxf/units.ts';
 
@@ -112,6 +112,14 @@ const LAYER_HISTORY = 50;
 
 /** 開けるファイルの大きさの上限。実際の図面は数 MB で、画像を同梱した図面でも十分に収まる */
 const MAX_FILE_BYTES = 200 * 1024 * 1024;
+/**
+ * この版で開く図面の形式。iOS アプリは NATIVE_FORMATS（1.1 は .jww だけ）、Web 版は DXF・SXF も。
+ * 開発中（npm run dev と e2e）だけは、?native-formats を付けるとアプリと同じ制限で確かめられる（本番の build では消える）
+ */
+const OPEN_FORMATS = isNative || (import.meta.env.DEV && new URLSearchParams(location.search).has('native-formats'))
+  ? NATIVE_FORMATS : WEB_FORMATS;
+/** 開く図面の拡張子（.jww・.dxf …） */
+const OPEN_EXTS = OPEN_FORMATS.map((f) => `.${f}`);
 /** アプリに入れた見本の図面の、表示する名前 */
 const SAMPLE_NAME = '見本（住戸の電気平面図）.jww';
 
@@ -148,7 +156,7 @@ function rejectReason(size: number, head: Uint8Array, name: string): string | nu
   if (size > MAX_FILE_BYTES) {
     return `ファイルが大きすぎます（${Math.round(size / 1024 / 1024)}MB。${MAX_FILE_BYTES / 1024 / 1024}MB まで開けます）`;
   }
-  return unsupportedReason(detectFormat(head, name));
+  return unsupportedReason(detectFormat(head, name), OPEN_FORMATS);
 }
 
 const el = <T extends HTMLElement>(id: string): T => {
@@ -607,7 +615,7 @@ class App {
   }
 
   /**
-   * 受け取ったファイルを開く。ZIP なら中の図面（.jww・.dxf・.sfc・.p21）を取り出す（LINE などは .jww を ZIP にして届けるため）。
+   * 受け取ったファイルを開く。ZIP なら中の図面（この版で開く形式のもの）を取り出す（LINE などは .jww を ZIP にして届けるため）。
    * 1 つならそのまま開き、いくつもあれば「図面を開く」の一覧に並べて選んでもらう。
    * agreed は、記録が消えることを確かめてあるか（一覧から選ぶときに聞き直さない）
    */
@@ -617,7 +625,7 @@ class App {
     this.showLoading(name);
     let entries: ZipEntry[];
     try {
-      entries = await drawingsInZip(buffer, MAX_FILE_BYTES);
+      entries = await drawingsInZip(buffer, MAX_FILE_BYTES, OPEN_FORMATS);
     } catch (e) {
       el('loading').classList.add('hidden');
       this.fail(e instanceof Error && e.message ? e.message : 'ZIP を展開できませんでした');
@@ -625,7 +633,7 @@ class App {
     }
     el('loading').classList.add('hidden');
     if (entries.length === 0) {
-      this.fail(`${name} の中に図面（.jww・.dxf・.sfc・.p21）がありません`);
+      this.fail(`${name} の中に図面（${OPEN_EXTS.join('・')}）がありません`);
       return;
     }
     if (entries.length === 1) return this.load(entries[0].buffer, entries[0].name);
@@ -2719,7 +2727,7 @@ class App {
   private bindUI(): void {
     const file = el<HTMLInputElement>('file');
     // iOS アプリでは、写真の選び方を挟まずに「ファイル」の選択を出す（図面と ZIP と、念のためどのファイルも選べるように）
-    if (isNative) file.accept = '.jww,.dxf,.sfc,.p21,.zip,application/octet-stream';
+    if (isNative) file.accept = [...OPEN_EXTS, '.zip', 'application/octet-stream'].join(',');
     el('btn-open').addEventListener('click', () => this.openFiles());
     el('btn-open-2').addEventListener('click', () => this.openFiles());
     el('btn-sample').addEventListener('click', () => void this.openSample());

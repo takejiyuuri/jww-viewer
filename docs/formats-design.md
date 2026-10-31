@@ -53,6 +53,7 @@
 - zip.ts：drawingsInZip（.jww/.dxf/.sfc/.p21）。
 - 保存：ViewState に dxfUnit?・dxfScale? を足すだけ。native.ts の既定名は形式に合わせて拡張子を付け直す。
 - Info.plist：UTImportedTypeDeclarations に com.autodesk.dxf（dxf）、jp.or.jacic.sxf.sfc（sfc）、jp.or.jacic.sxf.p21（p21）。DocumentTypes は DXF と P21 は Alternate、SFC は Default、Role は Viewer。.stp/.step は扱わない。
+- アプリでの制限（1.1）：iOS アプリは `.jww` だけを開く。開く形式は detect.ts の `NATIVE_FORMATS`（Web 版は `WEB_FORMATS`）の 1 行で決め、main.ts の `OPEN_FORMATS` が開く前の確かめ（rejectReason → unsupportedReason）・ZIP の中の一覧（drawingsInZip）・file.accept に使う。1.2 で DXF・SXF を入れるときはここに足すだけ。Info.plist の DocumentTypes はいまも jww と zip だけ（上の DXF・SXF の宣言は入れていない）。開発中は `?native-formats` でアプリと同じ制限にでき、e2e:files で確かめる。
 
 ## 段階
 - **A**：土台（builder.ts・prim.ts の切り出し、ColorSource、Scene/LoadedInfo の追加、detect・load、worker の振り分け）と DXF の基本（文字コード、LAYER・LTYPE、LINE/ARC/CIRCLE/ELLIPSE/LWPOLYLINE/POLYLINE/POINT/TEXT/SOLID、ACI と真の色、INSERT（属性なし））、平らなレイヤ一覧、単位と縮尺の選択、ZIP、accept。

@@ -33,8 +33,26 @@ function isDxfText(text: string): boolean {
   return lines[i] === '0' && lines[i + 1] === 'SECTION';
 }
 
-/** 開けない形式なら、その理由（開ける形式なら null） */
-export function unsupportedReason(format: DetectedFormat | null): string | null {
+/** 図面の形式（ZIP は入れ物なので含めない）。拡張子と同じ綴り */
+export type DrawingFormat = 'jww' | 'dxf' | 'sfc' | 'p21';
+
+/** Web 版で開く形式 */
+export const WEB_FORMATS: readonly DrawingFormat[] = ['jww', 'dxf', 'sfc', 'p21'];
+
+/**
+ * iOS アプリで開く形式。アプリの 1.1 は Jw_cad の図面（.jww）だけにし、DXF・SXF は Web 版だけで試す。
+ * アプリでも開けるようにする版（1.2 の予定）では、この 1 行に 'dxf', 'sfc', 'p21' を足すだけでよい
+ * （ファイルの選択・ZIP の中の一覧・開く前の確かめは、どれもこの並びに従う）
+ */
+export const NATIVE_FORMATS: readonly DrawingFormat[] = ['jww'];
+
+/** この版では開かない形式を選んだときの知らせ */
+export const NOT_IN_THIS_VERSION = 'このアプリの版で開けるのは Jw_cad の図面（.jww）だけです。DXF・SXF は今後の版で対応します';
+
+/** 開けない形式なら、その理由（開ける形式なら null）。allowed はこの版で開く図面の形式 */
+export function unsupportedReason(format: DetectedFormat | null, allowed: readonly DrawingFormat[] = WEB_FORMATS): string | null {
+  const drawing = format as DrawingFormat;
+  if (WEB_FORMATS.includes(drawing) && !allowed.includes(drawing)) return NOT_IN_THIS_VERSION;
   switch (format) {
     case 'jww': case 'dxf': case 'sfc': case 'p21': case 'zip': return null;
     case 'dwg': return 'DWG ファイルは開けません。CAD で DXF 形式に保存し直してから開いてください';
