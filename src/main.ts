@@ -1513,8 +1513,8 @@ class App {
       // 右の安全領域が広い機種（横向きの iPhone 14 Pro など）では、右に寄せたパネルの左端が画面の中央より左に来るので、
       // 左端ではなくパネルの真ん中が右半分にあるかで見分ける
       const onRight = r.left + r.width / 2 > this.cssW / 2;
-      if (r.width >= this.cssW * 0.6) {
-        // 横に広いもの（下のツールバー、縦向きのパネルとシート）は下を塞ぐ
+      if (this.atBottom(r)) {
+        // 下に置いたもの（下のツールバー、縦向きのパネルとシート、iPad で中央に寄せたもの）は下だけを塞ぐ
         bottomEdge = Math.min(bottomEdge, r.top);
       } else if (id === 'toolbar') {
         // 横向きで縦に並べたツールバーは、左右どちらかの端を上から下まで塞ぐ
@@ -1537,6 +1537,15 @@ class App {
       rail,
       rightTop: panel > rail ? rightTop : this.cssH,
     };
+  }
+
+  /**
+   * 下に置いたパネル・シート・ツールバーか（横向きの iPhone で右に寄せたものや、縦に並べたツールバーではない）。
+   * 幅いっぱいのものに加え、iPad など広い画面で幅を抑えて中央に寄せたもの（style.css の min-width: 700px の段）も下に置いたもの。
+   * 幅の割合だけで見ると、中央に寄せたツールバーを左の列と取り違え、図面が右の端へ寄って小さくなる
+   */
+  private atBottom(r: DOMRectReadOnly): boolean {
+    return r.width >= this.cssW * 0.6 || Math.abs(r.left + r.width / 2 - this.cssW / 2) < 8;
   }
 
   /**
@@ -2252,7 +2261,7 @@ class App {
     if (!r || !this.scene) return;
     this.focusNo = no;
     const sheet = el('records-panel');
-    if (!sheet.classList.contains('hidden') && sheet.getBoundingClientRect().width >= this.cssW * 0.6) this.openSheet(null);
+    if (!sheet.classList.contains('hidden') && this.atBottom(sheet.getBoundingClientRect())) this.openSheet(null);
     this.view = this.recordView(r, this.scene);
     this.textLayer.render(this.view);
     this.requestDraw(true);
@@ -2357,7 +2366,7 @@ class App {
     const ins = this.measureInsets();
     // 縦向きで縮めたレイヤ一覧は、属性のパネルのすぐ上に載って一緒に上がるので、その見出しの下にも隠さない
     // （横向きでは右下のパネルと同じ列に載るので、右のパネルを避ける動きで一緒に避けられる）
-    if (el('layer-panel').getBoundingClientRect().width >= this.cssW * 0.6) ins.bottom += this.stackedLayerHead();
+    if (this.atBottom(el('layer-panel').getBoundingClientRect())) ins.bottom += this.stackedLayerHead();
     const pad = 16;
 
     let dy = 0;

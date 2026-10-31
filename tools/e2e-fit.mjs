@@ -595,6 +595,53 @@ for (const [name, opts] of [
   await o.ctx.close();
 }
 
+// ---------- 8. iPad（下のパネルとツールバーを中央に寄せて幅を抑える）でも、全体表示は見えている範囲の真ん中に大きく出す ----------
+// 中央に寄せた幅の狭いツールバーを、横向きの iPhone の左の列と取り違えると、図面が右の端に小さく寄る。
+// 同梱の見本の図面で確かめる
+for (const [w, h] of [[1180, 820], [820, 1180], [1032, 1376], [1376, 1032]]) {
+  const ctx = await browser.newContext({ viewport: { width: w, height: h }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+  const page = await ctx.newPage();
+  page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+  page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
+  await page.goto(srv.url, { waitUntil: 'networkidle' });
+  await page.click('#btn-sample');
+  await page.waitForFunction(() => document.getElementById('title')?.textContent?.endsWith('.jww'), null, { timeout: 60000 });
+  await page.waitForTimeout(600);
+  // 図面の範囲が見えている範囲のどこに、どれだけの大きさで出ているか
+  const measure = () => page.evaluate(async () => {
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const a = window.__jww;
+    const ins = a.measureInsets();
+    const area = a.visibleArea();
+    const b = a.visibleFit();
+    const k = a.dpr / a.view.zoom;
+    const l = (b.minX - a.view.cx) / k + a.cssW / 2;
+    const r = (b.maxX - a.view.cx) / k + a.cssW / 2;
+    const t = a.cssH / 2 - (b.maxY - a.view.cy) / k;
+    const bt = a.cssH / 2 - (b.minY - a.view.cy) / k;
+    const aw = area.right - area.left;
+    const ah = area.bottom - area.top;
+    return {
+      left: ins.left, right: ins.right, bottom: Math.round(ins.bottom),
+      // 見えている範囲の中央からのずれ（見えている幅に対する割合）と、幅・高さのどちらかをどれだけ使っているか
+      off: +(Math.abs((l + r) / 2 - (area.left + area.right) / 2) / aw).toFixed(3),
+      fill: +Math.max((r - l) / aw, (bt - t) / ah).toFixed(3),
+      inside: l >= area.left - 1 && r <= area.right + 1 && t >= area.top - 1 && bt <= area.bottom + 1,
+      // 下のツールバーと計測パネルの上端より上に収まっているか
+      above: bt <= Math.min(...['toolbar', 'readout'].map((id) => document.getElementById(id).getBoundingClientRect().top)) + 1,
+    };
+  });
+  const ok = (m) => m.left === 0 && m.right === 0 && m.off < 0.02 && m.fill > 0.85 && m.inside && m.above;
+  const opened = await measure();
+  // 寄せてから「全体」を押しても同じ
+  await page.evaluate(() => { const a = window.__jww; a.view.zoom *= 6; a.view.cx += 1000; a.requestDraw(true); });
+  await page.click('#btn-fit');
+  const fitted = await measure();
+  check(`iPad ${w}×${h}：開いた直後と「全体」で、図面は左右に寄らず見えている範囲（下のパネルとツールバーの上）の真ん中に大きく出る`,
+    ok(opened) && ok(fitted), { opened, fitted });
+  await ctx.close();
+}
+
 check('コンソールにエラーがない', errors.length === 0, { errors: errors.slice(0, 5) });
 
 const failed = results.filter((r) => !r.ok);
