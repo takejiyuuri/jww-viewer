@@ -3758,7 +3758,11 @@ function drawingFingerprint(info: LoadedInfo): string {
 async function fetchSample(): Promise<ArrayBuffer> {
   const base = import.meta.env.BASE_URL;
   const res = await fetch(`${base}ruishin-sample.jww`).catch(() => null);
-  if (res?.ok) return res.arrayBuffer();
+  // 無いファイルに最初の画面（HTML）を返す配信先もあるので、中身が図面かどうかで決める
+  if (res?.ok) {
+    const buf = await res.arrayBuffer();
+    if (new TextDecoder().decode(new Uint8Array(buf, 0, Math.min(8, buf.byteLength))) === 'JwwData.') return buf;
+  }
   const txt = await fetch(`${base}ruishin-sample.jww.txt`);
   if (!txt.ok) throw new Error(String(txt.status));
   const bin = atob((await txt.text()).trim());
