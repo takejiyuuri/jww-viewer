@@ -24,6 +24,9 @@ import { hex1, layerTag } from './jww/names.ts';
 import { DETECT_BYTES, NATIVE_FORMATS, WEB_FORMATS, detectFormat, unsupportedReason, type DetectedFormat } from './formats/detect.ts';
 import { drawingsInZip, isZipHead, type ZipEntry } from './jww/zip.ts';
 import { DXF_SCALES, DXF_UNITS } from './dxf/units.ts';
+import { extractChains } from './ruishin/extract.ts';
+import { along, defaultOrigin, onChain, parallel, type Chain, type Origin } from './ruishin/ordinate.ts';
+import type { OrdinateLayer } from './ruishin/draw.ts';
 
 /** 吸着先を探す半径（CSS ピクセル） */
 const SNAP_RADIUS = 22;
@@ -46,7 +49,7 @@ const ABOUT_LINKS = '<p class="about-links">'
   + '<a href="https://takejiyuuri.github.io/mitehakaru-support/support.html" target="_blank" rel="noopener">サポート・お問い合わせ</a>'
   + '</p>';
 
-type Tool = 'measure' | 'inspect';
+type Tool = 'ruishin' | 'measure' | 'inspect';
 
 /** 図面の見えている範囲を狭めているものの幅（CSS ピクセル） */
 interface Insets {
@@ -262,8 +265,24 @@ class App {
   private colorVisible: Uint8Array = new Uint8Array(0);
   private layerMask: Uint8Array = new Uint8Array(256).fill(1);
 
-  /** タップで計測点を置くか、図形の属性を見るか */
-  private tool: Tool = 'measure';
+  /** タップで累進寸法の列を選ぶか、計測点を置くか、図形の属性を見るか */
+  private tool: Tool = 'ruishin';
+
+  // ---- 累進寸法 ----
+  /** 累進寸法に直した列（図面を開いたときに拾う） */
+  private chains: Chain[] = [];
+  /** 列の id ごとの起点 */
+  private origins = new Map<number, Origin>();
+  /** 累進寸法で表示する（元の寸法値を隠して累進の値を描く）。切ると元の寸法のまま */
+  private ruishinOn = true;
+  /** 選んでいる列の id。-1 なら無し */
+  private activeChain = -1;
+  /** 起点を動かしている列の id。-1 なら無し */
+  private originDrag = -1;
+  /** 起点を寸法線に沿って動かす（寸法線を延ばした線と図形の交点に吸着する） */
+  private alongChain = false;
+  /** 同じ向きの列の起点をまとめて動かす */
+  private linkOrigins = false;
   /** 属性を表示している図形（scene.entities の添字）。-1 なら無し */
   private selected = -1;
   /** 属性で長押ししている間、指の下にある図形 */
@@ -701,6 +720,7 @@ class App {
     this.renderer.setScene(scene);
     this.textLayer.setTexts(scene.texts);
     this.snapIndex = index;
+    this.loadChains(scene);
     // 前に読み込めなかったときの最初の画面が出ていたら、図面の上に残さない
     el('welcome').classList.add('hidden');
     this.points = [];
@@ -1177,6 +1197,7 @@ class App {
       ink: measureInk(this.measurePrefs.color, this.display.background),
       badges: this.recordBadges(),
       focus: this.focusedShape(),
+      ordinate: this.ordinateLayer(),
     };
     this.overlay.render(this.view, state);
   }
@@ -1271,6 +1292,24 @@ class App {
       if (this.swallowTap) return;
       // ボタンを隠しているあいだは見るだけ（値や戻す・消去が見えないので、点をつまんだり、長押しで置いたりしない）
       if (this.uiHidden()) return;
+      if (this.tool === 'ruishin') {
+        // 起点の丸をつまんだなら、その場で動かし始める
+        const id = this.hitOrigin(e.clientX, e.clientY);
+        if (id >= 0) {
+          this.originDrag = id;
+          this.startHold(e.clientX, e.clientY);
+          return;
+        }
+        // 列を選んでいれば、長押しでその列の起点を指の所に置く
+        const active = this.activeChain;
+        if (active >= 0) {
+          this.holdTimer = window.setTimeout(() => {
+            this.originDrag = active;
+            this.startHold(e.clientX, e.clientY);
+          }, 260);
+        }
+        return;
+      }
       // 置いた点をつまんだなら、その場で動かし始める
       const grabbed = this.tool === 'measure' ? this.hitPoint(e.clientX, e.clientY) : null;
       if (grabbed !== null) {
@@ -1332,6 +1371,25 @@ class App {
     // 残った指で基準の 2 点が入れ替わると倍率が飛ぶので、その場で張り直す
     this.pinch = this.pointers.size >= 2 ? this.pinchState() : null;
 
+    if (this.holding && this.tool === 'ruishin') {
+      const hit = this.preview;
+      const id = this.originDrag;
+      // 起点の丸を動かさずにすぐ離したときは、その列を選ぶだけにする
+      const tap = this.moved < 9 && performance.now() - this.downAt < 400;
+      this.cancelHold();
+      if (tap) {
+        this.activeChain = id;
+      } else if (hit && id >= 0) {
+        this.activeChain = id;
+        this.setOrigin(id, hit);
+        tapFeedback();
+      }
+      this.updateRuishinPanel();
+      this.finishStroke();
+      this.requestDraw(true);
+      return;
+    }
+
     if (this.holding) {
       const hit = this.preview;
       const index = this.dragIndex;
@@ -1387,7 +1445,11 @@ class App {
       this.hint(`ボタンを隠しているあいだは見るだけです。右上のボタンで戻すと${this.tool === 'inspect' ? '図形を選べます' : '点を置けます'}`);
     }
     if (tap && !this.uiHidden()) {
-      if (this.tool === 'inspect') {
+      if (this.tool === 'ruishin') {
+        this.activeChain = this.pickChain(e.clientX, e.clientY);
+        if (this.activeChain >= 0) tapFeedback();
+        this.updateRuishinPanel();
+      } else if (this.tool === 'inspect') {
         this.select(this.pickAt(e.clientX, e.clientY));
         if (this.selected >= 0) tapFeedback();
       } else {
@@ -1493,6 +1555,8 @@ class App {
     if (this.tool === 'inspect') {
       this.preview = null;
       this.previewEntity = this.pickAt(cssX, cssY);
+    } else if (this.tool === 'ruishin') {
+      this.preview = this.originDrag >= 0 ? this.snapOrigin(cssX, cssY, this.originDrag) : null;
     } else {
       this.preview = this.snapFor(cssX, cssY, this.dragIndex);
     }
@@ -1511,7 +1575,7 @@ class App {
     let rightEdge = this.cssW;
     let railEdge = this.cssW;
     let rightTop = this.cssH;
-    const ids: string[] = ['toolbar', 'readout', 'inspect-panel'];
+    const ids: string[] = ['toolbar', 'readout', 'inspect-panel', 'ruishin-panel'];
     if (withSheets) ids.push(...SHEETS);
     for (const id of ids) {
       const node = document.getElementById(id);
@@ -1608,6 +1672,204 @@ class App {
     this.magnifier = null;
     this.constraint = null;
     this.dragIndex = null;
+    this.originDrag = -1;
+  }
+
+  // ---------- 累進寸法 ----------
+
+  /** 図面の寸法を拾って列にまとめ、起点を列の最初の端に置く */
+  private loadChains(scene: Scene): void {
+    try {
+      this.chains = extractChains(scene);
+    } catch (err) {
+      // 累進寸法に直せなくても、図面を見る・測るのは続けられる
+      console.error(err);
+      this.chains = [];
+    }
+    this.origins = new Map(this.chains.map((c) => [c.id, defaultOrigin(c)]));
+    this.activeChain = -1;
+    this.originDrag = -1;
+    this.applyRuishinTexts();
+    this.updateRuishinPanel();
+  }
+
+  private chainById(id: number): Chain | undefined {
+    return this.chains.find((c) => c.id === id);
+  }
+
+  /** 累進で表示しているあいだは、列にした寸法の元の寸法値を隠す */
+  private applyRuishinTexts(): void {
+    const hidden = new Set<number>();
+    if (this.ruishinOn) {
+      for (const c of this.chains) for (const s of c.spans) if (s.text >= 0) hidden.add(s.text);
+    }
+    this.textLayer.setHidden(hidden);
+    this.requestDraw(true);
+  }
+
+  /** 指の下にある起点の丸（または起点を吸着させた点）の列。無ければ -1 */
+  private hitOrigin(cssX: number, cssY: number): number {
+    if (!this.ruishinOn) return -1;
+    let best = -1;
+    let bestD = 26;
+    for (const c of this.chains) {
+      const o = this.origins.get(c.id);
+      if (!o) continue;
+      const [x1, y1] = this.toCss(...onChain(c, along(c, o.x, o.y)));
+      const [x2, y2] = this.toCss(o.x, o.y);
+      // 選んでいる列を少し優先する（列が重なって描かれているところで、選んだ列の起点をつまめるように）
+      const bias = c.id === this.activeChain ? 6 : 0;
+      const d = Math.min(Math.hypot(x1 - cssX, y1 - cssY), Math.hypot(x2 - cssX, y2 - cssY)) - bias;
+      if (d < bestD) {
+        bestD = d;
+        best = c.id;
+      }
+    }
+    return best;
+  }
+
+  /** タップした所の列。寸法線の近くか、値を書いている側の帯の中。無ければ -1 */
+  private pickChain(cssX: number, cssY: number): number {
+    if (!this.ruishinOn) return -1;
+    const w = this.toWorld(cssX, cssY);
+    const px = this.worldPerCssPx();
+    let best = -1;
+    let bestD = Infinity;
+    for (const c of this.chains) {
+      const o = this.origins.get(c.id);
+      const t0 = o ? along(c, o.x, o.y) : c.stops[0];
+      const lo = Math.min(c.stops[0], t0) - 12 * px;
+      const hi = Math.max(c.stops[c.stops.length - 1], t0) + 12 * px;
+      const t = along(c, w.x, w.y);
+      if (t < lo || t > hi) continue;
+      const d = (w.x * c.nx + w.y * c.ny - c.offset) / px;
+      const reach = Math.sign(d) === c.side ? 70 : 22;
+      if (Math.abs(d) > reach) continue;
+      if (Math.abs(d) < bestD) {
+        bestD = Math.abs(d);
+        best = c.id;
+      }
+    }
+    return best;
+  }
+
+  /**
+   * 起点の吸着先。ふつうは端点・交点・線上のどこにでも吸着し、列の向きに投影して使う
+   * （上のほうの通り芯の交点から、真下・真横の寸法線の位置を起点にできる）。
+   * 「寸法線に沿う」のときは寸法線を延ばした線の上だけを動き、その線が図形と交わる所に吸着する
+   */
+  private snapOrigin(cssX: number, cssY: number, id: number): SnapResult | null {
+    const c = this.chainById(id);
+    if (!c || !this.snapIndex) return null;
+    const w = this.toWorld(cssX, cssY);
+    const radius = SNAP_RADIUS * this.worldPerCssPx();
+    if (this.alongChain && (c.ux === 0 || c.uy === 0)) {
+      const [ax, ay] = onChain(c, along(c, w.x, w.y));
+      const axis: Axis = c.uy === 0 ? 'horizontal' : 'vertical';
+      this.constraint = { x: ax, y: ay, axis };
+      return this.snapIndex.queryOnAxis(ax, ay, axis, w.x, w.y, radius);
+    }
+    this.constraint = null;
+    return this.snapIndex.query(w.x, w.y, radius);
+  }
+
+  /** 起点を置く。「同じ向きをそろえる」なら、平行な列の起点も同じ点にする */
+  private setOrigin(id: number, hit: { x: number; y: number }): void {
+    const c = this.chainById(id);
+    if (!c) return;
+    const p = { x: hit.x, y: hit.y };
+    this.origins.set(id, p);
+    if (this.linkOrigins) {
+      for (const o of this.chains) if (o.id !== id && parallel(o, c)) this.origins.set(o.id, p);
+    }
+    if (navigator.vibrate) navigator.vibrate(4);
+  }
+
+  /** 計測の層に渡す累進寸法。起点を動かしている途中なら、指の下の吸着先を起点にして見せる */
+  private ordinateLayer(): OrdinateLayer | null {
+    if (!this.ruishinOn || this.chains.length === 0) return null;
+    let origins = this.origins;
+    const id = this.originDrag;
+    const c = this.holding && id >= 0 && this.preview ? this.chainById(id) : undefined;
+    if (c && this.preview) {
+      origins = new Map(origins);
+      const p = { x: this.preview.x, y: this.preview.y };
+      origins.set(id, p);
+      if (this.linkOrigins) for (const o of this.chains) if (o.id !== id && parallel(o, c)) origins.set(o.id, p);
+    }
+    return {
+      chains: this.chains,
+      origins,
+      active: this.tool === 'ruishin' ? this.activeChain : -1,
+      dragging: this.holding ? id : -1,
+      signed: false,
+    };
+  }
+
+  private bindRuishinUI(): void {
+    const toggle = (btnId: string, on: boolean): void => {
+      el(btnId).classList.toggle('on', on);
+      el(btnId).setAttribute('aria-pressed', String(on));
+    };
+    el('btn-ruishin-on').addEventListener('click', () => {
+      this.ruishinOn = !this.ruishinOn;
+      toggle('btn-ruishin-on', this.ruishinOn);
+      if (!this.ruishinOn) this.activeChain = -1;
+      this.applyRuishinTexts();
+      this.updateRuishinPanel();
+      this.hint(this.ruishinOn ? '累進寸法で表示します' : '元の寸法で表示します');
+    });
+    el('btn-ruishin-along').addEventListener('click', () => {
+      this.alongChain = !this.alongChain;
+      toggle('btn-ruishin-along', this.alongChain);
+      this.hint(this.alongChain
+        ? '起点は寸法線に沿って動き、図形と交わる所に吸着します'
+        : '起点は端点・交点・線上に吸着し、真横・真下の位置を使います');
+    });
+    el('btn-ruishin-link').addEventListener('click', () => {
+      this.linkOrigins = !this.linkOrigins;
+      toggle('btn-ruishin-link', this.linkOrigins);
+      this.hint(this.linkOrigins ? '同じ向きの列の起点をまとめて動かします' : '列ごとに起点を動かします');
+    });
+    el('btn-ruishin-reset').addEventListener('click', () => {
+      const targets = this.activeChain >= 0 ? this.chains.filter((c) => c.id === this.activeChain) : this.chains;
+      for (const c of targets) this.origins.set(c.id, defaultOrigin(c));
+      this.hint(this.activeChain >= 0 ? 'この列の起点を最初の端に戻しました' : 'すべての列の起点を最初の端に戻しました');
+      this.requestDraw();
+    });
+  }
+
+  /** 累進寸法のパネルの文言とボタン */
+  private updateRuishinPanel(): void {
+    const body = el('ruishin-body');
+    const title = el('ruishin-title');
+    const tag = el('ruishin-tag');
+    const c = this.activeChain >= 0 ? this.chainById(this.activeChain) : undefined;
+    el('btn-ruishin-reset').setAttribute('aria-label', c ? 'この列の起点を最初の端に戻す' : 'すべての列の起点を最初の端に戻す');
+    el<HTMLButtonElement>('btn-ruishin-reset').disabled = !this.ruishinOn || this.chains.length === 0;
+    tag.classList.toggle('hidden', !(c && c.mismatch));
+    tag.textContent = '寸法値を優先';
+    if (this.chains.length === 0) {
+      title.textContent = '累進寸法';
+      body.innerHTML = '<p class="note">累進に直せる寸法が見つかりませんでした。一直線に 2 つ以上つながって並んだ寸法が対象です。</p>';
+      return;
+    }
+    if (!this.ruishinOn) {
+      title.textContent = '累進寸法（切）';
+      body.innerHTML = '<p class="note">元の寸法で表示しています。「累進で表示」で戻せます。</p>';
+      return;
+    }
+    if (!c) {
+      title.textContent = `累進寸法 ${this.chains.length} 列`;
+      body.innerHTML = '<p class="note">列をタップして選び、起点の丸をドラッグして動かします</p>';
+      return;
+    }
+    const dir = c.uy === 0 ? '横の列' : c.ux === 0 ? '縦の列' : '斜めの列';
+    title.textContent = dir;
+    const warn = c.mismatch
+      ? '<p class="note warn">図形の長さと合わない寸法値があり、書いてある値で累計しています</p>'
+      : '';
+    body.innerHTML = `<p class="note">寸法 ${c.spans.length} 本・1/${formatScale(c.scale)}・起点の丸をドラッグか、長押しした所へ</p>` + warn;
   }
 
   // ---------- 計測 ----------
@@ -2456,7 +2718,9 @@ class App {
     if (tool === 'inspect') el('inspect-panel').classList.remove('collapsed');
     this.updatePanels();
     this.requestDraw();
-    this.hint(tool === 'inspect' ? '図形をタップすると属性を表示します' : 'タップで計測点を置きます');
+    if (tool === 'ruishin') this.updateRuishinPanel();
+    this.hint(tool === 'inspect' ? '図形をタップすると属性を表示します'
+      : tool === 'ruishin' ? '列をタップして選び、起点の丸をドラッグして動かします' : 'タップで計測点を置きます');
   }
 
   /** 下のパネル（計測・属性）とツールボタンの状態を、いまのツールに合わせる */
@@ -2464,7 +2728,8 @@ class App {
     const loaded = this.scene !== null;
     el('readout').classList.toggle('hidden', !loaded || this.tool !== 'measure');
     el('inspect-panel').classList.toggle('hidden', !loaded || this.tool !== 'inspect');
-    for (const [id, t] of [['btn-tool-measure', 'measure'], ['btn-tool-inspect', 'inspect']] as const) {
+    el('ruishin-panel').classList.toggle('hidden', !loaded || this.tool !== 'ruishin');
+    for (const [id, t] of [['btn-tool-ruishin', 'ruishin'], ['btn-tool-measure', 'measure'], ['btn-tool-inspect', 'inspect']] as const) {
       const on = this.tool === t;
       el(id).classList.toggle('on', on);
       el(id).setAttribute('aria-pressed', String(on));
@@ -2761,7 +3026,9 @@ class App {
       file.value = '';
     });
 
+    el('btn-tool-ruishin').addEventListener('click', () => this.setTool('ruishin'));
     el('btn-tool-measure').addEventListener('click', () => this.setTool('measure'));
+    this.bindRuishinUI();
     el('btn-tool-inspect').addEventListener('click', () => this.setTool('inspect'));
 
     el('btn-ortho').addEventListener('click', () => {
@@ -2867,12 +3134,13 @@ class App {
     // レイヤ一覧と属性のパネルは、見出しを下へずらすと見出しだけに縮める
     this.makeCollapsible(el('layer-panel'), el('layer-panel').querySelector<HTMLElement>('.sheet-head')!);
     this.makeCollapsible(el('inspect-panel'), el('inspect-panel').querySelector<HTMLElement>('.panel-top')!);
+    this.makeCollapsible(el('ruishin-panel'), el('ruishin-panel').querySelector<HTMLElement>('.panel-top')!);
     // 縮めたレイヤ一覧を、下（横向きでは右下）の計測・属性のパネルの上に載せるため、そのパネルの高さを CSS に渡す。
     // 縮めたレイヤ一覧の高さも渡し、横向きではその分だけパネルを低くして、一覧が上のバーにかからないようにする
     if (window.ResizeObserver) {
       const stack = new ResizeObserver(() => {
         const root = document.documentElement.style;
-        const box = [el('readout'), el('inspect-panel')].map((n) => n.getBoundingClientRect()).find((r) => r.height > 0);
+        const box = [el('readout'), el('inspect-panel'), el('ruishin-panel')].map((n) => n.getBoundingClientRect()).find((r) => r.height > 0);
         root.setProperty('--panel-stack', `${box ? Math.round(box.height) + 8 : 0}px`);
         const layer = el('layer-panel');
         const head = layer.getBoundingClientRect().height;
@@ -2880,6 +3148,7 @@ class App {
       });
       stack.observe(el('readout'));
       stack.observe(el('inspect-panel'));
+      stack.observe(el('ruishin-panel'));
       stack.observe(el('layer-panel'));
     }
 

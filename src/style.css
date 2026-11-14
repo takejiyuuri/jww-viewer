@@ -524,7 +524,8 @@ html.standalone #shell {
 
 /* ---- 属性 ---- */
 /* 長い文字を選んでも図面を覆い尽くさないように */
-#inspect-panel {
+#inspect-panel,
+#ruishin-panel {
   max-height: 46%;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
@@ -534,7 +535,8 @@ html.standalone #shell {
   backdrop-filter: none;
 }
 
-body[data-bg="light"] #inspect-panel {
+body[data-bg="light"] #inspect-panel,
+body[data-bg="light"] #ruishin-panel {
   background: #292a32;
 }
 
@@ -1156,7 +1158,8 @@ body[data-bg="light"] .panel {
 
 /* 見出しを指でずらせるように（ブラウザの送りに取られないように） */
 #layer-panel .sheet-head,
-#inspect-panel .panel-top {
+#inspect-panel .panel-top,
+#ruishin-panel .panel-top {
   touch-action: none;
 }
 
@@ -1164,25 +1167,30 @@ body[data-bg="light"] .panel {
  * 属性のパネルの見出しは、パネルの上の余白（つまみのある所）まで広げ、つまみを触っても見出しをつかめるようにする。
  * 見た目の位置は変えない
  */
-#inspect-panel .panel-top {
+#inspect-panel .panel-top,
+#ruishin-panel .panel-top {
   margin-top: -10px;
   padding-top: 10px;
 }
 
 /* 指について動かしたあと、元の位置へ戻るとき */
 #layer-panel,
-#inspect-panel {
+#inspect-panel,
+#ruishin-panel {
   transition: transform 0.18s ease-out;
 }
 
 #layer-panel.collapsed .sheet-body,
 #inspect-panel.collapsed #inspect-body,
-#inspect-panel.collapsed #inspect-actions {
+#inspect-panel.collapsed #inspect-actions,
+#ruishin-panel.collapsed #ruishin-body,
+#ruishin-panel.collapsed #ruishin-actions {
   display: none;
 }
 
 /* 縮めた属性のパネルは、見出しの下の余白も詰める */
-#inspect-panel.collapsed .panel-top {
+#inspect-panel.collapsed .panel-top,
+#ruishin-panel.collapsed .panel-top {
   margin-bottom: 0;
 }
 
@@ -1212,6 +1220,7 @@ body.ui-hidden #topbar,
 body.ui-hidden #toolbar,
 body.ui-hidden #readout,
 body.ui-hidden #inspect-panel,
+body.ui-hidden #ruishin-panel,
 body.ui-hidden #layer-panel,
 body.ui-hidden #display-panel,
 body.ui-hidden #info-panel,
@@ -1789,7 +1798,8 @@ body.ui-hidden .ui-show {
    * 大きさは残す（縮めたレイヤ一覧を載せる高さの測り方は変えない）
    */
   #shell:has(> .sheet:not(.hidden):not(.collapsed)) #readout,
-  #shell:has(> .sheet:not(.hidden):not(.collapsed)) #inspect-panel {
+  #shell:has(> .sheet:not(.hidden):not(.collapsed)) #inspect-panel,
+  #shell:has(> .sheet:not(.hidden):not(.collapsed)) #ruishin-panel {
     visibility: hidden;
   }
 
@@ -1850,4 +1860,20 @@ body[data-bg="light"] #inspect-actions {
     width: min(640px, 100%);
     margin-inline: auto;
   }
+}
+
+/* ---- 累進寸法のパネル ---- */
+.ruishin-body .note {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--dim);
+}
+.ruishin-body .note.warn {
+  color: #fbbf24;
+}
+.ruishin-actions .pill {
+  font-size: 12.5px;
+  padding: 8px 2px;
+  white-space: nowrap;
 }

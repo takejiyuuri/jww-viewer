@@ -35,7 +35,10 @@
     "verify:dxf": "node tools/verify-dxf.ts",
     "e2e:dxf": "node tools/e2e-dxf.mjs",
     "verify:sxf": "node tools/verify-sxf.ts",
-    "e2e:sxf": "node tools/e2e-sxf.mjs"
+    "e2e:sxf": "node tools/e2e-sxf.mjs",
+    "verify:ruishin": "node tools/verify-ruishin.ts",
+    "e2e:ruishin": "node tools/e2e-ruishin.mjs",
+    "sample:ruishin": "node tools/ruishin-sample.mjs"
   },
   "devDependencies": {
     "@capacitor/cli": "^8.5.2",

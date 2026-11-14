@@ -6,6 +6,7 @@ import {
 } from '../measure/measure.ts';
 import { RECORD_COLOR, RECORD_INK, type MeasureInk } from '../measure/colors.ts';
 import type { Background } from './theme.ts';
+import { drawOrdinates, type OrdinateLayer } from '../ruishin/draw.ts';
 
 /**
  * 背景の明暗によって見え方が変わる補助線の色。
@@ -81,6 +82,8 @@ export interface OverlayState {
   badges: RecordBadge[];
   /** 札を押して見せている記録。いま測っているものと同じ描き方で、記録の色で描く。無ければ null */
   focus: MeasureShape | null;
+  /** 累進寸法。直していなければ null */
+  ordinate: OrdinateLayer | null;
 }
 
 /** 計測の形と、辺の長さ・面積を出すのに要るもの */
@@ -168,7 +171,7 @@ export class Overlay {
     // 描いていた状態から空になったあと、中身の変わらないコマで消したはずの前の絵（「前の範囲」の囲いなど）が
     // 1 コマおきに画面に出ることがある。隠しておけば出ない。切り替えは空かどうかが変わったときだけ
     const empty = !s.backRect && !s.highlight && !s.constraint && s.points.length === 0 && !s.preview && !s.magnifier
-      && s.badges.length === 0 && !s.focus;
+      && s.badges.length === 0 && !s.focus && !(s.ordinate && s.ordinate.chains.length);
     if (empty !== this.wasEmpty) {
       this.canvas.style.visibility = empty ? 'hidden' : '';
       this.wasEmpty = empty;
@@ -197,6 +200,11 @@ export class Overlay {
     // 属性を見ている図形。測線より下に描いて、計測の表示を隠さないようにする
     if (s.highlight) {
       this.drawHighlight(s.highlight, (x, y) => this.toScreen(view, x, y), k);
+    }
+
+    // 累進寸法。図面の一部として、計測や記録の札より下に描く
+    if (s.ordinate && s.ordinate.chains.length) {
+      drawOrdinates(ctx, (x, y) => this.toScreen(view, x, y), view.zoom, k, this.background, s.ordinate);
     }
 
     // 札を押して見せている記録。いま測っているものより下に描き、記録の色で見分ける
