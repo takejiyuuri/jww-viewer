@@ -97,13 +97,34 @@ function drawChain(
   ctx.textBaseline = 'middle';
   ctx.textAlign = flip ? 'right' : 'left';
 
-  for (const s of stops) {
-    const [px, py] = toScreen(s.x, s.y);
-    // 端の点
-    ctx.fillStyle = col.text;
+  // 累進の寸法線：起点から両端までを累進の色で引く（元の寸法線の上に重ねて、累進だと分かるように）
+  const t0 = along(c, origin.x, origin.y);
+  {
+    const [x1, y1] = toScreen(...onChain(c, stops[0].t));
+    const [x2, y2] = toScreen(...onChain(c, stops[stops.length - 1].t));
+    ctx.strokeStyle = col.text;
+    ctx.lineWidth = (active ? 1.8 : 1.4) * k;
     ctx.beginPath();
-    ctx.arc(px, py, (active ? 2.6 : 2) * k, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+  }
+
+  // 列の向きの、画面での単位ベクトル（画面は y が下向き）
+  const dx = c.ux, dy = -c.uy;
+  const arrowLen = Math.min(Math.max(fontPx * 0.8, 9 * k), 16 * k);
+  for (let i = 0; i < stops.length; i++) {
+    const s = stops[i];
+    const [px, py] = toScreen(s.x, s.y);
+    if (!s.isOrigin) {
+      // 寸法点の矢印：起点から離れる向きに、寸法点を先にして描く
+      const dir = s.t >= t0 ? 1 : -1;
+      // 起点側の隣の点（または起点）との間隔に収まる長さにする
+      const prev = stops[i - dir];
+      const room = prev ? Math.hypot(...sub(toScreen(prev.x, prev.y), [px, py])) : Infinity;
+      const len = Math.max(Math.min(arrowLen, room * 0.45), 4 * k);
+      arrow(ctx, px, py, dx * dir, dy * dir, len, col.text);
+    }
     if (!showText) continue;
     const label = formatValue(s.value, c.format, signed);
     ctx.save();
@@ -124,7 +145,6 @@ function drawChain(
   }
 
   // 起点：寸法線の上の丸。吸着した点が離れていれば、そこから点線で結ぶ
-  const t0 = along(c, origin.x, origin.y);
   const [ox, oy] = toScreen(...onChain(c, t0));
   const [rx, ry] = toScreen(origin.x, origin.y);
   if (Math.hypot(rx - ox, ry - oy) > 2 * k) {
@@ -156,5 +176,22 @@ function drawChain(
   ctx.fillStyle = col.text;
   ctx.beginPath();
   ctx.arc(ox, oy, 1.8 * k, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function sub(a: [number, number], b: [number, number]): [number, number] {
+  return [a[0] - b[0], a[1] - b[1]];
+}
+
+/** 塗りつぶしの矢印。先端が (x, y)、(ux, uy) の向きを指す。len は長さ（デバイスピクセル） */
+function arrow(ctx: CanvasRenderingContext2D, x: number, y: number, ux: number, uy: number, len: number, color: string): void {
+  const half = len * 0.33;
+  const bx = x - ux * len, by = y - uy * len;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(bx - uy * half, by + ux * half);
+  ctx.lineTo(bx + uy * half, by - ux * half);
+  ctx.closePath();
   ctx.fill();
 }
