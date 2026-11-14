@@ -1801,6 +1801,13 @@ class App {
       active: this.tool === 'ruishin' ? this.activeChain : -1,
       dragging: this.holding ? id : -1,
       signed: false,
+      colorOf: (c) => {
+        for (const sp of c.spans) {
+          const col = sp.text >= 0 ? this.textLayer.colorOf(sp.text) : null;
+          if (col) return col;
+        }
+        return null;
+      },
     };
   }
 

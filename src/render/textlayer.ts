@@ -93,6 +93,12 @@ export class TextLayer {
     this.drawnAt = null;
   }
 
+  /** 文字（texts の添字）を描く色。分からなければ null */
+  colorOf(index: number): string | null {
+    const t = this.texts[index];
+    return t ? this.styles[t.color] ?? null : null;
+  }
+
   resize(cssW: number, cssH: number, dpr: number): void {
     const w = Math.max(1, Math.round(cssW * dpr));
     const h = Math.max(1, Math.round(cssH * dpr));

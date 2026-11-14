@@ -1,6 +1,9 @@
 // 累進寸法を計測の層（Canvas2D）に描く。
+// 新しい寸法線は引かない。元の寸法線・引出線はそのまま見せ、寸法値だけを累進の値に書き換える
+// （元の寸法値と同じ色・同じ書体で、各寸法点に矢印、起点に小さな丸）。
+// 選んだ列だけ、寸法線と値を強調の色で目立たせる。
 // 値は元の寸法値と同じ側に、寸法線と直角の向きで書く（狭い間隔の寸法でも値どうしが重ならないように）。
-// 起点は寸法線の上の丸。吸着した点が寸法線から離れていれば、その点から寸法線まで点線を引く。
+// 選んだ列で、起点が吸着した点が寸法線から離れていれば、その点から寸法線まで点線を引く。
 import type { Background } from '../render/theme.ts';
 import { formatValue, onChain, ordinates, along, type Chain, type Origin } from './ordinate.ts';
 
@@ -14,14 +17,18 @@ export interface OrdinateLayer {
   dragging: number;
   /** 起点より手前の値に「-」を付ける */
   signed: boolean;
+  /** 列の元の寸法値の色（CSS の色）。分からなければ null（背景に合わせた既定の色） */
+  colorOf?: (c: Chain) => string | null;
 }
 
-const COLORS: Record<Background, { text: string; halo: string; activeBand: string }> = {
-  dark: { text: '#fb923c', halo: 'rgba(11,12,16,0.85)', activeBand: 'rgba(251,146,60,0.16)' },
-  light: { text: '#c2410c', halo: 'rgba(255,255,255,0.9)', activeBand: 'rgba(194,65,12,0.12)' },
+const COLORS: Record<Background, { text: string; ink: string; halo: string; activeBand: string }> = {
+  // text は選んだ列の強調の色、ink は元の寸法値の色が分からないときの色
+  dark: { text: '#fb923c', ink: '#e5e7eb', halo: 'rgba(11,12,16,0.85)', activeBand: 'rgba(251,146,60,0.28)' },
+  light: { text: '#c2410c', ink: '#111827', halo: 'rgba(255,255,255,0.9)', activeBand: 'rgba(194,65,12,0.22)' },
 };
 
-const FONT = '-apple-system, "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif';
+// 図面の文字と同じ書体（render/textlayer.ts と合わせる）
+const FONT = '"Hiragino Sans", "Noto Sans JP", -apple-system, system-ui, sans-serif';
 
 /** 起点の丸の、画面での半径（デバイスピクセル）。当たり判定にも使う */
 export function originRadius(k: number): number {
@@ -47,7 +54,8 @@ export function drawOrdinates(
     const origin = layer.origins.get(c.id);
     if (!origin) continue;
     const active = c.id === layer.active || c.id === layer.dragging;
-    drawChain(ctx, toScreen, zoom, k, col, c, origin, active, layer.signed);
+    const ink = active ? col.text : layer.colorOf?.(c) ?? col.ink;
+    drawChain(ctx, toScreen, zoom, k, col, ink, c, origin, active, layer.signed);
   }
   ctx.restore();
 }
@@ -58,6 +66,7 @@ function drawChain(
   zoom: number,
   k: number,
   col: (typeof COLORS)[Background],
+  ink: string,
   c: Chain,
   origin: Origin,
   active: boolean,
@@ -66,12 +75,18 @@ function drawChain(
   const stops = ordinates(c, origin);
   if (stops.length === 0) return;
 
-  // 選んでいる列は、寸法線に沿って帯を敷いて見分ける
+  // 選んでいる列は、元の寸法線を強調の色でなぞり、まわりをぼかして見分ける（選んでいない列には線を引かない）
   if (active) {
     const [x1, y1] = toScreen(...onChain(c, Math.min(c.stops[0], stops[0].t)));
     const [x2, y2] = toScreen(...onChain(c, Math.max(c.stops[c.stops.length - 1], stops[stops.length - 1].t)));
     ctx.strokeStyle = col.activeBand;
-    ctx.lineWidth = 14 * k;
+    ctx.lineWidth = 10 * k;
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+    ctx.strokeStyle = col.text;
+    ctx.lineWidth = 2.2 * k;
     ctx.beginPath();
     ctx.moveTo(x1, y1);
     ctx.lineTo(x2, y2);
@@ -93,26 +108,15 @@ function drawChain(
   const fontPx = Math.min(Math.max(hpx, 10 * k), 24 * k);
   const gap = Math.max(fontPx * 0.35, 3 * k);
 
-  ctx.font = `${active ? 700 : 600} ${fontPx}px ${FONT}`;
+  ctx.font = `${active ? 700 : 400} ${fontPx}px ${FONT}`;
   ctx.textBaseline = 'middle';
   ctx.textAlign = flip ? 'right' : 'left';
 
-  // 累進の寸法線：起点から両端までを累進の色で引く（元の寸法線の上に重ねて、累進だと分かるように）
   const t0 = along(c, origin.x, origin.y);
-  {
-    const [x1, y1] = toScreen(...onChain(c, stops[0].t));
-    const [x2, y2] = toScreen(...onChain(c, stops[stops.length - 1].t));
-    ctx.strokeStyle = col.text;
-    ctx.lineWidth = (active ? 1.8 : 1.4) * k;
-    ctx.beginPath();
-    ctx.moveTo(x1, y1);
-    ctx.lineTo(x2, y2);
-    ctx.stroke();
-  }
 
   // 列の向きの、画面での単位ベクトル（画面は y が下向き）
   const dx = c.ux, dy = -c.uy;
-  const arrowLen = Math.min(Math.max(fontPx * 0.8, 9 * k), 16 * k);
+  const arrowLen = Math.min(Math.max(fontPx * 0.7, 8 * k), (active ? 15 : 12) * k);
   for (let i = 0; i < stops.length; i++) {
     const s = stops[i];
     const [px, py] = toScreen(s.x, s.y);
@@ -123,7 +127,7 @@ function drawChain(
       const prev = stops[i - dir];
       const room = prev ? Math.hypot(...sub(toScreen(prev.x, prev.y), [px, py])) : Infinity;
       const len = Math.max(Math.min(arrowLen, room * 0.45), 4 * k);
-      arrow(ctx, px, py, dx * dir, dy * dir, len, col.text);
+      arrow(ctx, px, py, dx * dir, dy * dir, len, ink);
     }
     if (!showText) continue;
     const label = formatValue(s.value, c.format, signed);
@@ -139,15 +143,15 @@ function drawChain(
     const pad = 1.5 * k;
     ctx.fillStyle = col.halo;
     ctx.fillRect(flip ? -w - pad : -pad, shift - fontPx * 0.55, w + pad * 2, fontPx * 1.1);
-    ctx.fillStyle = col.text;
+    ctx.fillStyle = ink;
     ctx.fillText(label, 0, shift);
     ctx.restore();
   }
 
-  // 起点：寸法線の上の丸。吸着した点が離れていれば、そこから点線で結ぶ
+  // 起点：寸法線の上の丸。選んだ列で、吸着した点が離れていれば、そこから点線で結ぶ
   const [ox, oy] = toScreen(...onChain(c, t0));
   const [rx, ry] = toScreen(origin.x, origin.y);
-  if (Math.hypot(rx - ox, ry - oy) > 2 * k) {
+  if (active && Math.hypot(rx - ox, ry - oy) > 2 * k) {
     ctx.strokeStyle = col.text;
     ctx.lineWidth = 1.2 * k;
     ctx.setLineDash([5 * k, 4 * k]);
@@ -164,18 +168,18 @@ function drawChain(
     ctx.moveTo(rx - m, ry + m); ctx.lineTo(rx + m, ry - m);
     ctx.stroke();
   }
-  const r = originRadius(k) * (active ? 1.25 : 1);
+  const r = originRadius(k) * (active ? 1.25 : 0.75);
   ctx.fillStyle = col.halo;
   ctx.beginPath();
   ctx.arc(ox, oy, r, 0, Math.PI * 2);
   ctx.fill();
-  ctx.strokeStyle = col.text;
-  ctx.lineWidth = (active ? 2.6 : 2) * k;
+  ctx.strokeStyle = ink;
+  ctx.lineWidth = (active ? 2.6 : 1.4) * k;
   ctx.stroke();
   // 中に小さな点（基準点の印）
-  ctx.fillStyle = col.text;
+  ctx.fillStyle = ink;
   ctx.beginPath();
-  ctx.arc(ox, oy, 1.8 * k, 0, Math.PI * 2);
+  ctx.arc(ox, oy, (active ? 1.8 : 1.3) * k, 0, Math.PI * 2);
   ctx.fill();
 }
 
