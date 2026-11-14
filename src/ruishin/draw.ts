@@ -30,10 +30,21 @@ const COLORS: Record<Background, { text: string; ink: string; halo: string; acti
 // 図面の文字と同じ書体（render/textlayer.ts と合わせる）
 const FONT = '"Hiragino Sans", "Noto Sans JP", -apple-system, system-ui, sans-serif';
 
-/** 起点の丸の、画面での半径（デバイスピクセル）。当たり判定にも使う */
-export function originRadius(k: number): number {
-  return 7 * k;
+/**
+ * 起点の丸の、画面での半径（デバイスピクセル）。図面の字の大きさに合わせ、縮めて見ているときは小さくする。
+ * hpx は列の寸法値の、画面での高さ（デバイスピクセル）
+ */
+export function originRadius(k: number, hpx = Infinity): number {
+  return Math.min(Math.max(hpx * 0.45, 2.5 * k), 7 * k);
 }
+
+/** 列の寸法値の、画面での高さ（CSS ピクセル）。zoom は図面 1mm あたりのデバイスピクセル、k は devicePixelRatio */
+export function textHeightCss(c: Chain, zoom: number, k: number): number {
+  return (c.textHeight * zoom) / k;
+}
+
+/** この大きさ（寸法値の高さ、CSS ピクセル）より小さく見えている列は、選んだり起点を動かしたりしない（全体を見ているときなど） */
+export const MIN_OPERABLE_TEXT = 7;
 
 /**
  * 累進寸法を描く。toScreen は図面座標をデバイスピクセルへ、zoom は図面 1mm あたりのデバイスピクセル、k は devicePixelRatio
@@ -102,11 +113,15 @@ function drawChain(
     flip = true;
   }
 
-  // 字の大きさは元の寸法値に合わせ、読める大きさに収める。小さすぎる（縮小しすぎ）ときは値を書かない
+  // 字の大きさは元の寸法値と同じにする（大きく拡大したときだけ上限で止める）。
+  // 図面の文字と同じく、小さすぎて読めない（縮めて見ている）ときは値を書かない
   const hpx = c.textHeight * zoom;
-  const showText = hpx >= 3.5 * k;
-  const fontPx = Math.min(Math.max(hpx, 10 * k), 24 * k);
+  const showText = hpx >= 6;
+  const fontPx = Math.min(hpx, 24 * k);
   const gap = Math.max(fontPx * 0.35, 3 * k);
+
+  // 字が読めないほど縮めて見ているときは、図面の文字と同じく何も描かない（選んだ列は寸法線の強調だけ残る）
+  if (!showText) return;
 
   ctx.font = `${active ? 700 : 400} ${fontPx}px ${FONT}`;
   ctx.textBaseline = 'middle';
@@ -116,7 +131,8 @@ function drawChain(
 
   // 列の向きの、画面での単位ベクトル（画面は y が下向き）
   const dx = c.ux, dy = -c.uy;
-  const arrowLen = Math.min(Math.max(fontPx * 0.7, 8 * k), (active ? 15 : 12) * k);
+  // 矢印も図面の字に合わせた大きさにし、縮めて見ているときは小さくする
+  const arrowLen = Math.min(Math.max(hpx * 0.7, 2.5 * k), (active ? 15 : 12) * k);
   for (let i = 0; i < stops.length; i++) {
     const s = stops[i];
     const [px, py] = toScreen(s.x, s.y);
@@ -126,7 +142,7 @@ function drawChain(
       // 起点側の隣の点（または起点）との間隔に収まる長さにする
       const prev = stops[i - dir];
       const room = prev ? Math.hypot(...sub(toScreen(prev.x, prev.y), [px, py])) : Infinity;
-      const len = Math.max(Math.min(arrowLen, room * 0.45), 4 * k);
+      const len = Math.max(Math.min(arrowLen, room * 0.45), 2 * k);
       arrow(ctx, px, py, dx * dir, dy * dir, len, ink);
     }
     // 起点には値（0）を書かない。丸だけで起点と分かる
@@ -167,18 +183,18 @@ function drawChain(
     ctx.moveTo(rx - m, ry + m); ctx.lineTo(rx + m, ry - m);
     ctx.stroke();
   }
-  const r = originRadius(k) * (active ? 1.25 : 0.75);
+  const r = originRadius(k, hpx) * (active ? 1.25 : 0.75);
   ctx.fillStyle = col.halo;
   ctx.beginPath();
   ctx.arc(ox, oy, r, 0, Math.PI * 2);
   ctx.fill();
   ctx.strokeStyle = ink;
-  ctx.lineWidth = (active ? 2.6 : 1.4) * k;
+  ctx.lineWidth = Math.min((active ? 2.6 : 1.4) * k, r * 0.4);
   ctx.stroke();
   // 中に小さな点（基準点の印）
   ctx.fillStyle = ink;
   ctx.beginPath();
-  ctx.arc(ox, oy, (active ? 1.8 : 1.3) * k, 0, Math.PI * 2);
+  ctx.arc(ox, oy, Math.min((active ? 1.8 : 1.3) * k, r * 0.3), 0, Math.PI * 2);
   ctx.fill();
 }
 

@@ -90,6 +90,26 @@ const values = () => page.evaluate(async () => {
   await page.screenshot({ path: path.join(outDir, 'ruishin-1-open.png') });
 }
 
+// ---------- 1b. 縮めて見ているときは、列を選んだり起点を動かしたりしない ----------
+{
+  const before = await page.evaluate(() => ({ zoom: window.__jww.view.zoom, cx: window.__jww.view.cx, cy: window.__jww.view.cy }));
+  await page.evaluate(() => { const a = window.__jww; a.view.zoom *= 0.3; a.view.cx = 40; a.view.cy = 30; a.requestDraw(true); });
+  await page.waitForTimeout(300);
+  const b0 = await page.evaluate(() => window.__jww.chains.filter((c) => c.uy === 0).sort((p, q) => p.offset - q.offset)[0]);
+  const o0 = await page.evaluate((id) => window.__jww.origins.get(id), b0.id);
+  const s = await toScreen(30, b0.offset);
+  await tap(s.x, s.y);
+  const from = await toScreen(o0.x, b0.offset);
+  const to = await toScreen(45.5, 0);
+  await drag(from, to);
+  const after = await page.evaluate((id) => ({ active: window.__jww.activeChain, o: window.__jww.origins.get(id) }), b0.id);
+  check('縮めて見ているときは列を選ばず、起点も動かない',
+    after.active === -1 && after.o.x === o0.x && after.o.y === o0.y, { after, o0 });
+  await page.screenshot({ path: path.join(outDir, 'ruishin-0-small.png') });
+  await page.evaluate((v) => { const a = window.__jww; Object.assign(a.view, v); a.requestDraw(true); }, before);
+  await page.waitForTimeout(300);
+}
+
 // 下の列の値が見える大きさに寄せ、下の列を画面の上から 4 割ほどの所（パネルに隠れない所）に置く
 await page.evaluate(() => {
   const a = window.__jww;

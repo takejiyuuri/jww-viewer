@@ -26,7 +26,7 @@ import { drawingsInZip, isZipHead, type ZipEntry } from './jww/zip.ts';
 import { DXF_SCALES, DXF_UNITS } from './dxf/units.ts';
 import { extractChains } from './ruishin/extract.ts';
 import { along, defaultOrigin, onChain, parallel, type Chain, type Origin } from './ruishin/ordinate.ts';
-import type { OrdinateLayer } from './ruishin/draw.ts';
+import { MIN_OPERABLE_TEXT, textHeightCss, type OrdinateLayer } from './ruishin/draw.ts';
 
 /** 吸着先を探す半径（CSS ピクセル） */
 const SNAP_RADIUS = 22;
@@ -1300,7 +1300,8 @@ class App {
         }
         // 列を選んでいれば、長押しでその列の起点を指の所に置く
         const active = this.activeChain;
-        if (active >= 0) {
+        const ac = active >= 0 ? this.chainById(active) : undefined;
+        if (ac && this.operable(ac)) {
           this.holdTimer = window.setTimeout(() => {
             this.originDrag = active;
             this.startHold(e.clientX, e.clientY);
@@ -1446,6 +1447,7 @@ class App {
       if (this.tool === 'ruishin') {
         this.activeChain = this.pickChain(e.clientX, e.clientY);
         if (this.activeChain >= 0) tapFeedback();
+        else if (this.pickChain(e.clientX, e.clientY, true) >= 0) this.hint('拡大すると、列を選んだり起点を動かしたりできます');
         this.updateRuishinPanel();
       } else if (this.tool === 'inspect') {
         this.select(this.pickAt(e.clientX, e.clientY));
@@ -1706,11 +1708,17 @@ class App {
   }
 
   /** 指の下にある起点の丸（または起点を吸着させた点）の列。無ければ -1 */
+  /** 列を選んだり起点を動かしたりできる大きさで見えているか（全体を見ているときなど、小さすぎれば拡大してから） */
+  private operable(c: Chain): boolean {
+    return textHeightCss(c, this.view.zoom, this.dpr) >= MIN_OPERABLE_TEXT;
+  }
+
   private hitOrigin(cssX: number, cssY: number): number {
     if (!this.ruishinOn) return -1;
     let best = -1;
     let bestD = 26;
     for (const c of this.chains) {
+      if (!this.operable(c)) continue;
       const o = this.origins.get(c.id);
       if (!o) continue;
       const [x1, y1] = this.toCss(...onChain(c, along(c, o.x, o.y)));
@@ -1726,14 +1734,18 @@ class App {
     return best;
   }
 
-  /** タップした所の列。寸法線の近くか、値を書いている側の帯の中。無ければ -1 */
-  private pickChain(cssX: number, cssY: number): number {
+  /**
+   * タップした所の列。寸法線の近くか、値を書いている側の帯の中。無ければ -1。
+   * 小さく見えている列は選ばない（anySize のときは大きさを問わない）
+   */
+  private pickChain(cssX: number, cssY: number, anySize = false): number {
     if (!this.ruishinOn) return -1;
     const w = this.toWorld(cssX, cssY);
     const px = this.worldPerCssPx();
     let best = -1;
     let bestD = Infinity;
     for (const c of this.chains) {
+      if (!anySize && !this.operable(c)) continue;
       const o = this.origins.get(c.id);
       const t0 = o ? along(c, o.x, o.y) : c.stops[0];
       const lo = Math.min(c.stops[0], t0) - 12 * px;
