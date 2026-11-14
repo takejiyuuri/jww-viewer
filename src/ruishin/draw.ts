@@ -87,19 +87,32 @@ interface Label {
   /** 引出線の向き（値を伸ばす向き）の、画面での単位ベクトル */
   ox: number;
   oy: number;
+  /** 寸法点 */
+  px: number;
+  py: number;
+  /** 列の向き（起点からの値が増える向き）の、画面での単位ベクトル */
+  dx: number;
+  dy: number;
   angle: number;
   flip: boolean;
   /** 字の幅 */
   w: number;
-  /** 2 段目に逃がすときに引出線の向きへずらす長さ（列でいちばん長い値の幅＋すき間） */
-  tier: number;
+  /** 列の id（同じ列の値の並び順を崩さないため） */
+  chain: number;
+  /** 寸法点から、列の向きに値の中心をずらしたい量（同じ列の値どうしが重ならないよう並べた結果） */
+  pref: number;
+  /** 詰まった所の値（同じ列のほかの値と並べ直した）。かたまりごとそろえて浮かせ、細い線で結ぶ */
+  crowded: boolean;
 }
 
 interface Box { x0: number; y0: number; x1: number; y1: number }
 
 /**
- * 値を、ほかの値と重ならない所に書く。選んでいる列の値を先に置き、そのあとは列の順に置く。
- * 置き場所の候補は、引出線の脇（片側→反対側）、引出線の向きに 1 段ずらした所（片側→反対側）の順。
+ * 値を、ほかの値と重ならない所に書く。選んでいる列の値を先に置き、そのあとは列の順（列の中は寸法点の順）に置く。
+ * 値は寸法点のそばから離さず、寸法線の向き（縦の列なら縦、横の列なら横）にだけずらす。並び順は寸法点の順のまま。
+ * まず同じ列の中で、詰まった所の値を寸法点の並びの中ほどを軸に左右（上下）へ広げる（spreadChain）。
+ * ほかの列の値とぶつかるときは、そこから寸法線の向きに少しずつずらしてみる。
+ * 引出線から離れた値は、寸法点のそばから細い線で結んで、どの点の値か分かるようにする。
  * どこに置いても重なる値は書かない（拡大すると出てくる。列を選ぶと、その列の値は全部出る）
  */
 function drawLabels(ctx: CanvasRenderingContext2D, k: number, col: (typeof COLORS)[Background], labels: Label[]): void {
@@ -123,22 +136,49 @@ function drawLabels(ctx: CanvasRenderingContext2D, k: number, col: (typeof COLOR
   };
   const pad = 1.5 * k;
   const margin = 1 * k;
+  const thick = (f: number): number => labelThickness(f, k);
+  // 列ごとの、最後に置いた値の中心（列の向きの位置、画面）
+  const last = new Map<number, number>();
 
   ctx.textBaseline = 'middle';
   for (const i of order) {
     const l = labels[i];
     const f = l.fontPx;
-    // 候補：引出線の向きへのずれ（段）と、引出線をはさんだ脇へのずれ
-    const cands: [number, number][] = [[0, -0.62 * f], [0, 0.62 * f], [l.tier, -0.62 * f], [l.tier, 0.62 * f]];
-    let chosen: { tx: number; ty: number; shift: number; box: Box } | null = null;
-    for (const [o, shift] of cands) {
-      const tx = l.x + l.ox * o, ty = l.y + l.oy * o;
+    // 字の縦の向き（回したあとの y）が、画面で列の向きと同じか逆か
+    const sign = -Math.sin(l.angle) * l.dx + Math.cos(l.angle) * l.dy >= 0 ? 1 : -1;
+    // 寸法点の、列の向きの位置（画面）。同じ列で前に置いた値より先にしか置かない（並び順を崩さない）
+    const t = l.px * l.dx + l.py * l.dy;
+    const prev = last.get(l.chain);
+    const lowest = prev === undefined ? -Infinity : prev + thick(f) - t;
+    // 候補：同じ列の中で並べた位置 → そこから字の半分ずつ前後へ。ずれの小さい順
+    const cands: number[] = [];
+    for (let j = 0; j <= 8; j++) for (const dir of j ? [1, -1] : [0]) cands.push(l.pref + dir * j * 0.5 * f);
+    cands.sort((a, b) => Math.abs(a - l.pref) - Math.abs(b - l.pref) || b - a);
+    let chosen: { shift: number; box: Box; tx: number; ty: number; moved: boolean } | null = null;
+    for (const a of cands) {
+      if (a < lowest - 1e-6) continue;
+      const shift = a * sign;
+      // 引出線の脇から離した値は、引出線の向きに少し浮かせ、寸法点のそばから斜めの細い線で結べるだけの間をとる
+      const moved = l.crowded || Math.abs(shift) > 0.72 * f;
+      const lift = moved ? 0.9 * f : 0;
+      const tx = l.x + l.ox * lift, ty = l.y + l.oy * lift;
       const box = boxOf(tx, ty, l.angle, l.flip ? -l.w - pad : -pad, l.flip ? pad : l.w + pad, shift - f * 0.55, shift + f * 0.55, margin);
-      if (!hits(box)) { chosen = { tx, ty, shift, box }; break; }
-      if (l.active && !chosen) chosen = { tx, ty, shift, box };
+      if (!hits(box)) { chosen = { shift, box, tx, ty, moved }; break; }
+      if (l.active && !chosen) chosen = { shift, box, tx, ty, moved };
     }
     if (!chosen) continue;
     add(chosen.box);
+    last.set(l.chain, t + chosen.shift * sign);
+    // 引出線から離した値は、引出線の上（寸法点のそば）から値の根もとまで細い線で結ぶ
+    if (chosen.moved) {
+      const a = chosen.shift * sign; // 列の向きのずれ
+      ctx.strokeStyle = l.ink;
+      ctx.lineWidth = 0.9 * k;
+      ctx.beginPath();
+      ctx.moveTo(l.x, l.y);
+      ctx.lineTo(chosen.tx + l.dx * a, chosen.ty + l.dy * a);
+      ctx.stroke();
+    }
     ctx.save();
     ctx.translate(chosen.tx, chosen.ty);
     ctx.rotate(l.angle);
@@ -151,6 +191,36 @@ function drawLabels(ctx: CanvasRenderingContext2D, k: number, col: (typeof COLOR
     ctx.fillText(l.text, 0, chosen.shift);
     ctx.restore();
   }
+}
+
+/** 値ひとつが列の向きに占める幅（字の高さ＋すき間）。この間隔より詰まった値は並べ直す */
+function labelThickness(f: number, k: number): number {
+  return f * 1.1 + 2 * k;
+}
+
+/**
+ * 同じ列の値を、寸法点の順のまま重ならないように並べる。
+ * 値はふだん引出線の脇（列の向きに base だけずらした所）に書く。詰まった所はひとかたまりにして、
+ * かたまりの中ほどが寸法点の並びの中ほどに来るように、等間隔に広げる（なるべく寸法点の近くに残す）。
+ * ts は寸法点の、列の向きの位置（昇順）。返すのは各値の中心を寸法点からずらす量と、かたまりに入ったかどうか
+ */
+function spreadChain(ts: number[], base: number, gap: number): { shift: number; crowded: boolean }[] {
+  // 中心 c_i は c_i ≥ c_{i-1} + gap。c_i - i·gap が昇順になるよう、ずれの 2 乗和が最小の並べ方（隣り合うかたまりを順に合わせる）
+  const want = ts.map((t, i) => t + base - i * gap);
+  const blocks: { sum: number; n: number }[] = [];
+  for (const w of want) {
+    blocks.push({ sum: w, n: 1 });
+    while (blocks.length > 1) {
+      const b = blocks[blocks.length - 1], a = blocks[blocks.length - 2];
+      if (a.sum / a.n <= b.sum / b.n) break;
+      a.sum += b.sum; a.n += b.n;
+      blocks.pop();
+    }
+  }
+  const out: { shift: number; crowded: boolean }[] = [];
+  let i = 0;
+  for (const b of blocks) for (let j = 0; j < b.n; j++, i++) out.push({ shift: b.sum / b.n + i * gap - ts[i], crowded: b.n > 1 });
+  return out;
 }
 
 /** (tx, ty) に置いて angle 回した、x0..x1 × y0..y1 の枠を囲む、画面の向きの四角 */
@@ -222,7 +292,7 @@ function drawChain(
   ctx.font = font;
   // 画面の外（の、さらに 1 画面ぶん外）の値は置かない。重なりを調べる数を抑える
   const W = ctx.canvas.width, H = ctx.canvas.height;
-  const chainLabels: Label[] = [];
+  const mine: Label[] = [];
 
   const t0 = along(c, origin.x, origin.y);
 
@@ -247,16 +317,18 @@ function drawChain(
     if (px < -W || px > 2 * W || py < -H || py > 2 * H) continue;
     // 値は引出線の真上ではなく、引出線の脇に書く（置き場所は drawLabels で決める）
     const text = formatValue(s.value, c.format, signed);
-    chainLabels.push({
+    mine.push({
       text, font, fontPx, ink, active,
-      x: px + sx * gap, y: py + sy * gap, ox: sx, oy: sy, angle, flip,
-      w: ctx.measureText(text).width, tier: 0,
+      x: px + sx * gap, y: py + sy * gap, ox: sx, oy: sy, px, py, dx, dy, angle, flip,
+      w: ctx.measureText(text).width, chain: c.id, pref: 0, crowded: false,
     });
   }
-  const tier = Math.max(0, ...chainLabels.map((l) => l.w)) + gap * 2;
-  for (const l of chainLabels) {
-    l.tier = tier;
-    labels.push(l);
+  // 同じ列の中で、詰まった値を寸法点の順のまま広げておく。
+  // ふだんの置き場所は引出線の脇（字の縦の向きで -0.62 字ぶん）。それを列の向きのずれに直す
+  if (mine.length) {
+    const sign = -Math.sin(angle) * dx + Math.cos(angle) * dy >= 0 ? 1 : -1;
+    const pref = spreadChain(mine.map((l) => l.px * dx + l.py * dy), -0.62 * fontPx * sign, labelThickness(fontPx, k));
+    mine.forEach((l, i) => { l.pref = pref[i].shift; l.crowded = pref[i].crowded; labels.push(l); });
   }
 
   // 起点：寸法線の上の丸。選んだ列で、吸着した点が離れていれば、そこから点線で結ぶ
