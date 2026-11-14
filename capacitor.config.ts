@@ -1,14 +1,14 @@
 import type { CapacitorConfig } from '@capacitor/cli';
 
 /**
- * iOS アプリ（JWWミテハカール）の設定。
+ * iOS アプリ（JWWルイシン・仮の名前）の設定。
  * Web 版の本体（npm run build の dist）をそのままアプリに同梱し、端末の中から読み込む。
  * 公開中のサイトを読み込む server.url は使わない（電波がなくても動き、審査でも単なるサイトの枠と見なされないように）。
  */
 const config: CapacitorConfig = {
   // App Store Connect に登録する Bundle ID と同じにする（最初にアップロードしたあとは変えられない）
-  appId: 'io.github.takejiyuuri.mitehakaru',
-  appName: 'JWWミテハカール',
+  appId: 'io.github.takejiyuuri.ruishin',
+  appName: 'JWWルイシン',
   webDir: 'dist',
   backgroundColor: '#0b0c10',
   ios: {
