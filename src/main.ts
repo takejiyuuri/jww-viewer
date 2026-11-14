@@ -124,7 +124,7 @@ const OPEN_FORMATS = isNative || (import.meta.env.DEV && new URLSearchParams(loc
 /** 開く図面の拡張子（.jww・.dxf …） */
 const OPEN_EXTS = OPEN_FORMATS.map((f) => `.${f}`);
 /** アプリに入れた見本の図面の、表示する名前 */
-const SAMPLE_NAME = '見本（住戸の電気平面図）.jww';
+const SAMPLE_NAME = '見本（累進寸法の平面図）.jww';
 
 /** 解析をあきらめるまでの、画面が見えていた秒数 */
 const LOAD_TIMEOUT_S = 60;
@@ -674,9 +674,7 @@ class App {
   private async openSample(): Promise<void> {
     if (!this.confirmDiscard()) return;
     try {
-      const res = await fetch(`${import.meta.env.BASE_URL}sample.jww`);
-      if (!res.ok) throw new Error(String(res.status));
-      void this.load(await res.arrayBuffer(), SAMPLE_NAME, false);
+      void this.load(await fetchSample(), SAMPLE_NAME, false);
     } catch {
       this.fail('見本の図面を読み出せませんでした');
     }
@@ -3751,6 +3749,22 @@ function drawingFingerprint(info: LoadedInfo): string {
     info.groups.map((g) => [g.state, g.writeLayer, g.layers.map((l) => l.state)]),
     info.counts,
   ]);
+}
+
+/**
+ * 見本の図面を読み出す。.jww をそのまま置けない配信先（試用のページなど）には、
+ * 同じ中身を base64 の文字にした ruishin-sample.jww.txt を置くので、無ければそちらを読む
+ */
+async function fetchSample(): Promise<ArrayBuffer> {
+  const base = import.meta.env.BASE_URL;
+  const res = await fetch(`${base}ruishin-sample.jww`).catch(() => null);
+  if (res?.ok) return res.arrayBuffer();
+  const txt = await fetch(`${base}ruishin-sample.jww.txt`);
+  if (!txt.ok) throw new Error(String(txt.status));
+  const bin = atob((await txt.text()).trim());
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out.buffer;
 }
 
 function formatScale(scale: number): string {

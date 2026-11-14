@@ -636,7 +636,7 @@ let makeZip;
 // ---------- 13. iOS アプリの 1.1 は .jww だけを開く（DXF・SXF は Web 版だけ）----------
 // 開発用の ?native-formats でアプリと同じ制限にする（本番の build では効かない）
 {
-  const sample = fs.readFileSync(path.join(root, 'public', 'sample.jww'));
+  const sample = fs.readFileSync(path.join(root, 'public', 'ruishin-sample.jww'));
   const dxf = Buffer.from(unitlessDxf());
   const app = await (await browser.newContext({ ...devices['iPhone 14 Pro'], hasTouch: true })).newPage();
   app.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });

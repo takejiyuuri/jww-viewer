@@ -86,8 +86,8 @@ const args = process.argv.slice(2);
 const save = args[0] === '--save' ? args[1] : undefined;
 const check = args[0] === '--check' ? args[1] : undefined;
 
-// 公開の見本（public/sample.jww）と samples/ の .jww
-const files = [fileURLToPath(new URL('../public/sample.jww', import.meta.url)), ...listSamples()];
+// 公開の見本（public/ruishin-sample.jww）と samples/ の .jww
+const files = [fileURLToPath(new URL('../public/ruishin-sample.jww', import.meta.url)), ...listSamples()];
 const digests = files.map((f, i) => {
   const d = digestFile(f);
   console.log(`${i === 0 ? '見本' : `#${i}`} ${d}`);
