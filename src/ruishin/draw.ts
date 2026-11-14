@@ -129,12 +129,11 @@ function drawChain(
       const len = Math.max(Math.min(arrowLen, room * 0.45), 4 * k);
       arrow(ctx, px, py, dx * dir, dy * dir, len, ink);
     }
-    if (!showText) continue;
+    // 起点には値（0）を書かない。丸だけで起点と分かる
+    if (!showText || s.isOrigin) continue;
     const label = formatValue(s.value, c.format, signed);
     ctx.save();
-    // 起点の 0 は、丸に重ならないよう丸の外から書く
-    const g = s.isOrigin ? Math.max(gap, originRadius(k) * 1.25 + 2 * k) : gap;
-    ctx.translate(px + sx * g, py + sy * g);
+    ctx.translate(px + sx * gap, py + sy * gap);
     ctx.rotate(angle);
     // 下の線（引出線のはみ出しなど）が字を貫いて「-」に見えないよう、字の下を背景の色で塗る
     // 値は引出線の真上ではなく、引出線の脇（字の高さの 6 割ほど手前）に書く
