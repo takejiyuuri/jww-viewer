@@ -50,7 +50,7 @@ function textDirection(deg: number): number {
 }
 
 /** 寸法図形にしていない寸法（線と、その上の数字）を拾う */
-function looseDims(scene: Scene, used: Set<number>): DimInput[] {
+function looseDims(scene: Scene, used: Set<number>, vis: Visibility): DimInput[] {
   const { entities: e, linePos: pos, texts } = scene;
 
   // 数字の文字
@@ -59,6 +59,7 @@ function looseDims(scene: Scene, used: Set<number>): DimInput[] {
     if (used.has(ti)) continue;
     const t = texts[ti];
     if (e.kind[t.entity] !== KIND.text) continue;
+    if (vis.text && !vis.text(ti)) continue;
     const p = parseDimValue(plainText(t.text));
     if (!p || p.value <= 0) continue;
     const [cx, cy] = textCenter(t);
@@ -72,6 +73,7 @@ function looseDims(scene: Scene, used: Set<number>): DimInput[] {
   const keyOf = (th: number, off: number): string => `${Math.round(th / PARALLEL_TOL)}:${Math.floor(off / CELL)}`;
   for (let i = 0; i < e.count; i++) {
     if (e.kind[i] !== KIND.line || e.lineCount[i] !== 1) continue;
+    if (vis.entity && !vis.entity(i)) continue;
     const s = e.lineStart[i];
     const x1 = pos[s * 4], y1 = pos[s * 4 + 1], x2 = pos[s * 4 + 2], y2 = pos[s * 4 + 3];
     let th = Math.atan2(y2 - y1, x2 - x1);
@@ -145,19 +147,33 @@ function looseDims(scene: Scene, used: Set<number>): DimInput[] {
   return out;
 }
 
-export interface ExtractOptions {
+/** いま図面に見えているか（隠したレイヤ・色の図形と文字は拾わない）。省けばすべて見えているものとする */
+export interface Visibility {
+  /** 図形（scene.entities の添字） */
+  entity?: (i: number) => boolean;
+  /** 文字（scene.texts の添字） */
+  text?: (ti: number) => boolean;
+}
+
+export interface ExtractOptions extends Visibility {
   /** 寸法図形にしていない寸法（線と数字）も拾う */
   loose?: boolean;
   /** これより少ない寸法の列は返さない */
   minSpans?: number;
 }
 
-/** 図面の寸法を拾って列にまとめる */
+/**
+ * 図面の寸法を拾って列にまとめる。
+ * 図面に見えていない寸法（隠したレイヤや色の寸法線・寸法値）は使わない
+ * （見えない寸法が列に混ざったり、見えない所に累進の値が出たりしないように）
+ */
 export function extractChains(scene: Scene, opts: ExtractOptions = {}): Chain[] {
-  const dims = dimEntities(scene);
+  const all = dimEntities(scene);
+  const dims = all.filter((d) => (!opts.entity || opts.entity(d.entity)) && (d.textIndex < 0 || !opts.text || opts.text(d.textIndex)));
   if (opts.loose ?? true) {
-    const used = new Set(dims.map((d) => d.textIndex).filter((t) => t >= 0));
-    dims.push(...looseDims(scene, used));
+    // 隠した寸法図形の寸法値も、線と数字の寸法には使わない
+    const used = new Set(all.map((d) => d.textIndex).filter((t) => t >= 0));
+    dims.push(...looseDims(scene, used, opts));
   }
   return buildChains(dims, opts.minSpans ?? 2);
 }

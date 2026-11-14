@@ -271,6 +271,8 @@ class App {
   // ---- 累進寸法 ----
   /** 累進寸法に直した列（図面を開いたときに拾う） */
   private chains: Chain[] = [];
+  /** 列を作ったときの、見える色・レイヤ（変わったら作り直す）。null なら未作成 */
+  private chainKey: string | null = null;
   /** 列の id ごとの起点 */
   private origins = new Map<number, Origin>();
   /** 累進寸法で表示する（元の寸法値を隠して累進の値を描く）。切ると元の寸法のまま */
@@ -1678,16 +1680,43 @@ class App {
   // ---------- 累進寸法 ----------
 
   /** 図面の寸法を拾って列にまとめ、起点を列の最初の端に置く */
-  private loadChains(scene: Scene): void {
+  /** 新しい図面では列を作り直させる（見えているレイヤ・色が決まってから applyDisplay で作る） */
+  private loadChains(_scene: Scene): void {
+    this.chains = [];
+    this.origins = new Map();
+    this.chainKey = null;
+    this.activeChain = -1;
+    this.originDrag = -1;
+  }
+
+  /**
+   * 見えている寸法から列を作り直す。隠したレイヤ・色の寸法は使わない。
+   * レイヤや色の表示を切り替えたときも呼ぶ。同じ寸法線の上の列は、動かした起点と選んでいる列をそのまま引き継ぐ
+   */
+  private rebuildChains(scene: Scene): void {
+    const keyOf = (c: Chain): string => `${c.ux.toFixed(4)},${c.uy.toFixed(4)},${c.offset.toFixed(3)},${c.group}`;
+    const oldOrigins = new Map<string, Origin>();
+    for (const c of this.chains) {
+      const o = this.origins.get(c.id);
+      if (o && !oldOrigins.has(keyOf(c))) oldOrigins.set(keyOf(c), o);
+    }
+    const old = this.activeChain >= 0 ? this.chainById(this.activeChain) : undefined;
+    const activeKey = old ? keyOf(old) : null;
     try {
-      this.chains = extractChains(scene);
+      this.chains = extractChains(scene, {
+        entity: (i) => this.entityVisible(i),
+        text: (ti) => {
+          const t = scene.texts[ti];
+          return !!t && this.colorVisible[t.color] === 1 && this.layerMask[t.layer] === 1;
+        },
+      });
     } catch (err) {
       // 累進寸法に直せなくても、図面を見る・測るのは続けられる
       console.error(err);
       this.chains = [];
     }
-    this.origins = new Map(this.chains.map((c) => [c.id, defaultOrigin(c)]));
-    this.activeChain = -1;
+    this.origins = new Map(this.chains.map((c) => [c.id, oldOrigins.get(keyOf(c)) ?? defaultOrigin(c)]));
+    this.activeChain = activeKey ? this.chains.find((c) => keyOf(c) === activeKey)?.id ?? -1 : -1;
     this.originDrag = -1;
     this.applyRuishinTexts();
     this.updateRuishinPanel();
@@ -3520,6 +3549,11 @@ class App {
       this.renderer.setLayerVisibility(mask);
       this.textLayer.setLayerVisibility(mask);
       this.snapIndex?.setVisibleLayers(mask);
+      // 見えている寸法だけで累進の列を作る（見える色・レイヤが変わったら作り直す）
+      if (key !== this.chainKey) {
+        this.chainKey = key;
+        this.rebuildChains(scene);
+      }
 
       // 属性を見ていた図形が隠れたら、選択を外す
       if (this.selected >= 0 && !this.entityVisible(this.selected)) {

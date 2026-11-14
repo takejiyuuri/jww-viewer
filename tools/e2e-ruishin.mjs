@@ -184,6 +184,25 @@ const bottom = (await page.evaluate(() => {
   await page.click('#btn-ruishin-on');
 }
 
+// ---------- 7. 隠したレイヤの寸法は累進にしない ----------
+{
+  const r = await page.evaluate(() => {
+    const a = window.__jww;
+    const e = a.scene.entities;
+    const c0 = a.chains.filter((c) => c.uy === 0).sort((p, q) => p.offset - q.offset)[0];
+    const layer = e.layer[c0.spans[0].entity];
+    const before = a.chains.length;
+    a.layers.layer[layer] = false;
+    a.applyDisplay();
+    const hidden = { n: a.chains.length, leak: a.chains.some((c) => c.spans.some((s) => e.layer[s.entity] === layer)) };
+    a.layers.layer[layer] = true;
+    a.applyDisplay();
+    return { layer, before, hidden, back: a.chains.length };
+  });
+  check('隠したレイヤの寸法は累進にしない（表示に戻すと戻る）',
+    r.hidden.n < r.before && !r.hidden.leak && r.back === r.before, r);
+}
+
 check('コンソールにエラーがない', errors.length === 0, { errors });
 
 await browser.close();
