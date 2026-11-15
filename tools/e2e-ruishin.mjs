@@ -1,6 +1,7 @@
 // 累進寸法を画面で確かめる：見本の図面を開くと列が累進に直って元の寸法値が隠れる、列をタップして選べる、
-// 起点の丸をドラッグして通り芯の交点に吸着させると値が変わる、「寸法線に沿う」で寸法線の上だけを動く、
+// 起点の丸をドラッグして通り芯の交点に吸着させると値が変わる、「寸法線上のみ」で寸法線の上だけを動く、
 // 「同じ向きを連動」は無い（起点はその列だけ動く）、「累進表示」を切ると元に戻る。
+// 最初の画面：「図面を開く」「見本の図面を開く」がすぐ押せ、操作の説明は「使い方を見る」で開閉する。
 // 案内：列を選べない倍率では「拡大すると、寸法列を選べます」、戻すボタンの名前は「この列を戻す」「全列を戻す」。
 // 引数：出力先のフォルダ（スクリーンショット）。図面は public/ruishin-sample.jww（tools/ruishin-sample.mjs で作る）
 import { chromium, devices } from 'playwright';
@@ -36,6 +37,40 @@ const results = [];
 const check = (name, ok, info) => results.push({ name, ok, ...(info ?? {}) });
 
 await page.goto(srv.url, { waitUntil: 'networkidle' });
+
+// ---------- 0. 最初の画面：ファイルをすぐ開け、説明は「使い方を見る」で開閉する ----------
+{
+  await page.waitForFunction(() => !document.getElementById('welcome').classList.contains('hidden'), null, { timeout: 10000 });
+  const state = () => page.evaluate(() => {
+    const vis = (q) => { const e = document.querySelector(q); if (!e) return null; const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 ? { top: Math.round(r.top), bottom: Math.round(r.bottom), h: Math.round(r.height) } : null; };
+    const d = document.getElementById('welcome-howto');
+    return {
+      open: vis('#btn-open-2'), sample: vis('#btn-sample'), summary: vis('#welcome-howto summary'),
+      summaryText: [...d.querySelectorAll('summary span')].filter((e) => getComputedStyle(e).display !== 'none').map((e) => e.textContent).join(),
+      expanded: d.open, tipsShown: d.querySelector('.tips li').checkVisibility(),
+      tips: [...d.querySelectorAll('.tips li')].map((e) => e.textContent),
+      viewH: innerHeight,
+    };
+  });
+  const closed = await state();
+  check('最初の画面：「図面を開く」のすぐ下に「見本の図面を開く」、説明は閉じていて「使い方を見る」が出る',
+    closed.open && closed.sample && closed.sample.top >= closed.open.bottom && closed.sample.top - closed.open.bottom < 20
+    && !closed.expanded && !closed.tipsShown && closed.summaryText === '使い方を見る' && closed.summary.h >= 44
+    && closed.sample.bottom <= closed.viewH, closed);
+  await page.screenshot({ path: path.join(outDir, 'ruishin-w1-welcome.png') });
+  await page.click('#welcome-howto summary');
+  await page.waitForTimeout(200);
+  const opened = await state();
+  check('「使い方を見る」で説明が開き（前の説明はすべて残る）、「使い方を閉じる」になる',
+    opened.expanded && opened.tipsShown && opened.summaryText === '使い方を閉じる' && opened.tips.length === 6
+    && ['1 本指でスクロール', '「累進」では', '「計測」では', '「属性」では', '「レイヤ」で', '起点は動かせます'].every((k) => opened.tips.some((t) => t.includes(k))), opened);
+  await page.screenshot({ path: path.join(outDir, 'ruishin-w2-howto.png') });
+  await page.click('#welcome-howto summary');
+  await page.waitForTimeout(200);
+  const again = await state();
+  check('もう一度押すと説明が閉じる', !again.expanded && !again.tipsShown && again.summaryText === '使い方を見る', again);
+}
+
 await page.setInputFiles('#file', sample);
 await page.waitForFunction(() => document.getElementById('title')?.textContent?.endsWith('.jww'), null, { timeout: 60000 });
 await page.waitForTimeout(800);
@@ -167,15 +202,19 @@ const bottom = (await page.evaluate(() => {
   await page.screenshot({ path: path.join(outDir, 'ruishin-2-moved.png') });
 }
 
-// ---------- 4. 寸法線に沿う：寸法線の上だけを動き、通り芯との交点に吸着 ----------
+// ---------- 4. 寸法線上のみ：寸法線の上だけを動き、通り芯との交点に吸着 ----------
 {
+  const btn = await page.evaluate(() => { const b = document.getElementById('btn-ruishin-along'); return { text: b.textContent, label: b.getAttribute('aria-label'), pressed: b.getAttribute('aria-pressed') }; });
+  check('ボタンの名前は「寸法線上のみ」（読み上げの説明も同じ名前）', btn.text === '寸法線上のみ' && btn.label.startsWith('寸法線上のみ') && btn.pressed === 'false', btn);
   await page.click('#btn-ruishin-along');
+  const on = await page.evaluate(() => document.getElementById('btn-ruishin-along').getAttribute('aria-pressed'));
+  check('「寸法線上のみ」を押すと入になる', on === 'true', { on });
   const o0 = await page.evaluate((id) => window.__jww.origins.get(id), bottom.id);
   const from = await toScreen(o0.x, bottom.offset);
   const to = await toScreen(63.7 + 0.5, bottom.offset + 3);
   await drag(from, to);
   const o = await page.evaluate((id) => window.__jww.origins.get(id), bottom.id);
-  check('寸法線に沿って X4 の通り芯に吸着', Math.abs(o.x - 63.7) < 1e-3 && Math.abs(o.y - bottom.offset) < 1e-3, { o });
+  check('寸法線上のみで X4 の通り芯に吸着', Math.abs(o.x - 63.7) < 1e-3 && Math.abs(o.y - bottom.offset) < 1e-3, { o });
   await page.click('#btn-ruishin-along');
 }
 
@@ -259,6 +298,112 @@ const bottom = (await page.evaluate(() => {
   });
   check('隠したレイヤの寸法は累進にしない（表示に戻すと戻る）',
     r.hidden.n < r.before && !r.hidden.leak && r.back === r.before, r);
+}
+
+// ---------- 8. 3 つのボタンが iPhone の横幅に収まる（文字を小さくしすぎず、押しやすい高さ） ----------
+for (const [name, w, h] of [['iPhone 14 Pro', 393, 659], ['iPhone SE', 375, 553]]) {
+  await page.setViewportSize({ width: w, height: h });
+  await page.waitForTimeout(300);
+  for (const sel of [false, true]) {
+    if (sel) {
+      // 列を選んで、いちばん長い「この列を戻す」の状態でも確かめる
+      await page.evaluate((id) => { const a = window.__jww; a.activeChain = id; a.updateRuishinPanel(); }, bottom.id);
+    } else {
+      await page.evaluate(() => { const a = window.__jww; a.activeChain = -1; a.updateRuishinPanel(); });
+    }
+    const r = await page.evaluate(() => {
+      const panel = document.getElementById('ruishin-panel').getBoundingClientRect();
+      return [...document.querySelectorAll('#ruishin-actions .pill')].map((b) => {
+        const q = b.getBoundingClientRect();
+        return { text: b.textContent, fits: b.scrollWidth <= b.clientWidth, inside: q.left >= panel.left - 0.5 && q.right <= panel.right + 0.5,
+          h: Math.round(q.height), w: Math.round(q.width), font: parseFloat(getComputedStyle(b).fontSize) };
+      });
+    });
+    check(`${name}：3 つのボタン（${r.map((b) => b.text).join('・')}）が横幅に収まり、文字 12px 以上・高さ 40px 以上`,
+      r.length === 3 && r.every((b) => b.fits && b.inside && b.font >= 12 && b.h >= 40)
+      && r.map((b) => b.text).join() === `累進表示,寸法線上のみ,${sel ? 'この列を戻す' : '全列を戻す'}`, { r });
+  }
+  await page.screenshot({ path: path.join(outDir, `ruishin-8-buttons-${w}.png`) });
+}
+
+// ---------- 9. 回帰：パネルの開閉・計測・属性・レイヤ・表示・見本の図面 ----------
+await page.setViewportSize({ width: 393, height: 659 });
+await page.waitForTimeout(300);
+{
+  // 累進のパネルを見出しで縮めて戻す
+  const tapHead = () => page.evaluate(() => {
+    const h = document.querySelector('#ruishin-panel .panel-top');
+    const r = h.getBoundingClientRect();
+    const b = { pointerId: 7, pointerType: 'touch', isPrimary: true, bubbles: true, clientX: r.left + 30, clientY: r.top + r.height / 2 };
+    h.dispatchEvent(new PointerEvent('pointerdown', b));
+    h.dispatchEvent(new PointerEvent('pointerup', b));
+  });
+  const st = () => page.evaluate(() => ({ collapsed: document.getElementById('ruishin-panel').classList.contains('collapsed'),
+    actions: document.getElementById('btn-ruishin-on').checkVisibility() }));
+  await tapHead(); await page.waitForTimeout(400);
+  const c1 = await st();
+  await tapHead(); await page.waitForTimeout(400);
+  const c2 = await st();
+  check('累進のパネルを見出しで縮めて、戻せる', c1.collapsed && !c1.actions && !c2.collapsed && c2.actions, { c1, c2 });
+}
+{
+  // 計測：2 点を置くと長さが出る
+  await page.click('#btn-tool-measure');
+  await page.waitForTimeout(300);
+  const p1 = await toScreen(18.2, bottom.offset + 5);
+  const p2 = await toScreen(36.4, bottom.offset + 5);
+  await tap(p1.x, p1.y);
+  await tap(p2.x, p2.y);
+  const m = await page.evaluate(() => ({ n: window.__jww.points.length, value: document.getElementById('readout-value').textContent,
+    shown: !document.getElementById('readout').classList.contains('hidden') }));
+  check('計測：2 点を置くと距離が出る', m.shown && m.n === 2 && m.value !== '—' && /\d/.test(m.value), m);
+  await page.screenshot({ path: path.join(outDir, 'ruishin-9-measure.png') });
+}
+{
+  // 属性：線をタップすると属性が出る
+  await page.click('#btn-tool-inspect');
+  await page.waitForTimeout(300);
+  const p = await toScreen(18.2, bottom.offset + 5);
+  await tap(p.x, p.y);
+  const r = await page.evaluate(() => ({ selected: window.__jww.selected, shown: !document.getElementById('inspect-panel').classList.contains('hidden') }));
+  check('属性：線をタップすると属性のパネルが出る', r.shown && r.selected >= 0, r);
+}
+{
+  // レイヤ：一覧を開いて閉じる。表示：背景を白にして黒に戻す
+  await page.click('#btn-layers');
+  await page.waitForTimeout(300);
+  const open = await page.evaluate(() => !document.getElementById('layer-panel').classList.contains('hidden'));
+  await page.click('#btn-layer-close');
+  await page.waitForTimeout(300);
+  const closed = await page.evaluate(() => document.getElementById('layer-panel').classList.contains('hidden'));
+  check('レイヤ：一覧を開いて閉じられる', open && closed, { open, closed });
+  await page.click('#btn-display');
+  await page.waitForTimeout(300);
+  await page.click('#seg-bg button[data-value="light"]');
+  const light = await page.evaluate(() => window.__jww.display.background);
+  await page.click('#seg-bg button[data-value="dark"]');
+  const dark = await page.evaluate(() => window.__jww.display.background);
+  await page.click('#btn-display-close');
+  check('表示：背景を白・黒に切り替えられる', light === 'light' && dark === 'dark', { light, dark });
+  await page.click('#btn-tool-ruishin');
+  await page.waitForTimeout(300);
+  const back = await page.evaluate(() => ({ tool: window.__jww.tool, shown: !document.getElementById('ruishin-panel').classList.contains('hidden') }));
+  check('累進に戻すと累進のパネルが出る', back.tool === 'ruishin' && back.shown, back);
+}
+{
+  // 最初の画面の「見本の図面を開く」で見本の図面が開く（前の図面を覚えていない、新しい環境で）
+  const ctx2 = await browser.newContext({ ...devices['iPhone 14 Pro'], hasTouch: true });
+  const p2 = await ctx2.newPage();
+  p2.on('pageerror', (e) => errors.push(`pageerror(2): ${e.message}`));
+  await p2.goto(srv.url, { waitUntil: 'networkidle' });
+  await p2.waitForFunction(() => !document.getElementById('welcome').classList.contains('hidden'), null, { timeout: 10000 }).catch(() => {});
+  await p2.click('#btn-sample');
+  await p2.waitForFunction(() => document.getElementById('title')?.textContent?.endsWith('.jww'), null, { timeout: 60000 });
+  await p2.waitForTimeout(500);
+  const r = await p2.evaluate(() => ({ title: document.getElementById('title').textContent, chains: window.__jww.chains.length,
+    welcome: !document.getElementById('welcome').classList.contains('hidden') }));
+  check('「見本の図面を開く」で見本の図面が開き、3 列を累進にする', r.chains === 3 && !r.welcome, r);
+  await ctx2.close();
 }
 
 check('コンソールにエラーがない', errors.length === 0, { errors });

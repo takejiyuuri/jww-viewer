@@ -1815,7 +1815,7 @@ class App {
   /**
    * 起点の吸着先。ふつうは端点・交点・線上のどこにでも吸着し、列の向きに投影して使う
    * （上のほうの通り芯の交点から、真下・真横の寸法線の位置を起点にできる）。
-   * 「寸法線に沿う」のときは寸法線を延ばした線の上だけを動き、その線が図形と交わる所に吸着する
+   * 「寸法線上のみ」のときは寸法線を延ばした線の上だけを動き、その線が図形と交わる所に吸着する
    */
   private snapOrigin(cssX: number, cssY: number, id: number): SnapResult | null {
     const c = this.chainById(id);
@@ -1887,8 +1887,8 @@ class App {
       this.alongChain = !this.alongChain;
       toggle('btn-ruishin-along', this.alongChain);
       this.hint(this.alongChain
-        ? '起点は寸法線に沿って動き、図形と交わる所に吸着します'
-        : '起点は端点・交点・線上に吸着し、真横・真下の位置を使います');
+        ? '寸法線上のみ：起点は寸法線の上だけを動き、図形と交わる所に吸着します'
+        : '寸法線上のみを切りました。起点は端点・交点・線上に吸着し、真横・真下の位置を使います');
     });
     el('btn-ruishin-undo').addEventListener('click', () => this.undoOrigin());
     el('btn-ruishin-reset').addEventListener('click', () => {

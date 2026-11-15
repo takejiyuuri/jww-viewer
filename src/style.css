@@ -812,6 +812,56 @@ body[data-bg="light"] #ruishin-panel {
   margin-bottom: 7px;
 }
 
+/* 最初の画面の「使い方を見る」。押すと説明を開き、もう一度押すと閉じる */
+.howto {
+  margin-top: 14px;
+}
+
+.howto summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 44px;
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.howto summary::-webkit-details-marker {
+  display: none;
+}
+
+/* 開閉が分かるよう、右に向きの変わる印を付ける */
+.howto summary::after {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: translateY(-2px) rotate(45deg);
+}
+
+.howto[open] summary::after {
+  transform: translateY(2px) rotate(-135deg);
+}
+
+.howto .howto-hide,
+.howto[open] .howto-show {
+  display: none;
+}
+
+.howto[open] .howto-hide {
+  display: inline;
+}
+
+.howto .tips {
+  margin-top: 6px;
+}
+
 /* 図面情報テーブル */
 .kv {
   display: grid;
@@ -1876,4 +1926,6 @@ body[data-bg="light"] #inspect-actions {
   font-size: 12.5px;
   padding: 8px 2px;
   white-space: nowrap;
+  /* 指で押しやすい高さを取る（3 つのボタンは横に等分して並べる） */
+  min-height: 40px;
 }

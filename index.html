@@ -162,7 +162,7 @@
   <div id="ruishin-body" class="inspect-body ruishin-body"></div>
   <div id="ruishin-actions" class="panel-actions ruishin-actions">
     <button id="btn-ruishin-on" class="pill on" aria-pressed="true" aria-label="累進寸法で表示する">累進表示</button>
-    <button id="btn-ruishin-along" class="pill" aria-pressed="false" aria-label="起点を寸法線に沿って動かす">線に沿う</button>
+    <button id="btn-ruishin-along" class="pill" aria-pressed="false" aria-label="寸法線上のみ：起点を寸法線の上だけで動かす">寸法線上のみ</button>
     <button id="btn-ruishin-reset" class="pill">全列を戻す</button>
   </div>
 </section>
@@ -292,17 +292,22 @@
 <div id="welcome" class="overlay-panel sheet hidden">
   <div class="sheet-body welcome-body">
     <h1>JWWルイシン</h1>
-    <p>Jw_cad の図面（.jww）を開くと、寸法を累進寸法に直して表示します。起点は動かせます。</p>
+    <p>Jw_cad の図面（.jww）を開くと、寸法を累進寸法に直して表示します。</p>
     <button id="btn-open-2" class="primary">図面を開く</button>
     <!-- 手元に図面がなくても試せるように、アプリに入れた見本の図面を開く -->
     <button id="btn-sample" class="sample-btn">見本の図面を開く</button>
-    <ul class="tips">
-      <li>1 本指でスクロール、2 本指で拡大縮小</li>
-      <li>「累進」では寸法の列をタップして選び、起点の丸を指で動かします。交点や線の上に吸い付きます</li>
-      <li>「計測」ではタップで計測点を置きます。長押しで拡大鏡、置いた点はつまんで動かせます</li>
-      <li>「属性」では図形をタップすると、レイヤ・線色・線種・長さが分かります</li>
-      <li>「レイヤ」でレイヤごとに表示を切り替えられます。最初は Jw_cad と同じ表示です</li>
-    </ul>
+    <!-- 説明を読まずに図面を開けるよう、操作の説明は「使い方を見る」で開いたときだけ出す（もう一度押すと閉じる） -->
+    <details id="welcome-howto" class="howto">
+      <summary><span class="howto-show">使い方を見る</span><span class="howto-hide">使い方を閉じる</span></summary>
+      <ul class="tips">
+        <li>開いた図面の寸法は、起点からの累進寸法に直して表示します。起点は動かせます</li>
+        <li>1 本指でスクロール、2 本指で拡大縮小</li>
+        <li>「累進」では寸法の列をタップして選び、起点の丸を指で動かします。交点や線の上に吸い付きます</li>
+        <li>「計測」ではタップで計測点を置きます。長押しで拡大鏡、置いた点はつまんで動かせます</li>
+        <li>「属性」では図形をタップすると、レイヤ・線色・線種・長さが分かります</li>
+        <li>「レイヤ」でレイヤごとに表示を切り替えられます。最初は Jw_cad と同じ表示です</li>
+      </ul>
+    </details>
     <!-- 図面情報（上のバーの i）にも同じ案内を出す。iOS アプリでは Safari で開く -->
     <p class="about-links">
       <a href="https://takejiyuuri.github.io/mitehakaru-support/privacy.html" target="_blank" rel="noopener">プライバシーポリシー</a>
