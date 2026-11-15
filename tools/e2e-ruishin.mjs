@@ -1,6 +1,7 @@
 // 累進寸法を画面で確かめる：見本の図面を開くと列が累進に直って元の寸法値が隠れる、列をタップして選べる、
 // 起点の丸をドラッグして通り芯の交点に吸着させると値が変わる、「寸法線に沿う」で寸法線の上だけを動く、
-// 「同じ向きを連動」は無い（起点はその列だけ動く）、「累進で表示」を切ると元に戻る。
+// 「同じ向きを連動」は無い（起点はその列だけ動く）、「累進表示」を切ると元に戻る。
+// 案内：列を選べない倍率では「拡大すると、寸法列を選べます」、戻すボタンの名前は「この列を戻す」「全列を戻す」。
 // 引数：出力先のフォルダ（スクリーンショット）。図面は public/ruishin-sample.jww（tools/ruishin-sample.mjs で作る）
 import { chromium, devices } from 'playwright';
 import path from 'node:path';
@@ -20,6 +21,16 @@ const page = await context.newPage();
 const errors = [];
 page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
 page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
+
+const ZOOM_HINT = '拡大すると、寸法列を選べます';
+const PICK_HINT = '列をタップして選び、起点の丸をドラッグして動かします';
+/** 累進のパネルの案内文と、戻すボタンの名前 */
+const panelText = () => page.evaluate(() => ({
+  note: document.querySelector('#ruishin-body .note')?.textContent ?? '',
+  reset: document.getElementById('btn-ruishin-reset').textContent,
+  resetDisabled: document.getElementById('btn-ruishin-reset').disabled,
+  active: window.__jww.activeChain,
+}));
 
 const results = [];
 const check = (name, ok, info) => results.push({ name, ok, ...(info ?? {}) });
@@ -88,6 +99,9 @@ const values = () => page.evaluate(async () => {
   const hiddenCount = await page.evaluate(() => window.__jww.textLayer.hidden?.size ?? 0);
   check('元の寸法値（14 個）を隠す', hiddenCount === 14, { hiddenCount });
   await page.screenshot({ path: path.join(outDir, 'ruishin-1-open.png') });
+  const t = await panelText();
+  check('開いた直後（列を選べない倍率）は「拡大すると、寸法列を選べます」と案内し、ボタンは「全列を戻す」',
+    t.note === ZOOM_HINT && t.reset === '全列を戻す', t);
 }
 
 // ---------- 1b. 縮めて見ているときは、列を選んだり起点を動かしたりしない ----------
@@ -119,6 +133,11 @@ await page.evaluate(() => {
   a.requestDraw(true);
 });
 await page.waitForTimeout(400);
+{
+  const t = await panelText();
+  check('拡大すると、列の選択と起点のドラッグを案内する', t.note === PICK_HINT && t.reset === '全列を戻す', t);
+  await page.screenshot({ path: path.join(outDir, 'ruishin-1b-zoomed.png') });
+}
 
 const bottom = (await page.evaluate(() => {
   const a = window.__jww;
@@ -132,6 +151,8 @@ const bottom = (await page.evaluate(() => {
   const active = await page.evaluate(() => window.__jww.activeChain);
   const title = await page.evaluate(() => document.getElementById('ruishin-title').textContent);
   check('寸法線の近くをタップすると列を選ぶ', active === bottom.id && title === '横の列', { active, title });
+  const t = await panelText();
+  check('列を選んでいるときのボタンは「この列を戻す」', t.reset === 'この列を戻す', t);
 }
 
 // ---------- 3. 起点をドラッグして通り芯の交点（X3 = 4550, Y0）に吸着 ----------
@@ -177,20 +198,48 @@ const bottom = (await page.evaluate(() => {
   check('戻すボタンで 1 つ前の起点に戻る', back.x === o0.x && back.y === o0.y, { back, o0 });
 }
 
-// ---------- 6. 最初に戻す（戻すボタンで取り消せる）・累進で表示を切る ----------
+// ---------- 6. この列を戻す（戻すボタンで取り消せる）・累進表示を切る ----------
 {
   await page.click('#btn-ruishin-reset');
   const v = (await values()).find((c) => c.id === bottom.id);
   check('この列の起点を戻す', v.values[0] === 0, { v });
   await page.click('#btn-ruishin-undo');
   const undone = (await values()).find((c) => c.id === bottom.id);
-  check('「最初に戻す」も戻すボタンで取り消せる', undone.values[0] !== 0, { undone });
+  check('「この列を戻す」も戻すボタンで取り消せる', undone.values[0] !== 0, { undone });
   await page.click('#btn-ruishin-reset');
   await page.click('#btn-ruishin-on');
   const off = await page.evaluate(() => ({ on: window.__jww.ruishinOn, hidden: window.__jww.textLayer.hidden }));
   check('切ると元の寸法値に戻る', off.on === false && off.hidden === null, off);
+  const t = await panelText();
+  check('切ったときの案内は「「累進表示」をオンにすると戻せます」',
+    t.note === '元の寸法で表示しています。「累進表示」をオンにすると戻せます。', t);
   await page.screenshot({ path: path.join(outDir, 'ruishin-4-off.png') });
   await page.click('#btn-ruishin-on');
+  const t2 = await panelText();
+  check('オンに戻すと列の選択が外れ、ボタンは「全列を戻す」', t2.active === -1 && t2.reset === '全列を戻す' && !t2.resetDisabled, t2);
+  await page.screenshot({ path: path.join(outDir, 'ruishin-5-on-again.png') });
+}
+
+// ---------- 6b. 横の列：起点を 3640 の位置へ → 右端 4550、この列を戻す → 8190 ----------
+{
+  const s = await toScreen(30, bottom.offset);
+  await tap(s.x, s.y - 4);
+  const o0 = await page.evaluate((id) => window.__jww.origins.get(id), bottom.id);
+  const from = await toScreen(o0.x, bottom.offset);
+  const to = await toScreen(36.4, bottom.offset);
+  await drag(from, to);
+  const moved = (await values()).find((c) => c.id === bottom.id);
+  check('起点を 3640 の位置に移すと右端が 4550', moved.values.at(-1) === 4550 && moved.values.join() === '-3640,-1820,0,910,2730,4550', { moved });
+  await page.screenshot({ path: path.join(outDir, 'ruishin-6-at3640.png') });
+  const others = (await values()).filter((c) => c.id !== bottom.id);
+  const t = await panelText();
+  await page.click('#btn-ruishin-reset');
+  const back = (await values()).find((c) => c.id === bottom.id);
+  const othersAfter = (await values()).filter((c) => c.id !== bottom.id);
+  check('「この列を戻す」で右端が 8190 に戻る（ほかの列は変わらない）',
+    t.reset === 'この列を戻す' && back.values.at(-1) === 8190 && JSON.stringify(others) === JSON.stringify(othersAfter),
+    { reset: t.reset, back });
+  await page.screenshot({ path: path.join(outDir, 'ruishin-7-reset.png') });
 }
 
 // ---------- 7. 隠したレイヤの寸法は累進にしない ----------

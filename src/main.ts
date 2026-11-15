@@ -280,6 +280,8 @@ class App {
    * ひとつの操作で動いた列ごとに、動かす前の起点を覚える。列は寸法線で見分ける（レイヤの切り替えで列を作り直しても引き継ぐ）
    */
   private originPast: Array<Array<{ key: string; before: Origin }>> = [];
+  /** 累進のパネルを最後に書いたときの「選べるか・動かせるか」 */
+  private panelOpKey = '';
   /** 累進寸法で表示する（元の寸法値を隠して累進の値を描く）。切ると元の寸法のまま */
   private ruishinOn = true;
   /** 選んでいる列の id。-1 なら無し */
@@ -1153,6 +1155,8 @@ class App {
     if (!this.scene) return;
     this.renderer.draw(this.view, this.dpr);
     this.updateFitButton();
+    // 拡大・縮小で「列を選べるか」が変わったら、累進のパネルの案内を合わせる
+    if (this.tool === 'ruishin' && this.ruishinOpKey() !== this.panelOpKey) this.updateRuishinPanel();
 
     // ルーペの中心は指が触れている場所。吸着先を中心にすると、
     // 吸着先が別の図形に移った瞬間に景色ごと大きく飛んでしまう。
@@ -1452,7 +1456,7 @@ class App {
       if (this.tool === 'ruishin') {
         this.activeChain = this.pickChain(e.clientX, e.clientY);
         if (this.activeChain >= 0) tapFeedback();
-        else if (this.pickChain(e.clientX, e.clientY, true) >= 0) this.hint('拡大すると、列を選んだり起点を動かしたりできます');
+        else if (this.pickChain(e.clientX, e.clientY, true) >= 0) this.hint(RUISHIN_ZOOM_HINT);
         this.updateRuishinPanel();
       } else if (this.tool === 'inspect') {
         this.select(this.pickAt(e.clientX, e.clientY));
@@ -1747,6 +1751,17 @@ class App {
     return textHeightCss(c, this.view.zoom, this.dpr) >= MIN_OPERABLE_TEXT;
   }
 
+  /** いまの倍率で選べる列が 1 つでもあるか */
+  private anyOperable(): boolean {
+    return this.chains.some((c) => this.operable(c));
+  }
+
+  /** パネルの案内を決める「選べるか・動かせるか」の組み合わせ（変わったときだけパネルを書き直す） */
+  private ruishinOpKey(): string {
+    const c = this.activeChain >= 0 ? this.chainById(this.activeChain) : undefined;
+    return `${this.anyOperable()}|${c ? this.operable(c) : '-'}`;
+  }
+
   private hitOrigin(cssX: number, cssY: number): number {
     if (!this.ruishinOn) return -1;
     let best = -1;
@@ -1924,7 +1939,11 @@ class App {
     const title = el('ruishin-title');
     const tag = el('ruishin-tag');
     const c = this.activeChain >= 0 ? this.chainById(this.activeChain) : undefined;
-    el('btn-ruishin-reset').setAttribute('aria-label', c ? 'この列の起点を最初の端に戻す' : 'すべての列の起点を最初の端に戻す');
+    this.panelOpKey = this.ruishinOpKey();
+    // 押す前に対象が分かるよう、ボタンの名前そのものを「この列」「全列」で変える
+    const reset = el('btn-ruishin-reset');
+    reset.textContent = c ? 'この列を戻す' : '全列を戻す';
+    reset.setAttribute('aria-label', c ? 'この列の起点を最初の端に戻す' : 'すべての列の起点を最初の端に戻す');
     el<HTMLButtonElement>('btn-ruishin-reset').disabled = !this.ruishinOn || this.chains.length === 0;
     tag.classList.toggle('hidden', !(c && c.mismatch));
     tag.textContent = '寸法値を優先';
@@ -1935,12 +1954,14 @@ class App {
     }
     if (!this.ruishinOn) {
       title.textContent = '累進寸法（切）';
-      body.innerHTML = '<p class="note">元の寸法で表示しています。「累進で表示」で戻せます。</p>';
+      body.innerHTML = '<p class="note">元の寸法で表示しています。「累進表示」をオンにすると戻せます。</p>';
       return;
     }
     if (!c) {
       title.textContent = `累進寸法 ${this.chains.length} 列`;
-      body.innerHTML = '<p class="note">列をタップして選び、起点の丸をドラッグして動かします</p>';
+      body.innerHTML = this.anyOperable()
+        ? `<p class="note">${RUISHIN_PICK_HINT}</p>`
+        : `<p class="note">${RUISHIN_ZOOM_HINT}</p>`;
       return;
     }
     const dir = c.uy === 0 ? '横の列' : c.ux === 0 ? '縦の列' : '斜めの列';
@@ -1948,7 +1969,8 @@ class App {
     const warn = c.mismatch
       ? '<p class="note warn">図形の長さと合わない寸法値があり、書いてある値で累計しています</p>'
       : '';
-    body.innerHTML = `<p class="note">寸法 ${c.spans.length} 本・1/${formatScale(c.scale)}・起点の丸をドラッグか、長押しした所へ</p>` + warn;
+    const how = this.operable(c) ? '起点の丸をドラッグか、長押しした所へ' : '拡大すると起点を動かせます';
+    body.innerHTML = `<p class="note">寸法 ${c.spans.length} 本・1/${formatScale(c.scale)}・${how}</p>` + warn;
   }
 
   // ---------- 計測 ----------
@@ -2799,7 +2821,8 @@ class App {
     this.requestDraw();
     if (tool === 'ruishin') this.updateRuishinPanel();
     this.hint(tool === 'inspect' ? '図形をタップすると属性を表示します'
-      : tool === 'ruishin' ? '列をタップして選び、起点の丸をドラッグして動かします' : 'タップで計測点を置きます');
+      : tool === 'ruishin' ? (this.anyOperable() || this.chains.length === 0 ? RUISHIN_PICK_HINT : RUISHIN_ZOOM_HINT)
+      : 'タップで計測点を置きます');
   }
 
   /** 下のパネル（計測・属性）とツールボタンの状態を、いまのツールに合わせる */
@@ -3858,6 +3881,10 @@ async function fetchSample(): Promise<ArrayBuffer> {
 }
 
 /** 列を寸法線（向き・位置・レイヤグループ）で見分ける鍵。列を作り直しても同じ寸法線なら同じ鍵になる */
+/** 累進の案内（列を選べる倍率のとき・まだ小さすぎるとき） */
+const RUISHIN_PICK_HINT = '列をタップして選び、起点の丸をドラッグして動かします';
+const RUISHIN_ZOOM_HINT = '拡大すると、寸法列を選べます';
+
 function chainKeyOf(c: Chain): string {
   return `${c.ux.toFixed(4)},${c.uy.toFixed(4)},${c.offset.toFixed(3)},${c.group}`;
 }
