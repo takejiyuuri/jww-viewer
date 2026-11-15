@@ -862,11 +862,10 @@ await page.waitForTimeout(200);
   await page.touchscreen.tap(undo.x, undo.y);
   await page.waitForTimeout(80);
   await page.touchscreen.tap(undo.x, undo.y);
+  // 「戻すの場所がパネルのまま」は 2 回目を押した時点で見る（1 秒たつと値の段をしまうので、遅い環境で待ってから見ると別の確かめになる）
+  const onPanel = await page.evaluate(([x, y]) => !!document.elementFromPoint(x, y)?.closest('#readout'), [undo.x, undo.y]);
   await page.waitForTimeout(300);
-  const n2 = await page.evaluate(([x, y]) => ({
-    n: window.__jww.points.length,
-    onPanel: !!document.elementFromPoint(x, y)?.closest('#readout'),
-  }), [undo.x, undo.y]);
+  const n2 = { n: await page.evaluate(() => window.__jww.points.length), onPanel };
   check('「戻す」を続けて押しても、図面に点を置かない（戻すの場所はパネルのまま）', n2.n === 0 && n2.onPanel, n2);
   // 少し経つと値の段をしまって、操作の段だけになる
   await page.waitForTimeout(900);

@@ -625,6 +625,9 @@ let makeZip;
 
 // ---------- 12. 見本の図面（最初の画面のボタン）----------
 {
+  // 直前に開いた zip-b.jww の保存（非同期。大きい図面では時間がかかる）が一覧に入ってから数える。
+  // 入る前に数えると、あとから入った 1 件を「見本が一覧に足された」と取り違える
+  await page.waitForFunction(() => window.__jww.recent.some((r) => r.name === 'zip-b.jww'), null, { timeout: 15000 }).catch(() => {});
   const listed = await page.evaluate(() => window.__jww.recent.length);
   await page.evaluate(() => document.getElementById('btn-sample').click());
   await opened('見本（累進寸法の平面図）.jww');

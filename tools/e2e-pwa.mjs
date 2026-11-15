@@ -231,6 +231,13 @@ check('CSS がキャッシュされる', hasCss);
   const stalled = pending.length;
   for (const r of pending) await r.abort().catch(() => {});
   await context.unroute(isPage);
+  // このページは直近の図面を開き直している途中。途中で閉じると「開いている途中で終わった」印（jww-viewer:opening）が残り、
+  // 次の起動（下のオフラインの確かめ）が図面を開き直さなくなるので、開き終わるのを待ってから閉じる
+  if (loaded) {
+    await slow.waitForFunction(() => localStorage.getItem('jww-viewer:opening') === null
+      && (document.getElementById('title')?.textContent?.endsWith('.jww') || !document.getElementById('welcome')?.classList.contains('hidden')),
+    null, { timeout: 30000 }).catch(() => {});
+  }
   await slow.close();
   check('電波が弱くて返事が来ないときも、数秒でキャッシュから起動する', loaded && stalled > 0 && ms < 10000, { ms, stalled });
 }
