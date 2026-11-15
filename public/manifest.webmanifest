@@ -1,7 +1,7 @@
 {
-  "name": "JWWルイシン",
-  "short_name": "ルイシン",
-  "description": "Jw_cad の図面の寸法を iPhone で累進寸法に直して見る",
+  "name": "JWWミテハカール",
+  "short_name": "ミテハカール",
+  "description": "Jw_cad の図面を iPhone で開いて実寸で計測する",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

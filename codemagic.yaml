@@ -1,4 +1,4 @@
-# Codemagic（クラウドの Mac）で iOS アプリ「JWWルイシン（仮の名前）」をビルドし、TestFlight へ送る設定。
+# Codemagic（クラウドの Mac）で iOS アプリ「JWWミテハカール」をビルドし、TestFlight へ送る設定。
 # Mac がなくても、Windows のブラウザから Codemagic と App Store Connect を操作するだけで進められる。
 # 手順と、Apple 側で用意するものは docs/ios-release.md を参照。
 #
@@ -52,14 +52,14 @@ workflows:
       ios_signing:
         # Codemagic の Code signing identities に、配布用の証明書と App Store 用のプロファイルを用意しておく
         distribution_type: app_store
-        bundle_identifier: io.github.takejiyuuri.ruishin
+        bundle_identifier: io.github.takejiyuuri.mitehakaru
       vars:
         XCODE_PROJECT: ios/App/App.xcodeproj
         XCODE_SCHEME: App
         # App Store Connect の「App 情報」に出るアプリの Apple ID（数字）。
         # これがあると、TestFlight にある最新のビルド番号の次を使う（消すと Codemagic の通し番号を使う）。
         # 空の値は書けない（Codemagic が設定の誤りとして止める）ので、使わないときは行ごと消す
-        # ミテハカールの番号（6815729877）は使わない。ルイシンを App Store Connect に登録したら、その番号をここに足す
+        APP_STORE_APPLE_ID: "6815729877"
       node: 22
       xcode: latest
     scripts:

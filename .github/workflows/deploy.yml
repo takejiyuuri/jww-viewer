@@ -1,0 +1,63 @@
+name: GitHub Pages へ公開
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# 既定では何も許さず、ジョブごとに要るものだけを渡す
+permissions: {}
+
+# 公開は同時に 1 つだけ。実行中のものは走り切らせる
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # configure-pages が Pages の設定を読む
+      pages: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: 型チェック
+        run: npm run check
+
+      # 図面（samples/）なしで動く検査だけを通す
+      - name: 計算の検査
+        run: npm run verify:area
+
+      - name: 開発サーバの配信範囲の検査
+        run: npm run verify:serve
+
+      - name: ビルド
+        run: npm run build
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
