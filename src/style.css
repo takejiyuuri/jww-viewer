@@ -1950,3 +1950,22 @@ body[data-bg="light"] #inspect-actions {
 .ico.flip-x {
   transform: scaleX(-1);
 }
+
+/*
+ * Safari のバーが出たとても低い横画面（高さ 300 以下）では、6 つのボタン（計測・累進・属性・レイヤ・表示・全体）が
+ * 縦に収まるよう、ボタンの間とアイコンを少し詰める（文字の大きさは変えない）
+ */
+@media (orientation: landscape) and (max-height: 300px) {
+  #toolbar {
+    gap: 4px;
+  }
+
+  .tool {
+    min-height: 32px;
+  }
+
+  .tool .ico {
+    width: 18px;
+    height: 18px;
+  }
+}
