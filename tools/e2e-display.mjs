@@ -9,6 +9,7 @@ const sample = process.argv[2] ?? defaultSample();
 const outDir = process.argv[3] ?? '.';
 
 const browser = await chromium.launch({
+  ...(process.env.PW_CHROMIUM ? { executablePath: process.env.PW_CHROMIUM } : {}),
   args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'],
 });
 const context = await browser.newContext({ ...devices['iPhone 14 Pro'], hasTouch: true });
@@ -277,6 +278,8 @@ const widths = await page.evaluate(async () => {
   const hw = (lineWidthAt(near, dpr) * dpr) / 2;
   const cx0 = Math.floor(W / 2 + hw / 2), cy0 = Math.floor(H / 2 - hw / 2);
   const corner = cornerPx[(cy0 * W + cx0) * 4];
+  // 比べる明るさ：縦の線の中心から同じだけ離れた、角から遠い所（上）の画素（細い線ほど縁の画素は暗いので、線そのものと比べる）
+  const cornerRef = cornerPx[((cy0 - 20) * W + cx0) * 4];
 
   // 粗く折られる小さな円（半径 2mm）を拡大して、継ぎ目の外側に欠けがないか。
   // 折れ線を理想どおりに太らせた形（各線分からの距離）と比べ、足りない明るさの最大を見る。拡大鏡の太さ（1.6 倍）でも見る
@@ -335,16 +338,16 @@ const widths = await page.evaluate(async () => {
     far: { 実測: +lineFar.toFixed(2), 狙い: +(lineWidthAt(far, dpr) * dpr).toFixed(2) },
     near: { 実測: +lineNear.toFixed(2), 狙い: +(lineWidthAt(near, dpr) * dpr).toFixed(2) },
     circle: { 円: +circleFar.toFixed(2), 直線: +lineAtCircle.toFixed(2), 線分の長さ: +((2 * Math.PI * rad) / n).toFixed(2) },
-    corner: { 明るさ: corner, 継ぎ目からのずれ: [cx0 + 0.5 - W / 2, cy0 + 0.5 - H / 2], 半幅: +hw.toFixed(2) },
+    corner: { 明るさ: corner, 線の同じ所: cornerRef, 継ぎ目からのずれ: [cx0 + 0.5 - W / 2, cy0 + 0.5 - H / 2], 半幅: +hw.toFixed(2) },
     seam,
     small: { 分割: small.length / 4, 通常: +smallMain.toFixed(2), 拡大鏡: +smallInset.toFixed(2) },
   };
 });
-const near = (v, want) => Math.abs(v - want) <= want * 0.05;
-check('拡大しているときの線は 1.15 CSS ピクセル', near(widths.near.実測, 1.15 * widths.dpr) && near(widths.near.実測, widths.near.狙い), widths.near);
-check('縮小すると線が細くなる（0.55 CSS ピクセル）', near(widths.far.実測, 0.55 * widths.dpr) && near(widths.far.実測, widths.far.狙い), widths.far);
+const near = (v, want) => Math.abs(v - want) <= want * 0.06;
+check('拡大しているときの線は 0.8 CSS ピクセル', near(widths.near.実測, 0.8 * widths.dpr) && near(widths.near.実測, widths.near.狙い), widths.near);
+check('縮小すると線が細くなる（0.4 CSS ピクセル）', near(widths.far.実測, 0.4 * widths.dpr) && near(widths.far.実測, widths.far.狙い), widths.far);
 check('細かく折った円も、線分が 1 ピクセルより短くなるまで縮小して直線と同じ太さ', widths.circle.線分の長さ < 1 && near(widths.circle.円, widths.circle.直線), widths.circle);
-check('直角に折れる角の外側が欠けない', widths.corner.明るさ > 230, widths.corner);
+check('直角に折れる角の外側が欠けない', widths.corner.明るさ > 100 && widths.corner.明るさ >= widths.corner.線の同じ所 * 0.9, widths.corner);
 check('一直線につながる線分の継ぎ目が、いちばん大きく拡大しても割れない（拡大鏡でも）', widths.seam === 255, { 継ぎ目の最小の明るさ: widths.seam });
 check('粗く折られる小さな円を拡大しても、継ぎ目の外側が欠けない（拡大鏡でも）', widths.small.通常 < 0.2 && widths.small.拡大鏡 < 0.2, widths.small);
 

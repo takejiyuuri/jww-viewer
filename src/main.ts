@@ -1640,7 +1640,8 @@ class App {
     // 横向きやシートを開いているときは、見えている範囲に収まるまで小さくする
     const roomH = this.cssH - topLimit - bottomLimit;
     const roomW = this.cssW - rightLimit - leftEdge - margin;
-    const size = Math.round(Math.max(64, Math.min(180, Math.min(this.cssW, this.cssH) * 0.44, roomH, roomW)));
+    // 起点を置く所を見やすいよう、大きめ（縦向きの iPhone で幅の 6 割弱）にする
+    const size = Math.round(Math.max(64, Math.min(234, Math.min(this.cssW, this.cssH) * 0.572, roomH, roomW)));
     const maxX = this.cssW - rightLimit - size - margin;
 
     const clampX = (v: number): number => Math.max(leftEdge, Math.min(maxX, v));
