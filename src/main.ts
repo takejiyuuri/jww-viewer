@@ -275,6 +275,11 @@ class App {
   private chainKey: string | null = null;
   /** 列の id ごとの起点 */
   private origins = new Map<number, Origin>();
+  /**
+   * 起点を動かした履歴（計測の「戻す」と同じく、1 つずつ前に戻せる）。
+   * ひとつの操作で動いた列ごとに、動かす前の起点を覚える。列は寸法線で見分ける（レイヤの切り替えで列を作り直しても引き継ぐ）
+   */
+  private originPast: Array<Array<{ key: string; before: Origin }>> = [];
   /** 累進寸法で表示する（元の寸法値を隠して累進の値を描く）。切ると元の寸法のまま */
   private ruishinOn = true;
   /** 選んでいる列の id。-1 なら無し */
@@ -1682,6 +1687,7 @@ class App {
   private loadChains(_scene: Scene): void {
     this.chains = [];
     this.origins = new Map();
+    this.originPast = [];
     this.chainKey = null;
     this.activeChain = -1;
     this.originDrag = -1;
@@ -1692,7 +1698,7 @@ class App {
    * レイヤや色の表示を切り替えたときも呼ぶ。同じ寸法線の上の列は、動かした起点と選んでいる列をそのまま引き継ぐ
    */
   private rebuildChains(scene: Scene): void {
-    const keyOf = (c: Chain): string => `${c.ux.toFixed(4)},${c.uy.toFixed(4)},${c.offset.toFixed(3)},${c.group}`;
+    const keyOf = chainKeyOf;
     const oldOrigins = new Map<string, Origin>();
     for (const c of this.chains) {
       const o = this.origins.get(c.id);
@@ -1812,7 +1818,11 @@ class App {
 
   /** 起点を置く（その列だけ） */
   private setOrigin(id: number, hit: { x: number; y: number }): void {
-    if (!this.chainById(id)) return;
+    const c = this.chainById(id);
+    if (!c) return;
+    const before = this.origins.get(id);
+    if (before && before.x === hit.x && before.y === hit.y) return;
+    if (before) this.pushOriginPast([{ key: chainKeyOf(c), before }]);
     this.origins.set(id, { x: hit.x, y: hit.y });
     if (navigator.vibrate) navigator.vibrate(4);
   }
@@ -1864,16 +1874,51 @@ class App {
         ? '起点は寸法線に沿って動き、図形と交わる所に吸着します'
         : '起点は端点・交点・線上に吸着し、真横・真下の位置を使います');
     });
+    el('btn-ruishin-undo').addEventListener('click', () => this.undoOrigin());
     el('btn-ruishin-reset').addEventListener('click', () => {
       const targets = this.activeChain >= 0 ? this.chains.filter((c) => c.id === this.activeChain) : this.chains;
-      for (const c of targets) this.origins.set(c.id, defaultOrigin(c));
+      const changed: Array<{ key: string; before: Origin }> = [];
+      for (const c of targets) {
+        const before = this.origins.get(c.id);
+        const next = defaultOrigin(c);
+        if (before && (before.x !== next.x || before.y !== next.y)) changed.push({ key: chainKeyOf(c), before });
+        this.origins.set(c.id, next);
+      }
+      if (changed.length) this.pushOriginPast(changed);
+      this.updateRuishinPanel();
       this.hint(this.activeChain >= 0 ? 'この列の起点を最初の端に戻しました' : 'すべての列の起点を最初の端に戻しました');
       this.requestDraw();
     });
   }
 
+  private pushOriginPast(step: Array<{ key: string; before: Origin }>): void {
+    this.originPast.push(step);
+    // 覚えておくのは直近の 200 回まで
+    if (this.originPast.length > 200) this.originPast.shift();
+    this.updateRuishinPanel();
+  }
+
+  /** 起点を 1 つ前に戻す（最後に動かした列を選び直して見せる） */
+  private undoOrigin(): void {
+    const step = this.originPast.pop();
+    if (!step) return;
+    let last = -1;
+    for (const { key, before } of step) {
+      const c = this.chains.find((o) => chainKeyOf(o) === key);
+      if (!c) continue;
+      this.origins.set(c.id, before);
+      last = c.id;
+    }
+    if (step.length === 1 && last >= 0) this.activeChain = last;
+    this.hint(step.length > 1 ? '起点をまとめて戻しました' : '起点を 1 つ前に戻しました');
+    tapFeedback();
+    this.updateRuishinPanel();
+    this.requestDraw(true);
+  }
+
   /** 累進寸法のパネルの文言とボタン */
   private updateRuishinPanel(): void {
+    el<HTMLButtonElement>('btn-ruishin-undo').disabled = !this.ruishinOn || this.originPast.length === 0;
     const body = el('ruishin-body');
     const title = el('ruishin-title');
     const tag = el('ruishin-tag');
@@ -3809,6 +3854,11 @@ async function fetchSample(): Promise<ArrayBuffer> {
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out.buffer;
+}
+
+/** 列を寸法線（向き・位置・レイヤグループ）で見分ける鍵。列を作り直しても同じ寸法線なら同じ鍵になる */
+function chainKeyOf(c: Chain): string {
+  return `${c.ux.toFixed(4)},${c.uy.toFixed(4)},${c.offset.toFixed(3)},${c.group}`;
 }
 
 function formatScale(scale: number): string {

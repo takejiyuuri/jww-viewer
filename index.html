@@ -154,13 +154,16 @@
   <div class="grab" aria-hidden="true"></div>
   <div class="panel-top">
     <span id="ruishin-title" class="inspect-kind">累進寸法</span>
-    <span class="panel-top-end"><span id="ruishin-tag" class="tag hidden"></span></span>
+    <span class="panel-top-end">
+      <span id="ruishin-tag" class="tag hidden"></span>
+      <button id="btn-ruishin-undo" class="icon-btn head-btn" aria-label="起点を 1 つ前に戻す" disabled><svg class="ico"><use href="#i-undo"/></svg></button>
+    </span>
   </div>
   <div id="ruishin-body" class="inspect-body ruishin-body"></div>
   <div id="ruishin-actions" class="panel-actions ruishin-actions">
     <button id="btn-ruishin-on" class="pill on" aria-pressed="true" aria-label="累進寸法で表示する">累進表示</button>
     <button id="btn-ruishin-along" class="pill" aria-pressed="false" aria-label="起点を寸法線に沿って動かす">線に沿う</button>
-    <button id="btn-ruishin-reset" class="pill">起点を戻す</button>
+    <button id="btn-ruishin-reset" class="pill">最初に戻す</button>
   </div>
 </section>
 

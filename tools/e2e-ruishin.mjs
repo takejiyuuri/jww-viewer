@@ -171,13 +171,21 @@ const bottom = (await page.evaluate(() => {
   check('起点はその列だけ動く', mine.values.join() === '-1820,0,1820,2730,4550,6370'
     && JSON.stringify(others) === JSON.stringify(before), { mine, others, before });
   await page.screenshot({ path: path.join(outDir, 'ruishin-3-moved2.png') });
+  // 戻すボタンで、動かす前の起点に戻る
+  await page.click('#btn-ruishin-undo');
+  const back = await page.evaluate((id) => window.__jww.origins.get(id), bottom.id);
+  check('戻すボタンで 1 つ前の起点に戻る', back.x === o0.x && back.y === o0.y, { back, o0 });
 }
 
-// ---------- 6. 起点を戻す・累進で表示を切る ----------
+// ---------- 6. 最初に戻す（戻すボタンで取り消せる）・累進で表示を切る ----------
 {
   await page.click('#btn-ruishin-reset');
   const v = (await values()).find((c) => c.id === bottom.id);
   check('この列の起点を戻す', v.values[0] === 0, { v });
+  await page.click('#btn-ruishin-undo');
+  const undone = (await values()).find((c) => c.id === bottom.id);
+  check('「最初に戻す」も戻すボタンで取り消せる', undone.values[0] !== 0, { undone });
+  await page.click('#btn-ruishin-reset');
   await page.click('#btn-ruishin-on');
   const off = await page.evaluate(() => ({ on: window.__jww.ruishinOn, hidden: window.__jww.textLayer.hidden }));
   check('切ると元の寸法値に戻る', off.on === false && off.hidden === null, off);
