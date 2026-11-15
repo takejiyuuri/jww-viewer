@@ -627,7 +627,7 @@ let makeZip;
 {
   const listed = await page.evaluate(() => window.__jww.recent.length);
   await page.evaluate(() => document.getElementById('btn-sample').click());
-  await opened('見本（住戸の電気平面図）.jww');
+  await opened('見本（累進寸法の平面図）.jww');
   await page.waitForTimeout(500);
   const r = await page.evaluate(() => ({ scene: !!window.__jww.scene, texts: window.__jww.scene?.texts.length ?? 0, listed: window.__jww.recent.length }));
   check('「見本の図面を開く」でアプリに入れた見本を開き、最近の一覧には足さない', r.scene && r.texts > 0 && r.listed === listed, { ...r, before: listed });
@@ -644,7 +644,7 @@ let makeZip;
   await app.goto(`${srv.url}?native-formats`, { waitUntil: 'networkidle' });
   // 見本を開いておく（開けないときの知らせは、図面を表示しているあいだは上に出る）
   await app.click('#btn-sample');
-  await app.waitForFunction(() => document.getElementById('title')?.textContent === '見本（住戸の電気平面図）.jww', null, { timeout: 60000 });
+  await app.waitForFunction(() => document.getElementById('title')?.textContent === '見本（累進寸法の平面図）.jww', null, { timeout: 60000 });
   const hint = (re) => app.waitForFunction((s) => new RegExp(s).test(document.getElementById('hint').textContent ?? ''), re, { timeout: 10000 }).catch(() => {});
   const state = () => app.evaluate(() => ({
     hint: document.getElementById('hint').textContent,
@@ -658,7 +658,7 @@ let makeZip;
   const refused = await state();
   check('アプリでは DXF を開かず、.jww だけを開けることを知らせる',
     refused.hint === '読み込めませんでした: このアプリの版で開けるのは Jw_cad の図面（.jww）だけです。DXF・SXF は今後の版で対応します'
-      && refused.title === '見本（住戸の電気平面図）.jww', refused);
+      && refused.title === '見本（累進寸法の平面図）.jww', refused);
 
   await app.setInputFiles('#file', { name: 'mix.zip', mimeType: 'application/zip', buffer: makeZip([
     { name: 'a.jww', data: sample },
