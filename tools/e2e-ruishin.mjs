@@ -1,7 +1,9 @@
 // 累進寸法を画面で確かめる：見本の図面を開くと列が累進に直って元の寸法値が隠れる、列をタップして選べる、
 // 起点の丸をドラッグして通り芯の交点に吸着させると値が変わる、「寸法線上のみ」で寸法線の上だけを動く、
 // 「同じ向きを連動」は無い（起点はその列だけ動く）、「累進表示」を切ると元に戻る。
-// 最初の画面：「図面を開く」「見本の図面を開く」がすぐ押せ、操作の説明は「使い方を見る」で開閉する。
+// ミテハカールに統合した版：最初は「計測」、図面を開いた直後は元の寸法。「累進」の「累進表示」を入れたときだけ累進に直し、
+// 切るか別のツールにすると元に戻る。起点は戻る・進むができ、寸法線の外へ動かすと寸法線が起点まで伸びて見える。
+// 最初の画面：「図面を開く」「見本の図面を開く」がすぐ押せ、操作の説明は「使い方を見る」で開閉する（図面情報からも見られる）。
 // 案内：列を選べない倍率では「拡大すると、寸法列を選べます」、戻すボタンの名前は「この列を戻す」「全列を戻す」。
 // 引数：出力先のフォルダ（スクリーンショット）。図面は public/ruishin-sample.jww（tools/ruishin-sample.mjs で作る）
 import { chromium, devices } from 'playwright';
@@ -25,6 +27,8 @@ page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
 
 const ZOOM_HINT = '拡大すると、寸法列を選べます';
 const PICK_HINT = '列をタップして選び、起点の丸をドラッグして動かします';
+const OFF_NOTE = '元の寸法で表示しています。「累進表示」をオンにすると累進寸法になります。';
+const HOWTO_KEYS = ['2 本指で拡大', '「計測」', '「累進」', '起点の移動', '「寸法線上のみ」', '戻る・進む', '「属性」', '「レイヤ」'];
 /** 累進のパネルの案内文と、戻すボタンの名前 */
 const panelText = () => page.evaluate(() => ({
   note: document.querySelector('#ruishin-body .note')?.textContent ?? '',
@@ -62,8 +66,8 @@ await page.goto(srv.url, { waitUntil: 'networkidle' });
   await page.waitForTimeout(200);
   const opened = await state();
   check('「使い方を見る」で説明が開き（前の説明はすべて残る）、「使い方を閉じる」になる',
-    opened.expanded && opened.tipsShown && opened.summaryText === '使い方を閉じる' && opened.tips.length === 6
-    && ['1 本指でスクロール', '「累進」では', '「計測」では', '「属性」では', '「レイヤ」で', '起点は動かせます'].every((k) => opened.tips.some((t) => t.includes(k))), opened);
+    opened.expanded && opened.tipsShown && opened.summaryText === '使い方を閉じる' && opened.tips.length === 8
+    && HOWTO_KEYS.every((k) => opened.tips.some((t) => t.includes(k))), opened);
   await page.screenshot({ path: path.join(outDir, 'ruishin-w2-howto.png') });
   await page.click('#welcome-howto summary');
   await page.waitForTimeout(200);
@@ -116,7 +120,32 @@ const values = () => page.evaluate(async () => {
   }));
 });
 
-// ---------- 1. 開いたら累進に直っている ----------
+// ---------- 1. 開いた直後は「計測」で元の寸法。「累進」を押しただけでは元の寸法のまま、「累進表示」で累進に直る ----------
+const layerState = () => page.evaluate(() => {
+  const a = window.__jww;
+  return { tool: a.tool, on: a.ruishinOn, hidden: a.textLayer.hidden?.size ?? 0, layer: a.ordinateLayer() !== null,
+    panel: !document.getElementById('ruishin-panel').classList.contains('hidden'),
+    pressed: document.getElementById('btn-ruishin-on').getAttribute('aria-pressed') };
+});
+{
+  const order = await page.evaluate(() => [...document.querySelectorAll('#toolbar button')].map((b) => b.textContent.trim()));
+  check('下のツールバーは 計測・累進・属性・レイヤ・表示・全体 の順', order.join() === '計測,累進,属性,レイヤ,表示,全体', { order });
+  const s0 = await layerState();
+  check('図面を開いた直後は「計測」で、元の寸法のまま（累進の丸・矢印を描かない）',
+    s0.tool === 'measure' && !s0.on && s0.hidden === 0 && !s0.layer && !s0.panel, s0);
+  await page.screenshot({ path: path.join(outDir, 'ruishin-0-measure.png') });
+  await page.click('#btn-tool-ruishin');
+  await page.waitForTimeout(300);
+  const s1 = await layerState();
+  const t1 = await panelText();
+  check('「累進」を押すとパネルが出るが、元の寸法のまま（「累進表示」は切）',
+    s1.tool === 'ruishin' && s1.panel && !s1.on && s1.hidden === 0 && !s1.layer && s1.pressed === 'false' && t1.note === OFF_NOTE, { s1, t1 });
+  await page.screenshot({ path: path.join(outDir, 'ruishin-0b-ruishin-off.png') });
+  await page.click('#btn-ruishin-on');
+  await page.waitForTimeout(300);
+  const s2 = await layerState();
+  check('「累進表示」を入れると累進寸法に直る', s2.on && s2.layer && s2.pressed === 'true', s2);
+}
 {
   const v = await values();
   const h = v.filter((c) => c.dir === 'h');
@@ -168,6 +197,8 @@ await page.evaluate(() => {
   a.requestDraw(true);
 });
 await page.waitForTimeout(400);
+// あとの検査で同じ見え方に戻すための表示範囲
+const goodView = await page.evaluate(() => ({ ...window.__jww.view }));
 {
   const t = await panelText();
   check('拡大すると、列の選択と起点のドラッグを案内する', t.note === PICK_HINT && t.reset === '全列を戻す', t);
@@ -250,8 +281,9 @@ const bottom = (await page.evaluate(() => {
   const off = await page.evaluate(() => ({ on: window.__jww.ruishinOn, hidden: window.__jww.textLayer.hidden }));
   check('切ると元の寸法値に戻る', off.on === false && off.hidden === null, off);
   const t = await panelText();
-  check('切ったときの案内は「「累進表示」をオンにすると戻せます」',
-    t.note === '元の寸法で表示しています。「累進表示」をオンにすると戻せます。', t);
+  check('切ったときの案内は「元の寸法で表示しています。「累進表示」をオンにすると累進寸法になります。」', t.note === OFF_NOTE, t);
+  const offLayer = await layerState();
+  check('切っているあいだは起点の丸・矢印・寸法線の延長を描かない', !offLayer.layer && offLayer.hidden === 0, offLayer);
   await page.screenshot({ path: path.join(outDir, 'ruishin-4-off.png') });
   await page.click('#btn-ruishin-on');
   const t2 = await panelText();
@@ -401,9 +433,326 @@ await page.waitForTimeout(300);
   await p2.waitForFunction(() => document.getElementById('title')?.textContent?.endsWith('.jww'), null, { timeout: 60000 });
   await p2.waitForTimeout(500);
   const r = await p2.evaluate(() => ({ title: document.getElementById('title').textContent, chains: window.__jww.chains.length,
+    tool: window.__jww.tool, on: window.__jww.ruishinOn,
     welcome: !document.getElementById('welcome').classList.contains('hidden') }));
-  check('「見本の図面を開く」で見本の図面が開き、3 列を累進にする', r.chains === 3 && !r.welcome, r);
+  check('「見本の図面を開く」で見本の図面が開き、寸法 3 列を拾う（表示は元の寸法）', r.chains === 3 && !r.welcome && r.tool === 'measure' && !r.on, r);
   await ctx2.close();
+}
+
+// ---------- 10. 別のツールにすると元の寸法に戻り、もう一度「累進」を選んでも「累進表示」は切から ----------
+const useView = async (v = goodView) => {
+  await page.evaluate((v) => { const a = window.__jww; Object.assign(a.view, v); a.requestDraw(true); }, v);
+  await page.waitForTimeout(300);
+};
+const ensureRuishinOn = async () => {
+  if ((await page.evaluate(() => window.__jww.tool)) !== 'ruishin') await page.click('#btn-tool-ruishin');
+  if (!(await page.evaluate(() => window.__jww.ruishinOn))) await page.click('#btn-ruishin-on');
+  await page.waitForTimeout(250);
+};
+{
+  await ensureRuishinOn();
+  const on = await layerState();
+  await page.click('#btn-tool-measure');
+  await page.waitForTimeout(250);
+  const measure = await layerState();
+  await page.click('#btn-tool-inspect');
+  await page.click('#btn-tool-ruishin');
+  await page.waitForTimeout(250);
+  const again = await layerState();
+  check('別のツール（計測）にすると元の寸法に戻る', on.on && on.hidden === 14 && !measure.on && measure.hidden === 0 && !measure.layer, { on, measure });
+  check('もう一度「累進」を選ぶと「累進表示」は切から始まる', again.tool === 'ruishin' && !again.on && again.hidden === 0 && again.pressed === 'false', again);
+}
+
+const setOriginT = (id, t) => page.evaluate(async ([id, t]) => {
+  const a = window.__jww;
+  const m = await import('/src/ruishin/ordinate.ts');
+  const c = a.chains.find((o) => o.id === id);
+  const [x, y] = m.onChain(c, t);
+  a.setOrigin(id, { x, y });
+  a.requestDraw(true);
+}, [id, t]);
+// ---------- 11. 戻る・進む：A → B → C、戻る 2 回で A、進む 2 回で C。戻した後に動かすと進むは消える ----------
+const originOf = (id) => page.evaluate((id) => ({ ...window.__jww.origins.get(id) }), id);
+const allOrigins = () => page.evaluate(() => Object.fromEntries([...window.__jww.origins].map(([k, v]) => [k, `${v.x.toFixed(3)},${v.y.toFixed(3)}`])));
+const btns = () => page.evaluate(() => ({ undo: !document.getElementById('btn-ruishin-undo').disabled, redo: !document.getElementById('btn-ruishin-redo').disabled }));
+const near = (o, x) => Math.abs(o.x - x) < 1e-3;
+{
+  await useView();
+  await ensureRuishinOn();
+  const s0 = await toScreen(30, bottom.offset);
+  await tap(s0.x, s0.y - 4);
+  await page.click('#btn-ruishin-reset'); // A：最初の端（x = 0）
+  const others0 = (await allOrigins());
+  delete others0[bottom.id];
+  const moveTo = async (x) => {
+    const o = await originOf(bottom.id);
+    await drag(await toScreen(o.x, bottom.offset), await toScreen(x, bottom.offset));
+  };
+  await moveTo(18.2); // B
+  await moveTo(45.5); // C
+  const C = await originOf(bottom.id);
+  const b0 = await btns();
+  await page.click('#btn-ruishin-undo');
+  const u1 = await originOf(bottom.id);
+  await page.click('#btn-ruishin-undo');
+  const u2 = await originOf(bottom.id);
+  const b1 = await btns();
+  await page.click('#btn-ruishin-redo');
+  const r1 = await originOf(bottom.id);
+  await page.click('#btn-ruishin-redo');
+  const r2 = await originOf(bottom.id);
+  const b2 = await btns();
+  check('戻る 1 回で B、2 回で A、進む 1 回で B、2 回で C',
+    near(C, 45.5) && near(u1, 18.2) && near(u2, 0) && near(r1, 18.2) && near(r2, 45.5), { C, u1, u2, r1, r2 });
+  check('戻した履歴がないときは「進む」を押せない（戻すと押せる）', !b0.redo && b1.redo && !b2.redo && b0.undo, { b0, b1, b2 });
+  await page.click('#btn-ruishin-undo'); // B
+  await moveTo(63.7); // 新しく動かす → 進むは消える
+  const b3 = await btns();
+  const D = await originOf(bottom.id);
+  check('戻した後で新しく起点を動かすと、進む履歴は消える', near(D, 63.7) && !b3.redo, { D, b3 });
+  // 「この列を戻す」「全列を戻す」も戻る・進むの対象
+  await page.click('#btn-ruishin-reset');
+  const reset = await originOf(bottom.id);
+  await page.click('#btn-ruishin-undo');
+  const undoReset = await originOf(bottom.id);
+  await page.click('#btn-ruishin-redo');
+  const redoReset = await originOf(bottom.id);
+  check('「この列を戻す」も戻る・進むでやり直せる', near(reset, 0) && near(undoReset, 63.7) && near(redoReset, 0), { reset, undoReset, redoReset });
+  const others = await allOrigins();
+  delete others[bottom.id];
+  check('戻る・進むでほかの列の起点は変わらない', JSON.stringify(others) === JSON.stringify(others0), { others, others0 });
+  // 全列を戻す（選択を外して）→ 戻る・進む
+  await setOriginT(bottom.id, 36.4);
+  await page.evaluate(() => { const a = window.__jww; a.activeChain = -1; a.updateRuishinPanel(); });
+  const label = (await panelText()).reset;
+  const before = await allOrigins();
+  await page.click('#btn-ruishin-reset');
+  const afterAll = await allOrigins();
+  await page.click('#btn-ruishin-undo');
+  const undoAll = await allOrigins();
+  await page.click('#btn-ruishin-redo');
+  const redoAll = await allOrigins();
+  check('「全列を戻す」も戻る・進むでやり直せる', label === '全列を戻す' && JSON.stringify(undoAll) === JSON.stringify(before)
+    && JSON.stringify(redoAll) === JSON.stringify(afterAll) && JSON.stringify(before) !== JSON.stringify(afterAll), { label, before, afterAll, undoAll, redoAll });
+  const size = await page.evaluate(() => ['btn-ruishin-undo', 'btn-ruishin-redo'].map((id) => { const r = document.getElementById(id).getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height), right: Math.round(r.right) }; }));
+  check('「戻る」「進む」は見出しの右に並び、押しやすい大きさ（44×38 以上）', size.every((b) => b.w >= 44 && b.h >= 38 && b.right <= 393) && size[0].right < size[1].right, { size });
+  await page.screenshot({ path: path.join(outDir, 'ruishin-11-undo-redo.png') });
+}
+
+// ---------- 12. 起点を寸法線の外へ動かすと、寸法線が起点まで伸びて見える（左右・上下・ドラッグ中・縮小・レイヤ） ----------
+/** 起点まで伸ばした寸法線の中ほど（画面の座標）と、そこに線が描かれているか（計測の層の色） */
+const extensionAt = (id) => page.evaluate(async (id) => {
+  const a = window.__jww;
+  const m = await import('/src/ruishin/ordinate.ts');
+  const c = a.chains.find((o) => o.id === id);
+  const o = a.origins.get(id);
+  const ext = m.chainExtension(c, o);
+  const cv = document.getElementById('overlay');
+  const g = cv.getContext('2d');
+  const probe = (t) => {
+    const [wx, wy] = m.onChain(c, t);
+    const x = Math.round(((wx - a.view.cx) * a.view.zoom) + cv.width / 2);
+    const y = Math.round(cv.height / 2 - ((wy - a.view.cy) * a.view.zoom));
+    if (x < 0 || y < 0 || x >= cv.width || y >= cv.height) return { x, y, alpha: -1 };
+    let best = 0;
+    for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) best = Math.max(best, g.getImageData(x + dx, y + dy, 1, 1).data[3]);
+    return { x, y, alpha: best };
+  };
+  return { ext, mid: ext ? probe((ext.from + ext.to) / 2) : null, inner: probe(c.stops[0] - 6), innerR: probe(c.stops[c.stops.length - 1] + 6) };
+}, id);
+{
+  await useView();
+  await ensureRuishinOn();
+  // ドラッグ中：横の列の起点を、左の通り芯の端（x = -26）に吸着させる途中で、伸ばした線が出ている
+  await page.evaluate(() => { const a = window.__jww; a.view.zoom *= 0.6; a.view.cx = 30; a.requestDraw(true); });
+  await page.waitForTimeout(300);
+  const s0 = await toScreen(30, bottom.offset);
+  await tap(s0.x, s0.y - 4);
+  const o0 = await originOf(bottom.id);
+  const from = await toScreen(o0.x, bottom.offset);
+  const to = await toScreen(-26, 0);
+  const mid = await page.evaluate(async ([fx, fy, tx, ty]) => {
+    const st = document.getElementById('stage');
+    const b = { pointerId: 11, pointerType: 'touch', isPrimary: true, bubbles: true };
+    st.dispatchEvent(new PointerEvent('pointerdown', { ...b, clientX: fx, clientY: fy }));
+    await new Promise((r) => setTimeout(r, 60));
+    for (let i = 1; i <= 8; i++) {
+      st.dispatchEvent(new PointerEvent('pointermove', { ...b, clientX: fx + ((tx - fx) * i) / 8, clientY: fy + ((ty - fy) * i) / 8 }));
+      await new Promise((r) => setTimeout(r, 30));
+    }
+    await new Promise((r) => setTimeout(r, 120));
+    const a = window.__jww;
+    return { preview: a.preview ? { x: a.preview.x, y: a.preview.y } : null, layer: a.ordinateLayer() !== null };
+  }, [from.x, from.y, to.x, to.y]);
+  // ドラッグ中の線：プレビューの起点で伸びた線を探す
+  const during = await page.evaluate(async ([id, px, py]) => {
+    const a = window.__jww;
+    const m = await import('/src/ruishin/ordinate.ts');
+    const c = a.chains.find((o) => o.id === id);
+    const ext = m.chainExtension(c, { x: px, y: py });
+    if (!ext) return { ext: null };
+    const cv = document.getElementById('overlay');
+    const g = cv.getContext('2d');
+    // 拡大鏡に隠れない、起点に近い所を見る
+    const [wx, wy] = m.onChain(c, ext.to + (ext.from - ext.to) * 0.15);
+    const x = Math.round(((wx - a.view.cx) * a.view.zoom) + cv.width / 2);
+    const y = Math.round(cv.height / 2 - ((wy - a.view.cy) * a.view.zoom));
+    let best = 0;
+    for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) best = Math.max(best, g.getImageData(x + dx, y + dy, 1, 1).data[3]);
+    return { ext, alpha: best };
+  }, [bottom.id, mid.preview?.x ?? 0, mid.preview?.y ?? 0]);
+  await page.screenshot({ path: path.join(outDir, 'ruishin-12-dragging.png') });
+  await page.evaluate(([tx, ty]) => document.getElementById('stage').dispatchEvent(new PointerEvent('pointerup',
+    { pointerId: 11, pointerType: 'touch', isPrimary: true, bubbles: true, clientX: tx, clientY: ty })), [to.x, to.y]);
+  await page.waitForTimeout(300);
+  check('起点をドラッグしている間も、寸法線が起点まで伸びて見える', !!mid.preview && during.ext && during.alpha > 100, { mid, during });
+  const left = await extensionAt(bottom.id);
+  check('横の列：起点を左の外へ動かすと、左の端から起点まで伸びる', left.ext && Math.abs(left.ext.from - 0) < 1e-4 && Math.abs(left.ext.to + 26) < 1e-3 && left.mid.alpha > 100, left);
+  await page.screenshot({ path: path.join(outDir, 'ruishin-12-left.png') });
+  // 右の外
+  await setOriginT(bottom.id, 81.9 + 15);
+  await page.waitForTimeout(250);
+  const right = await extensionAt(bottom.id);
+  check('横の列：起点を右の外へ動かすと、右の端から起点まで伸びる', right.ext && Math.abs(right.ext.from - 81.9) < 1e-4 && right.mid.alpha > 100 && right.inner.alpha === 0, right);
+  // 拡大・移動に付いてくる
+  const keep = await page.evaluate(() => ({ ...window.__jww.view }));
+  await page.evaluate(() => { const a = window.__jww; a.view.cx = 81.9 + 7.5; a.view.zoom *= 1.25; a.requestDraw(true); });
+  await page.waitForTimeout(300);
+  const zoomed = await extensionAt(bottom.id);
+  check('拡大・移動しても、伸ばした線は寸法線に付いてくる', zoomed.mid.alpha > 100 && (zoomed.mid.x !== right.mid.x || zoomed.mid.y !== right.mid.y), { zoomed, right });
+  await useView(keep);
+  await page.waitForTimeout(300);
+  // レイヤ：寸法のレイヤを隠すと列ごと消え、表示に戻すと起点と伸ばした線が戻る
+  const lay = await page.evaluate(() => {
+    const a = window.__jww;
+    const c0 = a.chains.filter((c) => c.uy === 0).sort((p, q) => p.offset - q.offset)[0];
+    const layer = a.scene.entities.layer[c0.spans[0].entity];
+    a.layers.layer[layer] = false;
+    a.applyDisplay();
+    return { layer, n: a.chains.length };
+  });
+  await page.waitForTimeout(300);
+  const hiddenExt = await page.evaluate(() => window.__jww.chains.filter((c) => c.uy === 0).length);
+  await page.evaluate((layer) => { const a = window.__jww; a.layers.layer[layer] = true; a.applyDisplay(); }, lay.layer);
+  await page.waitForTimeout(300);
+  const bottomId = await page.evaluate(() => window.__jww.chains.filter((c) => c.uy === 0).sort((p, q) => p.offset - q.offset)[0].id);
+  const shownAgain = await extensionAt(bottomId);
+  check('レイヤを隠すと列ごと消え、表示に戻すと伸ばした線も戻る', hiddenExt < 2 && shownAgain.ext && shownAgain.mid.alpha > 100, { lay, hiddenExt, shownAgain });
+  // 範囲の中に戻すと消える
+  await setOriginT(bottomId, 36.4);
+  await page.waitForTimeout(250);
+  const inside = await extensionAt(bottomId);
+  check('起点を寸法線の範囲に戻すと、伸ばした線は消える', inside.ext === null && inside.innerR.alpha === 0, inside);
+  // 累進表示を切ると消える
+  await setOriginT(bottomId, -20);
+  await page.waitForTimeout(250);
+  const before = await extensionAt(bottomId);
+  await page.click('#btn-ruishin-on');
+  await page.waitForTimeout(300);
+  const off = await extensionAt(bottomId);
+  check('「累進表示」を切ると、伸ばした線は消える', before.mid.alpha > 100 && off.mid.alpha === 0, { before, off });
+  await page.click('#btn-ruishin-on');
+  await page.waitForTimeout(250);
+  // 縦の列：上・下の外
+  const vid = await page.evaluate(() => window.__jww.chains.find((c) => c.ux === 0).id);
+  const vchain = await page.evaluate((id) => { const c = window.__jww.chains.find((o) => o.id === id); return { lo: c.stops[0], hi: c.stops[c.stops.length - 1], offset: c.offset }; }, vid);
+  await page.evaluate(([cy]) => { const a = window.__jww; a.view.cx = -13; a.view.cy = cy; a.view.zoom *= 0.7; a.requestDraw(true); }, [(vchain.lo + vchain.hi) / 2]);
+  await page.waitForTimeout(300);
+  await setOriginT(vid, vchain.lo - 12);
+  await page.waitForTimeout(250);
+  const down = await extensionAt(vid);
+  await setOriginT(vid, vchain.hi + 12);
+  await page.waitForTimeout(250);
+  const up = await extensionAt(vid);
+  check('縦の列：起点を下・上の外へ動かすと、近いほうの端から起点まで伸びる',
+    down.ext && Math.abs(down.ext.from - vchain.lo) < 1e-4 && down.mid.alpha > 100
+    && up.ext && Math.abs(up.ext.from - vchain.hi) < 1e-4 && up.mid.alpha > 100, { vchain, down, up });
+  await page.screenshot({ path: path.join(outDir, 'ruishin-12-vertical.png') });
+  await setOriginT(vid, vchain.lo);
+  await useView();
+}
+
+// ---------- 13. 図面情報（i）の「使い方を見る」。閉じても図面の表示や操作はそのまま ----------
+{
+  await useView();
+  const before = await page.evaluate(() => { const a = window.__jww; return JSON.stringify({ v: a.view, tool: a.tool, on: a.ruishinOn, active: a.activeChain, o: [...a.origins] }); });
+  await page.click('#btn-info');
+  await page.waitForTimeout(300);
+  const shown = await page.evaluate(() => {
+    const d = document.getElementById('info-howto');
+    return { panel: !document.getElementById('info-panel').classList.contains('hidden'), has: !!d, open: d?.open,
+      file: document.getElementById('info-body').textContent.includes('ruishin-sample.jww') };
+  });
+  await page.click('#info-howto summary');
+  await page.waitForTimeout(200);
+  const opened = await page.evaluate(() => {
+    const d = document.getElementById('info-howto');
+    return { open: d.open, tips: [...d.querySelectorAll('li')].filter((e) => e.checkVisibility()).map((e) => e.textContent),
+      label: [...d.querySelectorAll('summary span')].filter((e) => e.checkVisibility()).map((e) => e.textContent).join() };
+  });
+  await page.screenshot({ path: path.join(outDir, 'ruishin-13-info-howto.png') });
+  await page.click('#info-howto summary');
+  await page.waitForTimeout(200);
+  const closedAgain = await page.evaluate(() => !document.getElementById('info-howto').open);
+  await page.click('#btn-info-close');
+  await page.waitForTimeout(300);
+  const after = await page.evaluate(() => { const a = window.__jww; return JSON.stringify({ v: a.view, tool: a.tool, on: a.ruishinOn, active: a.activeChain, o: [...a.origins] }); });
+  check('図面を開いた後も、図面情報（i）の「使い方を見る」で使い方が見られる（図面情報もそのまま）',
+    shown.panel && shown.has && !shown.open && shown.file && opened.open && opened.label === '使い方を閉じる'
+    && HOWTO_KEYS.every((k) => opened.tips.some((t) => t.includes(k))), { shown, opened });
+  check('使い方を閉じても、図面の表示位置や操作の状態は変わらない', closedAgain && after === before, { closedAgain, same: after === before });
+}
+
+// ---------- 14. 斜めの列：起点を外へ動かすと、斜めの寸法線が伸びる ----------
+{
+  const { makeJww } = await import('./jww-synth.mjs');
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const ents = [];
+  // 45° の向きに 3 つつながった寸法（1 つ 1000 mm、縮尺 1/100）
+  const d = 10 / Math.SQRT2;
+  for (let i = 0; i < 3; i++) ents.push({ dim: [d * i, d * i, d * (i + 1), d * (i + 1)], value: '1000' });
+  ents.push({ line: [-20, 10, 60, 10], color: 2, style: 1 });
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ruishin-')), 'oblique.jww');
+  fs.writeFileSync(file, makeJww({ entities: ents, scale: 100 }));
+  await page.setInputFiles('#file', file);
+  await page.waitForFunction(() => document.getElementById('title')?.textContent === 'oblique.jww', null, { timeout: 60000 });
+  await page.waitForTimeout(600);
+  await ensureRuishinOn();
+  const info = await page.evaluate(() => window.__jww.chains.map((c) => ({ id: c.id, ux: c.ux, uy: c.uy, lo: c.stops[0], hi: c.stops[c.stops.length - 1] })));
+  const sc = info.find((c) => c.ux !== 0 && c.uy !== 0);
+  await page.evaluate(() => { const a = window.__jww; a.view.zoom *= 0.6; a.requestDraw(true); });
+  await page.waitForTimeout(300);
+  let ok = false, lo = null, hi = null;
+  if (sc) {
+    await setOriginT(sc.id, sc.lo - 8);
+    await page.waitForTimeout(250);
+    lo = await extensionAt(sc.id);
+    await setOriginT(sc.id, sc.hi + 8);
+    await page.waitForTimeout(250);
+    hi = await extensionAt(sc.id);
+    ok = lo.ext && hi.ext && lo.mid.alpha > 100 && hi.mid.alpha > 100;
+  }
+  check('斜めの列：起点を両側の外へ動かすと、斜めの寸法線が起点まで伸びる', !!sc && ok, { info, lo, hi });
+  await page.screenshot({ path: path.join(outDir, 'ruishin-14-oblique.png') });
+  const hist = await page.evaluate(() => window.__jww.originPast.length + window.__jww.originFuture.length);
+  check('別の図面を開くと、起点の戻る・進むの履歴は前の図面のものを持ち越さない', hist === 2, { hist });
+}
+
+// ---------- 15. 横向きの iPhone でも、ツールバー・パネル・戻る／進むが使える ----------
+{
+  await page.setViewportSize({ width: 852, height: 393 });
+  await page.waitForTimeout(500);
+  const r = await page.evaluate(() => {
+    const vis = (id) => { const e = document.getElementById(id); const q = e.getBoundingClientRect(); return e.checkVisibility() && q.right <= innerWidth + 0.5 && q.bottom <= innerHeight + 0.5 && q.width > 0; };
+    const panel = document.getElementById('ruishin-panel').getBoundingClientRect();
+    const pills = [...document.querySelectorAll('#ruishin-actions .pill')].map((b) => b.scrollWidth <= b.clientWidth && b.getBoundingClientRect().right <= panel.right + 0.5);
+    return { tools: ['btn-tool-measure', 'btn-tool-ruishin', 'btn-tool-inspect', 'btn-layers', 'btn-display', 'btn-fit'].every(vis),
+      undo: vis('btn-ruishin-undo'), redo: vis('btn-ruishin-redo'), pills };
+  });
+  check('横向き：ツールバー 6 つ・戻る／進む・3 つのボタンが画面に収まる', r.tools && r.undo && r.redo && r.pills.every(Boolean), r);
+  await page.screenshot({ path: path.join(outDir, 'ruishin-15-landscape.png') });
+  await page.setViewportSize({ width: 393, height: 659 });
 }
 
 check('コンソールにエラーがない', errors.length === 0, { errors });

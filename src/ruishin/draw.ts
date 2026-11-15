@@ -5,7 +5,7 @@
 // 値は元の寸法値と同じ側に、寸法線と直角の向きで書く（狭い間隔の寸法でも値どうしが重ならないように）。
 // 選んだ列で、起点が吸着した点が寸法線から離れていれば、その点から寸法線まで点線を引く。
 import type { Background } from '../render/theme.ts';
-import { formatValue, onChain, ordinates, along, type Chain, type Origin } from './ordinate.ts';
+import { chainExtension, formatValue, onChain, ordinates, along, type Chain, type Origin } from './ordinate.ts';
 
 export interface OrdinateLayer {
   chains: Chain[];
@@ -19,6 +19,8 @@ export interface OrdinateLayer {
   signed: boolean;
   /** 列の元の寸法値の色（CSS の色）。分からなければ null（背景に合わせた既定の色） */
   colorOf?: (c: Chain) => string | null;
+  /** 列の元の寸法線の色（CSS の色）。起点まで伸ばした寸法線をこの色で描く。分からなければ colorOf */
+  lineColorOf?: (c: Chain) => string | null;
 }
 
 const COLORS: Record<Background, { text: string; ink: string; halo: string; activeBand: string }> = {
@@ -26,6 +28,9 @@ const COLORS: Record<Background, { text: string; ink: string; halo: string; acti
   dark: { text: '#fb923c', ink: '#e5e7eb', halo: 'rgba(11,12,16,0.85)', activeBand: 'rgba(251,146,60,0.28)' },
   light: { text: '#c2410c', ink: '#111827', halo: 'rgba(255,255,255,0.9)', activeBand: 'rgba(194,65,12,0.22)' },
 };
+
+/** 起点まで伸ばした寸法線の太さ（CSS ピクセル）。図面の線（render/renderer.ts の LINE_WIDTH_MAX）に合わせる */
+const EXTENSION_WIDTH = 0.8;
 
 // 図面の文字と同じ書体（render/textlayer.ts と合わせる）
 const FONT = '"Hiragino Sans", "Noto Sans JP", -apple-system, system-ui, sans-serif';
@@ -62,6 +67,21 @@ export function drawOrdinates(
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   const labels: Label[] = [];
+  // 起点を寸法線の外へ動かした列は、元の寸法線が起点まで伸びたように見せる（同じ色・図面の線に近い太さ）。
+  // 画面に描くだけで、図面の図形は変えない。値や矢印より下に描く
+  for (const c of layer.chains) {
+    const origin = layer.origins.get(c.id);
+    const ext = origin ? chainExtension(c, origin) : null;
+    if (!ext) continue;
+    const [x1, y1] = toScreen(...onChain(c, ext.from));
+    const [x2, y2] = toScreen(...onChain(c, ext.to));
+    ctx.strokeStyle = layer.lineColorOf?.(c) ?? layer.colorOf?.(c) ?? col.ink;
+    ctx.lineWidth = Math.max(EXTENSION_WIDTH * k, 1);
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+  }
   for (const c of layer.chains) {
     const origin = layer.origins.get(c.id);
     if (!origin) continue;

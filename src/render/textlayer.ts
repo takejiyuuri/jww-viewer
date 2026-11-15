@@ -93,6 +93,11 @@ export class TextLayer {
     this.drawnAt = null;
   }
 
+  /** 線色の番号を、いまの表示（背景・単色・隠した色）で描く色。分からなければ null */
+  paletteColor(color: number): string | null {
+    return this.styles[color] ?? null;
+  }
+
   /** 文字（texts の添字）を描く色。分からなければ null */
   colorOf(index: number): string | null {
     const t = this.texts[index];

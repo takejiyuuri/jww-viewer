@@ -8,11 +8,11 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <!-- Web 版は検索に載せない（案内は App Store のアプリにする） -->
 <meta name="robots" content="noindex">
-<meta name="apple-mobile-web-app-title" content="ルイシン">
+<meta name="apple-mobile-web-app-title" content="ミテハカール">
 <link rel="manifest" href="./manifest.webmanifest">
 <link rel="apple-touch-icon" href="./icon-180.png">
 <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png">
-<title>JWWルイシン</title>
+<title>JWWミテハカール</title>
 <link rel="stylesheet" href="./src/style.css">
 <script>
   // ホーム画面から開いたとき（スタンドアロン）だけ、画面の高さを 100vh で決める（style.css 参照）。
@@ -156,20 +156,21 @@
     <span id="ruishin-title" class="inspect-kind">累進寸法</span>
     <span class="panel-top-end">
       <span id="ruishin-tag" class="tag hidden"></span>
-      <button id="btn-ruishin-undo" class="icon-btn head-btn" aria-label="起点を 1 つ前に戻す" disabled><svg class="ico"><use href="#i-undo"/></svg></button>
+      <button id="btn-ruishin-undo" class="icon-btn head-btn" aria-label="戻る：起点を 1 つ前に戻す" disabled><svg class="ico"><use href="#i-undo"/></svg></button>
+      <button id="btn-ruishin-redo" class="icon-btn head-btn" aria-label="進む：戻した起点の操作をやり直す" disabled><svg class="ico flip-x"><use href="#i-undo"/></svg></button>
     </span>
   </div>
   <div id="ruishin-body" class="inspect-body ruishin-body"></div>
   <div id="ruishin-actions" class="panel-actions ruishin-actions">
-    <button id="btn-ruishin-on" class="pill on" aria-pressed="true" aria-label="累進寸法で表示する">累進表示</button>
+    <button id="btn-ruishin-on" class="pill" aria-pressed="false" aria-label="累進表示：寸法を累進寸法に直して表示する">累進表示</button>
     <button id="btn-ruishin-along" class="pill" aria-pressed="false" aria-label="寸法線上のみ：起点を寸法線の上だけで動かす">寸法線上のみ</button>
     <button id="btn-ruishin-reset" class="pill">全列を戻す</button>
   </div>
 </section>
 
 <nav id="toolbar" aria-label="ツール">
-  <button id="btn-tool-ruishin" class="tool on" aria-pressed="true"><svg class="ico"><use href="#i-ruishin"/></svg><span>累進</span></button>
-  <button id="btn-tool-measure" class="tool" aria-pressed="false"><svg class="ico"><use href="#i-measure"/></svg><span>計測</span></button>
+  <button id="btn-tool-measure" class="tool on" aria-pressed="true"><svg class="ico"><use href="#i-measure"/></svg><span>計測</span></button>
+  <button id="btn-tool-ruishin" class="tool" aria-pressed="false"><svg class="ico"><use href="#i-ruishin"/></svg><span>累進</span></button>
   <button id="btn-tool-inspect" class="tool" aria-pressed="false"><svg class="ico"><use href="#i-inspect"/></svg><span>属性</span></button>
   <button id="btn-layers" class="tool"><svg class="ico"><use href="#i-layers"/></svg><span>レイヤ</span></button>
   <button id="btn-display" class="tool"><svg class="ico"><use href="#i-display"/></svg><span>表示</span></button>
@@ -291,22 +292,16 @@
 <!-- 最初は隠しておき、前回の図面も渡された図面もないときに出す（前回の図面を開くときに一瞬見えないように） -->
 <div id="welcome" class="overlay-panel sheet hidden">
   <div class="sheet-body welcome-body">
-    <h1>JWWルイシン</h1>
-    <p>Jw_cad の図面（.jww）を開くと、寸法を累進寸法に直して表示します。</p>
+    <h1>JWWミテハカール</h1>
+    <p>Jw_cad の図面（.jww）をそのまま開いて、実寸で長さを測れます。寸法を累進寸法に直して見ることもできます。</p>
     <button id="btn-open-2" class="primary">図面を開く</button>
     <!-- 手元に図面がなくても試せるように、アプリに入れた見本の図面を開く -->
     <button id="btn-sample" class="sample-btn">見本の図面を開く</button>
-    <!-- 説明を読まずに図面を開けるよう、操作の説明は「使い方を見る」で開いたときだけ出す（もう一度押すと閉じる） -->
+    <!-- 説明を読まずに図面を開けるよう、操作の説明は「使い方を見る」で開いたときだけ出す（もう一度押すと閉じる）。
+         中身は図面情報（上のバーの i）の「使い方を見る」と同じ（main.ts の HOWTO_ITEMS） -->
     <details id="welcome-howto" class="howto">
       <summary><span class="howto-show">使い方を見る</span><span class="howto-hide">使い方を閉じる</span></summary>
-      <ul class="tips">
-        <li>開いた図面の寸法は、起点からの累進寸法に直して表示します。起点は動かせます</li>
-        <li>1 本指でスクロール、2 本指で拡大縮小</li>
-        <li>「累進」では寸法の列をタップして選び、起点の丸を指で動かします。交点や線の上に吸い付きます</li>
-        <li>「計測」ではタップで計測点を置きます。長押しで拡大鏡、置いた点はつまんで動かせます</li>
-        <li>「属性」では図形をタップすると、レイヤ・線色・線種・長さが分かります</li>
-        <li>「レイヤ」でレイヤごとに表示を切り替えられます。最初は Jw_cad と同じ表示です</li>
-      </ul>
+      <ul class="tips"></ul>
     </details>
     <!-- 図面情報（上のバーの i）にも同じ案内を出す。iOS アプリでは Safari で開く -->
     <p class="about-links">

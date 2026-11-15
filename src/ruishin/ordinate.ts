@@ -133,6 +133,22 @@ export function ordinates(c: Chain, origin: Origin): OrdinateStop[] {
 }
 
 /** 既定の起点（列の最初の端） */
+/**
+ * 起点が寸法線の範囲（最初の端〜最後の端）の外にあるとき、寸法線を起点まで伸ばして見せる区間。
+ * from は近いほうの寸法線の端、to は起点を寸法線に投影した位置（どちらも列の向きの座標 t）。範囲の中なら null。
+ * 画面に描くだけで、図面の図形は変えない
+ */
+export function chainExtension(c: Chain, origin: Origin): { from: number; to: number } | null {
+  if (c.stops.length === 0) return null;
+  const lo = c.stops[0];
+  const hi = c.stops[c.stops.length - 1];
+  const t = along(c, origin.x, origin.y);
+  const eps = Math.max(1e-9, (hi - lo) * 1e-9);
+  if (t < lo - eps) return { from: lo, to: t };
+  if (t > hi + eps) return { from: hi, to: t };
+  return null;
+}
+
 export function defaultOrigin(c: Chain): Origin {
   const [x, y] = onChain(c, c.stops[0] ?? 0);
   return { x, y };

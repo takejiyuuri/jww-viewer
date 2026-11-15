@@ -49,6 +49,25 @@ const ABOUT_LINKS = '<p class="about-links">'
   + '<a href="https://takejiyuuri.github.io/mitehakaru-support/support.html" target="_blank" rel="noopener">サポート・お問い合わせ</a>'
   + '</p>';
 
+/**
+ * 使い方の説明。最初の画面と図面情報（上のバーの i）の「使い方を見る」で同じものを出す
+ */
+const HOWTO_ITEMS = [
+  '1 本指で図面を動かし、2 本指で拡大・縮小します。「全体」で図面全体に戻ります',
+  '「計測」（最初はこれ）：タップで計測点を置き、距離・面積・体積・角度を測ります。長押しで拡大鏡、置いた点はつまんで動かせます。点は交点や線の上に吸い付きます',
+  '「累進」：パネルの「累進表示」を入れると、図面の寸法を起点からの累進寸法に直して表示します。切るか、ほかのツールに切り替えると元の寸法に戻ります',
+  '起点の移動：寸法の列をタップして選び、起点の丸を指で動かします。交点や線の上に吸い付きます。寸法線の外へ動かすと、寸法線が起点まで伸びて見えます（図面は変わりません）',
+  '「寸法線上のみ」：入れると、起点は寸法線の上だけを動き、寸法線がほかの線と交わる所に吸い付きます',
+  '戻る・進む：累進のパネル右上の ↶ で起点を 1 つ前に戻し、↷ で戻した操作をやり直します。「この列を戻す」「全列を戻す」で起点を最初の端に戻せます',
+  '「属性」では図形をタップすると、レイヤ・線色・線種・長さが分かります',
+  '「レイヤ」でレイヤごとに表示を切り替えられます。最初は Jw_cad と同じ表示です。「表示」で背景や線の色を切り替えられます',
+].map((t) => `<li>${t}</li>`).join('');
+
+/** 図面情報に出す「使い方を見る」（押すと開き、もう一度押すと閉じる。図面や操作はそのまま） */
+const INFO_HOWTO = '<details id="info-howto" class="howto info-howto">'
+  + '<summary><span class="howto-show">使い方を見る</span><span class="howto-hide">使い方を閉じる</span></summary>'
+  + `<ul class="tips">${HOWTO_ITEMS}</ul></details>`;
+
 type Tool = 'ruishin' | 'measure' | 'inspect';
 
 /** 図面の見えている範囲を狭めているものの幅（CSS ピクセル） */
@@ -266,7 +285,7 @@ class App {
   private layerMask: Uint8Array = new Uint8Array(256).fill(1);
 
   /** タップで累進寸法の列を選ぶか、計測点を置くか、図形の属性を見るか */
-  private tool: Tool = 'ruishin';
+  private tool: Tool = 'measure';
 
   // ---- 累進寸法 ----
   /** 累進寸法に直した列（図面を開いたときに拾う） */
@@ -279,11 +298,18 @@ class App {
    * 起点を動かした履歴（計測の「戻す」と同じく、1 つずつ前に戻せる）。
    * ひとつの操作で動いた列ごとに、動かす前の起点を覚える。列は寸法線で見分ける（レイヤの切り替えで列を作り直しても引き継ぐ）
    */
-  private originPast: Array<Array<{ key: string; before: Origin }>> = [];
+  private originPast: OriginStep[] = [];
+  /** 戻した起点の操作（「進む」でやり直す）。新しく起点を動かしたら捨てる */
+  private originFuture: OriginStep[] = [];
+  /**
+   * 動かした起点を寸法線の位置（chainKeyOf）で覚えておく。レイヤを隠して列がいったん無くなっても、
+   * 表示に戻したときに同じ起点に戻せるように（図面を開くたびに空にする）
+   */
+  private keptOrigins = new Map<string, Origin>();
   /** 累進のパネルを最後に書いたときの「選べるか・動かせるか」 */
   private panelOpKey = '';
   /** 累進寸法で表示する（元の寸法値を隠して累進の値を描く）。切ると元の寸法のまま */
-  private ruishinOn = true;
+  private ruishinOn = false;
   /** 選んでいる列の id。-1 なら無し */
   private activeChain = -1;
   /** 起点を動かしている列の id。-1 なら無し */
@@ -1692,8 +1718,13 @@ class App {
   private loadChains(_scene: Scene): void {
     this.chains = [];
     this.origins = new Map();
+    // 戻す・進むの履歴は図面ごと。別の図面の起点を取り違えないよう、開くたびに空にする
     this.originPast = [];
+    this.originFuture = [];
+    this.keptOrigins = new Map();
     this.chainKey = null;
+    // 図面を開いた直後は元の寸法のまま（「累進」の「累進表示」を入れたときだけ累進に直す）
+    this.setRuishinOn(false);
     this.activeChain = -1;
     this.originDrag = -1;
   }
@@ -1704,10 +1735,10 @@ class App {
    */
   private rebuildChains(scene: Scene): void {
     const keyOf = chainKeyOf;
-    const oldOrigins = new Map<string, Origin>();
+    const oldOrigins = this.keptOrigins;
     for (const c of this.chains) {
       const o = this.origins.get(c.id);
-      if (o && !oldOrigins.has(keyOf(c))) oldOrigins.set(keyOf(c), o);
+      if (o) oldOrigins.set(keyOf(c), o);
     }
     const old = this.activeChain >= 0 ? this.chainById(this.activeChain) : undefined;
     const activeKey = old ? keyOf(old) : null;
@@ -1838,7 +1869,7 @@ class App {
     if (!c) return;
     const before = this.origins.get(id);
     if (before && before.x === hit.x && before.y === hit.y) return;
-    if (before) this.pushOriginPast([{ key: chainKeyOf(c), before }]);
+    if (before) this.pushOriginPast([{ key: chainKeyOf(c), before, after: { x: hit.x, y: hit.y } }]);
     this.origins.set(id, { x: hit.x, y: hit.y });
     if (navigator.vibrate) navigator.vibrate(4);
   }
@@ -1860,6 +1891,11 @@ class App {
       active: this.tool === 'ruishin' ? this.activeChain : -1,
       dragging: this.holding ? id : -1,
       signed: false,
+      lineColorOf: (c) => {
+        const scene = this.scene;
+        const e = c.spans[0]?.entity ?? -1;
+        return scene && e >= 0 ? this.textLayer.paletteColor(scene.entities.color[e]) : null;
+      },
       colorOf: (c) => {
         for (const sp of c.spans) {
           const col = sp.text >= 0 ? this.textLayer.colorOf(sp.text) : null;
@@ -1876,11 +1912,7 @@ class App {
       el(btnId).setAttribute('aria-pressed', String(on));
     };
     el('btn-ruishin-on').addEventListener('click', () => {
-      this.ruishinOn = !this.ruishinOn;
-      toggle('btn-ruishin-on', this.ruishinOn);
-      if (!this.ruishinOn) this.activeChain = -1;
-      this.applyRuishinTexts();
-      this.updateRuishinPanel();
+      this.setRuishinOn(!this.ruishinOn);
       this.hint(this.ruishinOn ? '累進寸法で表示します' : '元の寸法で表示します');
     });
     el('btn-ruishin-along').addEventListener('click', () => {
@@ -1891,13 +1923,14 @@ class App {
         : '寸法線上のみを切りました。起点は端点・交点・線上に吸着し、真横・真下の位置を使います');
     });
     el('btn-ruishin-undo').addEventListener('click', () => this.undoOrigin());
+    el('btn-ruishin-redo').addEventListener('click', () => this.redoOrigin());
     el('btn-ruishin-reset').addEventListener('click', () => {
       const targets = this.activeChain >= 0 ? this.chains.filter((c) => c.id === this.activeChain) : this.chains;
-      const changed: Array<{ key: string; before: Origin }> = [];
+      const changed: OriginStep = [];
       for (const c of targets) {
         const before = this.origins.get(c.id);
         const next = defaultOrigin(c);
-        if (before && (before.x !== next.x || before.y !== next.y)) changed.push({ key: chainKeyOf(c), before });
+        if (before && (before.x !== next.x || before.y !== next.y)) changed.push({ key: chainKeyOf(c), before, after: next });
         this.origins.set(c.id, next);
       }
       if (changed.length) this.pushOriginPast(changed);
@@ -1907,25 +1940,60 @@ class App {
     });
   }
 
-  private pushOriginPast(step: Array<{ key: string; before: Origin }>): void {
+  /** 「累進表示」の入・切。切ると元の寸法に戻し、起点の丸・矢印・寸法線の延長も描かない */
+  private setRuishinOn(on: boolean): void {
+    this.ruishinOn = on;
+    const b = document.getElementById('btn-ruishin-on');
+    if (b) {
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-pressed', String(on));
+    }
+    if (!on) this.activeChain = -1;
+    this.applyRuishinTexts();
+    this.updateRuishinPanel();
+  }
+
+  /** 新しく起点を動かした（戻した後なら、進む履歴は捨てる） */
+  private pushOriginPast(step: OriginStep): void {
     this.originPast.push(step);
     // 覚えておくのは直近の 200 回まで
     if (this.originPast.length > 200) this.originPast.shift();
+    this.originFuture = [];
     this.updateRuishinPanel();
+  }
+
+  /** 履歴の 1 回ぶんの起点を、その列（同じ寸法線の列）にだけ当てる。当てた列の id（1 列だけのとき）を返す */
+  private applyOriginStep(step: OriginStep, which: 'before' | 'after'): number {
+    let last = -1;
+    for (const e of step) {
+      const c = this.chains.find((o) => chainKeyOf(o) === e.key);
+      if (!c) continue;
+      this.origins.set(c.id, e[which]);
+      last = c.id;
+    }
+    return step.length === 1 ? last : -1;
+  }
+
+  /** 戻した起点の操作をやり直す（最後に動かした列を選び直して見せる） */
+  private redoOrigin(): void {
+    const step = this.originFuture.pop();
+    if (!step) return;
+    const id = this.applyOriginStep(step, 'after');
+    this.originPast.push(step);
+    if (id >= 0) this.activeChain = id;
+    this.hint(step.length > 1 ? '起点の操作をまとめてやり直しました' : '起点の操作をやり直しました');
+    tapFeedback();
+    this.updateRuishinPanel();
+    this.requestDraw(true);
   }
 
   /** 起点を 1 つ前に戻す（最後に動かした列を選び直して見せる） */
   private undoOrigin(): void {
     const step = this.originPast.pop();
     if (!step) return;
-    let last = -1;
-    for (const { key, before } of step) {
-      const c = this.chains.find((o) => chainKeyOf(o) === key);
-      if (!c) continue;
-      this.origins.set(c.id, before);
-      last = c.id;
-    }
-    if (step.length === 1 && last >= 0) this.activeChain = last;
+    const last = this.applyOriginStep(step, 'before');
+    this.originFuture.push(step);
+    if (last >= 0) this.activeChain = last;
     this.hint(step.length > 1 ? '起点をまとめて戻しました' : '起点を 1 つ前に戻しました');
     tapFeedback();
     this.updateRuishinPanel();
@@ -1935,6 +2003,7 @@ class App {
   /** 累進寸法のパネルの文言とボタン */
   private updateRuishinPanel(): void {
     el<HTMLButtonElement>('btn-ruishin-undo').disabled = !this.ruishinOn || this.originPast.length === 0;
+    el<HTMLButtonElement>('btn-ruishin-redo').disabled = !this.ruishinOn || this.originFuture.length === 0;
     const body = el('ruishin-body');
     const title = el('ruishin-title');
     const tag = el('ruishin-tag');
@@ -1954,7 +2023,7 @@ class App {
     }
     if (!this.ruishinOn) {
       title.textContent = '累進寸法（切）';
-      body.innerHTML = '<p class="note">元の寸法で表示しています。「累進表示」をオンにすると戻せます。</p>';
+      body.innerHTML = `<p class="note">${RUISHIN_OFF_NOTE}</p>`;
       return;
     }
     if (!c) {
@@ -2814,14 +2883,17 @@ class App {
     if (this.tool === tool) return;
     this.cancelHold();
     this.toggleColors(false);
+    const leavingOrEntering = this.tool === 'ruishin' || tool === 'ruishin';
     this.tool = tool;
+    // 「累進」を出たときは元の寸法に戻し、もう一度「累進」を選んだときも「累進表示」は切から始める
+    if (leavingOrEntering) this.setRuishinOn(false);
     // 属性に切り替えたときは、属性のパネルを縮めずに出す（縮めたままだと長さや線色の行が見えない）
     if (tool === 'inspect') el('inspect-panel').classList.remove('collapsed');
     this.updatePanels();
     this.requestDraw();
     if (tool === 'ruishin') this.updateRuishinPanel();
     this.hint(tool === 'inspect' ? '図形をタップすると属性を表示します'
-      : tool === 'ruishin' ? (this.anyOperable() || this.chains.length === 0 ? RUISHIN_PICK_HINT : RUISHIN_ZOOM_HINT)
+      : tool === 'ruishin' ? RUISHIN_OFF_HINT
       : 'タップで計測点を置きます');
   }
 
@@ -3098,6 +3170,8 @@ class App {
     el('btn-open').addEventListener('click', () => this.openFiles());
     el('btn-open-2').addEventListener('click', () => this.openFiles());
     el('btn-sample').addEventListener('click', () => void this.openSample());
+    // 最初の画面の「使い方を見る」の中身（図面情報の「使い方を見る」と同じ）
+    el('welcome-howto').querySelector('.tips')!.innerHTML = HOWTO_ITEMS;
     el('btn-files-close').addEventListener('click', () => this.closeFiles());
     el('btn-pick-file').addEventListener('click', () => {
       if (!this.confirmDiscard()) return;
@@ -3700,7 +3774,7 @@ class App {
       '</div>',
       ABOUT_LINKS,
     );
-    body.innerHTML = rows.join('');
+    body.innerHTML = this.infoHowto() + rows.join('');
     const change = (): void => {
       const scene = this.scene;
       const current = this.info;
@@ -3750,7 +3824,7 @@ class App {
       );
     }
     rows.push('</div>', ABOUT_LINKS);
-    body.innerHTML = rows.join('');
+    body.innerHTML = this.infoHowto() + rows.join('');
     this.bindScalePicks(body);
   }
 
@@ -3772,11 +3846,17 @@ class App {
     }
   }
 
+  /** 図面情報の上に出す「使い方を見る」。図面情報を書き直しても、開いていれば開いたままにする */
+  private infoHowto(): string {
+    const open = document.getElementById('info-howto')?.hasAttribute('open');
+    return open ? INFO_HOWTO.replace('<details ', '<details open ') : INFO_HOWTO;
+  }
+
   private buildInfoPanel(): void {
     const body = el('info-body');
     const info = this.info;
     if (!info) {
-      body.innerHTML = `<p class="sub">図面が読み込まれていません。</p>${ABOUT_LINKS}`;
+      body.innerHTML = `${this.infoHowto()}<p class="sub">図面が読み込まれていません。</p>${ABOUT_LINKS}`;
       return;
     }
     if (info.format === 'dxf') {
@@ -3821,7 +3901,7 @@ class App {
     }
     rows.push('</div>');
     rows.push(ABOUT_LINKS);
-    body.innerHTML = rows.join('');
+    body.innerHTML = this.infoHowto() + rows.join('');
     this.bindScalePicks(body);
   }
 }
@@ -3881,9 +3961,15 @@ async function fetchSample(): Promise<ArrayBuffer> {
 }
 
 /** 列を寸法線（向き・位置・レイヤグループ）で見分ける鍵。列を作り直しても同じ寸法線なら同じ鍵になる */
+/** 起点の戻す・進むの 1 回ぶん。列は寸法線の位置（chainKeyOf）で覚え、列を作り直しても同じ列に当てる */
+type OriginStep = Array<{ key: string; before: Origin; after: Origin }>;
+
 /** 累進の案内（列を選べる倍率のとき・まだ小さすぎるとき） */
 const RUISHIN_PICK_HINT = '列をタップして選び、起点の丸をドラッグして動かします';
 const RUISHIN_ZOOM_HINT = '拡大すると、寸法列を選べます';
+/** 「累進」を選んだとき（「累進表示」は切から始まる） */
+const RUISHIN_OFF_HINT = '「累進表示」を押すと、寸法を累進寸法に直して表示します';
+const RUISHIN_OFF_NOTE = '元の寸法で表示しています。「累進表示」をオンにすると累進寸法になります。';
 
 function chainKeyOf(c: Chain): string {
   return `${c.ux.toFixed(4)},${c.uy.toFixed(4)},${c.offset.toFixed(3)},${c.group}`;

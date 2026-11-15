@@ -812,9 +812,19 @@ body[data-bg="light"] #ruishin-panel {
   margin-bottom: 7px;
 }
 
-/* 最初の画面の「使い方を見る」。押すと説明を開き、もう一度押すと閉じる */
+/* 「使い方を見る」（最初の画面と図面情報）。押すと説明を開き、もう一度押すと閉じる。
+   押せる所と分かるよう、枠のあるボタンの形にする */
 .howto {
   margin-top: 14px;
+}
+
+.howto summary {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.info-howto {
+  margin: 0 0 14px;
 }
 
 .howto summary {
@@ -1928,4 +1938,15 @@ body[data-bg="light"] #inspect-actions {
   white-space: nowrap;
   /* 指で押しやすい高さを取る（3 つのボタンは横に等分して並べる） */
   min-height: 40px;
+}
+
+/* 累進のパネルの「戻る」「進む」。指で押しやすい大きさにする */
+#ruishin-panel .head-btn {
+  width: 44px;
+  height: 38px;
+}
+
+/* 「進む」は「戻る」の矢印を左右に返して使う */
+.ico.flip-x {
+  transform: scaleX(-1);
 }
