@@ -25,7 +25,7 @@ import { DETECT_BYTES, NATIVE_FORMATS, WEB_FORMATS, detectFormat, unsupportedRea
 import { drawingsInZip, isZipHead, type ZipEntry } from './jww/zip.ts';
 import { DXF_SCALES, DXF_UNITS } from './dxf/units.ts';
 import { extractChains } from './ruishin/extract.ts';
-import { along, defaultOrigin, onChain, parallel, type Chain, type Origin } from './ruishin/ordinate.ts';
+import { along, defaultOrigin, onChain, type Chain, type Origin } from './ruishin/ordinate.ts';
 import { MIN_OPERABLE_TEXT, textHeightCss, type OrdinateLayer } from './ruishin/draw.ts';
 
 /** 吸着先を探す半径（CSS ピクセル） */
@@ -283,8 +283,6 @@ class App {
   private originDrag = -1;
   /** 起点を寸法線に沿って動かす（寸法線を延ばした線と図形の交点に吸着する） */
   private alongChain = false;
-  /** 同じ向きの列の起点をまとめて動かす */
-  private linkOrigins = false;
   /** 属性を表示している図形（scene.entities の添字）。-1 なら無し */
   private selected = -1;
   /** 属性で長押ししている間、指の下にある図形 */
@@ -1812,15 +1810,10 @@ class App {
     return this.snapIndex.query(w.x, w.y, radius);
   }
 
-  /** 起点を置く。「同じ向きをそろえる」なら、平行な列の起点も同じ点にする */
+  /** 起点を置く（その列だけ） */
   private setOrigin(id: number, hit: { x: number; y: number }): void {
-    const c = this.chainById(id);
-    if (!c) return;
-    const p = { x: hit.x, y: hit.y };
-    this.origins.set(id, p);
-    if (this.linkOrigins) {
-      for (const o of this.chains) if (o.id !== id && parallel(o, c)) this.origins.set(o.id, p);
-    }
+    if (!this.chainById(id)) return;
+    this.origins.set(id, { x: hit.x, y: hit.y });
     if (navigator.vibrate) navigator.vibrate(4);
   }
 
@@ -1834,7 +1827,6 @@ class App {
       origins = new Map(origins);
       const p = { x: this.preview.x, y: this.preview.y };
       origins.set(id, p);
-      if (this.linkOrigins) for (const o of this.chains) if (o.id !== id && parallel(o, c)) origins.set(o.id, p);
     }
     return {
       chains: this.chains,
@@ -1871,11 +1863,6 @@ class App {
       this.hint(this.alongChain
         ? '起点は寸法線に沿って動き、図形と交わる所に吸着します'
         : '起点は端点・交点・線上に吸着し、真横・真下の位置を使います');
-    });
-    el('btn-ruishin-link').addEventListener('click', () => {
-      this.linkOrigins = !this.linkOrigins;
-      toggle('btn-ruishin-link', this.linkOrigins);
-      this.hint(this.linkOrigins ? '同じ向きの列の起点をまとめて動かします' : '列ごとに起点を動かします');
     });
     el('btn-ruishin-reset').addEventListener('click', () => {
       const targets = this.activeChain >= 0 ? this.chains.filter((c) => c.id === this.activeChain) : this.chains;

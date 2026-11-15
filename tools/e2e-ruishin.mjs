@@ -1,6 +1,6 @@
 // 累進寸法を画面で確かめる：見本の図面を開くと列が累進に直って元の寸法値が隠れる、列をタップして選べる、
 // 起点の丸をドラッグして通り芯の交点に吸着させると値が変わる、「寸法線に沿う」で寸法線の上だけを動く、
-// 「同じ向きを連動」で平行な列の起点もそろう、「累進で表示」を切ると元に戻る。
+// 「同じ向きを連動」は無い（起点はその列だけ動く）、「累進で表示」を切ると元に戻る。
 // 引数：出力先のフォルダ（スクリーンショット）。図面は public/ruishin-sample.jww（tools/ruishin-sample.mjs で作る）
 import { chromium, devices } from 'playwright';
 import path from 'node:path';
@@ -158,18 +158,19 @@ const bottom = (await page.evaluate(() => {
   await page.click('#btn-ruishin-along');
 }
 
-// ---------- 5. 同じ向きを連動：上の列（線と数字の寸法）も同じ起点になる ----------
+// ---------- 5. 起点はその列だけ動く（平行な上の列は動かない） ----------
 {
-  await page.click('#btn-ruishin-link');
+  const before = (await values()).filter((c) => c.dir === 'h' && c.id !== bottom.id);
   const o0 = await page.evaluate((id) => window.__jww.origins.get(id), bottom.id);
   const from = await toScreen(o0.x, bottom.offset);
   const to = await toScreen(18.2 + 0.3, 18.2 - 0.3);
   await drag(from, to);
   const v = await values();
-  const hs = v.filter((c) => c.dir === 'h');
-  check('平行な列の起点もそろう', hs.every((c) => c.values.join() === '-1820,0,1820,2730,4550,6370'), { hs });
-  await page.click('#btn-ruishin-link');
-  await page.screenshot({ path: path.join(outDir, 'ruishin-3-linked.png') });
+  const mine = v.find((c) => c.id === bottom.id);
+  const others = v.filter((c) => c.dir === 'h' && c.id !== bottom.id);
+  check('起点はその列だけ動く', mine.values.join() === '-1820,0,1820,2730,4550,6370'
+    && JSON.stringify(others) === JSON.stringify(before), { mine, others, before });
+  await page.screenshot({ path: path.join(outDir, 'ruishin-3-moved2.png') });
 }
 
 // ---------- 6. 起点を戻す・累進で表示を切る ----------
