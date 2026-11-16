@@ -110,3 +110,46 @@ workflows:
         # 社外のテスターにも配るときだけ、App Store Connect の TestFlight → テスト情報（説明・連絡先など）を入れてから
         # true にして beta_groups を足す（社外向けは毎回 Beta App Review の審査がある）
         submit_to_testflight: false
+
+  # ---- 3. App Store のスクリーンショット（iPad 13インチの実画面）をシミュレータで撮る ----
+  # 撮影専用。TestFlight・App Store Connect には何も送らず、署名・API キーも使わない。
+  # アプリの中身は同じで、撮影用ビルドにだけ自動手順（tools/appstore-shots/scenario.js）を入れる。
+  # 撮った PNG はこのビルドの成果物（Artifacts）からダウンロードする（個人アカウントは 30 日で消える）。
+  # 手順と、撮れる場面は tools/appstore-shots/README.md
+  ios-screenshots:
+    name: App Store 撮影（iPad シミュレータ）
+    instance_type: mac_mini_m2
+    max_build_duration: 45
+    environment:
+      node: 22
+      xcode: latest
+      vars:
+        SHOT_DEVICE: "iPad Pro 13-inch"
+        SHOT_LABEL: ipad
+    scripts:
+      - name: npm の依存を入れる
+        script: npm ci
+      - name: 撮影用の Web をビルドし、自動手順を入れる
+        script: |
+          # window.__jww（図面の座標を読む開発用の窓口）を出すため NODE_ENV=development でビルドする
+          NODE_ENV=development npx vite build
+          node tools/appstore-shots/inject.mjs dist
+      - name: Web を iOS プロジェクトへ写す
+        script: npx cap sync ios
+      - name: シミュレータ向けにビルドする（署名なし）
+        script: |
+          set -o pipefail
+          xcodebuild \
+            -project ios/App/App.xcodeproj \
+            -scheme App \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/derived \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+      - name: シミュレータで撮る
+        script: tools/appstore-shots/run-sim.sh
+    artifacts:
+      - screenshots/**/*.png
+      - screenshots/**/*.txt
