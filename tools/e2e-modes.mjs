@@ -481,7 +481,8 @@ const overlayAt = (x, y) => page.evaluate(([x, y]) => {
       vertical: bar.h > bar.w,
       side: bar.l + bar.w / 2 > a.cssW / 2 ? 'right' : 'left',
       stacked: tools.every((t, i) => i === 0 || (Math.abs(t.l - tools[0].l) < 1 && t.t >= tools[i - 1].b)),
-      inside: tools.length === 5 && tools.every((t) => t.l >= 0 && t.r <= a.cssW && t.t >= 0 && t.b <= a.cssH),
+      // ツールは 計測・累進・属性・レイヤ・表示・全体 の 6 つ（版 1.2 で「累進」を足した）
+      inside: tools.length === 6 && tools.every((t) => t.l >= 0 && t.r <= a.cssW && t.t >= 0 && t.b <= a.cssH),
       hits,
       area: a.visibleArea(),
       toolsL: Math.min(...tools.map((t) => t.l)),
@@ -609,11 +610,11 @@ const overlayAt = (x, y) => page.evaluate(([x, y]) => {
     await o.ctx.close();
   }
 
-  // Safari のバーが出て高さの低い横画面でも、ボタンを低くして 5 つとも画面に収める
+  // Safari のバーが出て高さの低い横画面でも、ボタンを低くして 6 つとも画面に収める
   {
     const o = await openRotated({ width: 568, height: 240 }, 90);
     const s = await layout(o.page);
-    check('高さ 240 の低い横画面でも、縦に並べたボタンが 5 つとも画面に収まる', s.vertical && s.stacked && s.inside, s);
+    check('高さ 240 の低い横画面でも、縦に並べたボタンが 6 つとも画面に収まる', s.vertical && s.stacked && s.inside, s);
     await o.ctx.close();
   }
 

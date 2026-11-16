@@ -60,6 +60,8 @@ export class TextLayer {
   private visible: Uint8Array = new Uint8Array(0);
   /** レイヤ（0〜255）ごとに表示するかどうか */
   private layerVisible: Uint8Array = new Uint8Array(256).fill(1);
+  /** 描かない文字（texts の添字）。無ければ null */
+  private hidden: ReadonlySet<number> | null = null;
 
   /** 画面上でこの高さ未満の文字は描かない（デバイスピクセル） */
   minHeight = 6;
@@ -89,6 +91,17 @@ export class TextLayer {
     }
     // 色が変わったので、ずれていなくても描き直させる
     this.drawnAt = null;
+  }
+
+  /** 線色の番号を、いまの表示（背景・単色・隠した色）で描く色。分からなければ null */
+  paletteColor(color: number): string | null {
+    return this.styles[color] ?? null;
+  }
+
+  /** 文字（texts の添字）を描く色。分からなければ null */
+  colorOf(index: number): string | null {
+    const t = this.texts[index];
+    return t ? this.styles[t.color] ?? null : null;
   }
 
   resize(cssW: number, cssH: number, dpr: number): void {
@@ -136,6 +149,12 @@ export class TextLayer {
     this.drawnAt = null;
   }
 
+  /** 描かない文字（texts の添字）。累進寸法に直した寸法の、元の寸法値を隠すのに使う */
+  setHidden(hidden: ReadonlySet<number> | null): void {
+    this.hidden = hidden && hidden.size ? hidden : null;
+    this.drawnAt = null;
+  }
+
   render(view: View): void {
     const ctx = this.ctx;
     const { w, h } = this;
@@ -168,8 +187,11 @@ export class TextLayer {
     ctx.textAlign = 'left';
     ctx.textBaseline = 'bottom';
 
-    for (const t of this.texts) {
+    const hidden = this.hidden;
+    for (let ti = 0; ti < this.texts.length; ti++) {
+      const t = this.texts[ti];
       if (!this.visible[t.color] || !this.layerVisible[t.layer]) continue;
+      if (hidden?.has(ti)) continue;
       const hpx = t.height * z;
       if (hpx < this.minHeight) continue;
 

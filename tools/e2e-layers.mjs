@@ -671,10 +671,16 @@ if (lineLayer >= 0) {
   await page.waitForTimeout(250);
   const inv = await page.evaluate(() => ({
     mask: [...window.__jww.layers.mask()].join(''),
+    // 図形のあるレイヤ。反転で見え方を入れ替えるのはこのレイヤ（ui/layers.ts の invert の決まり）で、
+    // 図形のないレイヤは、一部だけ見えているグループでは入れ替えない
+    used: Array.from({ length: 256 }, (_, k) => window.__jww.layers.used(k)),
     stored: JSON.parse(localStorage.getItem('jww-viewer:hidden') ?? 'null'),
   }));
-  const allFlipped = [...before].every((c, i) => c !== inv.mask[i]);
-  check('一覧の「反転」で全レイヤの見え方が入れ替わり、保存される', allFlipped && inv.stored && Array.isArray(inv.stored.layers), { stored: inv.stored && inv.stored.layers && inv.stored.layers.length });
+  const usedCount = inv.used.filter(Boolean).length;
+  const notFlipped = [...before].map((c, i) => (inv.used[i] && c === inv.mask[i] ? i : -1)).filter((i) => i >= 0);
+  const allFlipped = usedCount > 0 && notFlipped.length === 0;
+  check('一覧の「反転」で図形のある全レイヤの見え方が入れ替わり、保存される', allFlipped && inv.stored && Array.isArray(inv.stored.layers),
+    { stored: inv.stored && inv.stored.layers && inv.stored.layers.length, usedCount, notFlipped });
   await page.click('#btn-layer-invert-all');
   await page.waitForTimeout(250);
   const back2 = await page.evaluate(() => ({
@@ -829,7 +835,8 @@ await page.waitForTimeout(200);
   });
   // 1 段のパネルのすぐ上、2 段になると消去ボタンが来る所を押す
   await page.touchscreen.tap(p0.x, p0.top - 10);
-  await page.waitForTimeout(300);
+  // 決まった時間を待つと、重い図面や遅い端末では「値の段が出た直後」（450ms）を過ぎてしまうので、点が置かれたらすぐ先へ進む
+  await page.waitForFunction(() => window.__jww.points.length === 1, null, { timeout: 3000 }).catch(() => {});
   const s = await page.evaluate(() => {
     const a = window.__jww;
     const p = a.points[0];
@@ -855,11 +862,10 @@ await page.waitForTimeout(200);
   await page.touchscreen.tap(undo.x, undo.y);
   await page.waitForTimeout(80);
   await page.touchscreen.tap(undo.x, undo.y);
+  // 「戻すの場所がパネルのまま」は 2 回目を押した時点で見る（1 秒たつと値の段をしまうので、遅い環境で待ってから見ると別の確かめになる）
+  const onPanel = await page.evaluate(([x, y]) => !!document.elementFromPoint(x, y)?.closest('#readout'), [undo.x, undo.y]);
   await page.waitForTimeout(300);
-  const n2 = await page.evaluate(([x, y]) => ({
-    n: window.__jww.points.length,
-    onPanel: !!document.elementFromPoint(x, y)?.closest('#readout'),
-  }), [undo.x, undo.y]);
+  const n2 = { n: await page.evaluate(() => window.__jww.points.length), onPanel };
   check('「戻す」を続けて押しても、図面に点を置かない（戻すの場所はパネルのまま）', n2.n === 0 && n2.onPanel, n2);
   // 少し経つと値の段をしまって、操作の段だけになる
   await page.waitForTimeout(900);
