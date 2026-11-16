@@ -61,6 +61,8 @@ xcrun simctl status_bar "$UDID" override --time "9:41" --dataNetwork wifi --wifi
   --batteryState charged --batteryLevel 100 || true
 xcrun simctl ui "$UDID" appearance dark || true
 
+# 起動直後は iPadOS のお知らせ（Apple Intelligence など）が上に出ることがあるので、消えるまで待ってからアプリを入れる
+sleep "${SHOT_SETTLE:-75}"
 xcrun simctl install "$UDID" "$APP"
 DATA=$(xcrun simctl get_app_container "$UDID" "$BUNDLE" data)
 DOCS="$DATA/Documents"

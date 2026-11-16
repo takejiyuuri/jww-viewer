@@ -97,7 +97,7 @@
 
     await click('btn-sample');
     await waitFor(() => $('title').textContent.endsWith('.jww'));
-    await sleep(3500);
+    await sleep(8000); // 上に iPadOS のお知らせが残っていても消えるまで待つ
     fitZoom = app().view.zoom;
     fitCenter = { x: app().view.cx, y: app().view.cy };
     await shot('P5_drawing_fit');
