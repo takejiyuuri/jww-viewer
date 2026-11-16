@@ -189,6 +189,13 @@
     await click('btn-records-copy', 300);
     await log(`copy hint: ${hintText()}`);
     await shot('X6c_records_copied');
+    await sleep(HINT_MS);
+    // 属性を主役にするため、アプリの「すべて消す」で計測の記録を消してから撮る
+    // （確かめの画面は、人が「OK」を押したのと同じ扱いにする）
+    const realConfirm = window.confirm;
+    window.confirm = () => true;
+    try { await click('btn-records-clear', 300); } finally { window.confirm = realConfirm; }
+    await log(`records cleared: ${hintText()}`);
     await click('btn-records-close', 300);
     await sleep(HINT_MS);
 

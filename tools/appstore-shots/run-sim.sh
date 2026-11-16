@@ -47,6 +47,15 @@ echo "== 使うシミュレータ: $UDID"
 
 xcrun simctl boot "$UDID" 2>/dev/null || true
 xcrun simctl bootstatus "$UDID" -b
+# 上の時刻の帯を日本語にする（言語と地域を日本にして、もう一度起動し直す）
+if [ "${SHOT_LANG:-ja}" = "ja" ]; then
+  xcrun simctl spawn "$UDID" defaults write -g AppleLanguages -array ja-JP || true
+  xcrun simctl spawn "$UDID" defaults write -g AppleLocale -string ja_JP || true
+  xcrun simctl shutdown "$UDID" || true
+  xcrun simctl boot "$UDID"
+  xcrun simctl bootstatus "$UDID" -b
+  echo "== 言語: $(xcrun simctl spawn "$UDID" defaults read -g AppleLanguages | tr -d '\n ')"
+fi
 # 上の時刻・電池・電波の表示をそろえる（9:41・満充電）
 xcrun simctl status_bar "$UDID" override --time "9:41" --dataNetwork wifi --wifiMode active --wifiBars 3 \
   --batteryState charged --batteryLevel 100 || true
