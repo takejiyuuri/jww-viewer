@@ -11,8 +11,10 @@ copyFileSync(path.join(here, 'scenario.js'), path.join(dist, 'shot-scenario.js')
 // 8 枚目（ZIP の読み込み）用：アプリの見本の図面 1 枚だけを入れた ZIP
 copyFileSync(path.join(here, 'shot-sample.zip'), path.join(dist, 'shot-sample.zip'));
 const src = readFileSync(html, 'utf8');
+// 撮る場面の組（SHOT_SET=new なら追加の場面だけ）
+const set = process.env.SHOT_SET === 'new' ? 'new' : 'all';
 if (!src.includes('shot-scenario.js')) {
-  writeFileSync(html, src.replace('</body>', '<script src="./shot-scenario.js"></script>\n</body>'));
+  writeFileSync(html, src.replace('</body>', `<script>window.__SHOT_SET = '${set}';</script>\n<script src="./shot-scenario.js"></script>\n</body>`));
 }
 const js = readFileSync(path.join(dist, 'assets', readFileSync(html, 'utf8').match(/assets\/(index-[^"]+\.js)/)[1]), 'utf8');
 if (!js.includes('__jww')) {

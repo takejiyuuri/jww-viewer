@@ -190,3 +190,37 @@ workflows:
     artifacts:
       - screenshots/**/*.png
       - screenshots/**/*.txt
+
+  ios-screenshots-iphone-new:
+    name: App Store 撮影（iPhone 16 Plus・新しい2枚用の場面だけ）
+    instance_type: mac_mini_m2
+    max_build_duration: 45
+    environment:
+      node: 22
+      xcode: latest
+    scripts:
+      - name: npm の依存を入れる
+        script: npm ci
+      - name: 撮影用の Web をビルドし、新しい場面だけの自動手順を入れる
+        script: |
+          NODE_ENV=development npx vite build
+          SHOT_SET=new node tools/appstore-shots/inject.mjs dist
+      - name: Web を iOS プロジェクトへ写す
+        script: npx cap sync ios
+      - name: シミュレータ向けにビルドする（署名なし）
+        script: |
+          set -o pipefail
+          xcodebuild \
+            -project ios/App/App.xcodeproj \
+            -scheme App \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/derived \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+      - name: iPhone 16 Plus（1290×2796）で撮る
+        script: SHOT_DEVICE="iPhone 16 Plus" SHOT_LABEL=iphone_new_1290x2796 tools/appstore-shots/run-sim.sh
+    artifacts:
+      - screenshots/**/*.png
+      - screenshots/**/*.txt

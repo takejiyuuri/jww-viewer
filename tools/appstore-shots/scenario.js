@@ -86,6 +86,48 @@
   const Y = [0, 18.2, 27.3, 45.5, 63.7];
   const DIM_Y = -13; // 下の連続寸法の寸法線
 
+  // ---- 追加の場面（SHOT_SET=new のときだけ）：レイヤ・線色ごとの表示と、「全体」→「前の範囲」 ----
+  async function runNew() {
+    await waitFor(() => app() && visible('welcome'));
+    await sleep(800);
+    await click('btn-sample');
+    await waitFor(() => $('title').textContent.endsWith('.jww'));
+    await sleep(8000);
+    fitZoom = app().view.zoom;
+    fitCenter = { x: app().view.cx, y: app().view.cy };
+
+    // 新①：レイヤ・線色ごとの表示。パネルを開いてから、パネルに隠れない所に図面全体を合わせる（アプリの全体表示の計算そのまま）
+    const fitAboveSheet = async () => { const a = app(); a.view = a.fitView(a.visibleFit(), true); a.requestDraw(true); await sleep(800); };
+    await click('btn-layers', 800);
+    await fitAboveSheet();
+    await shot('N1a_layers');
+    await click('btn-layer-close', 400);
+    await click('btn-display', 800);
+    await fitAboveSheet();
+    await shot('N1b_colors_all');
+    const rows = [...$('color-list').querySelectorAll('.color-row')];
+    await log(`colors ${rows.map((r) => r.textContent.replace(/\s+/g, ' ')).join(' / ')}`);
+    const target = rows.find((r) => /線色2/.test(r.textContent)) || rows[1];
+    target.click(); await sleep(1200);
+    await log(`colors after: ${$('color-summary').textContent}`);
+    await shot('N1c_color_hidden');
+    // 元に戻す（すべて表示）
+    await click('btn-color-all', 800);
+    await click('btn-display-close', 600);
+
+    // 新②：拡大中 →「全体」（押す前の範囲を囲う）→「前の範囲」（戻る）
+    await setView(1, fitCenter.x, fitCenter.y);
+    await setView(3.2, (X[0] + X[2]) / 2, (Y[2] + Y[4]) / 2);
+    await sleep(HINT_MS);
+    await shot('N2a_zoomed');
+    await click('btn-fit', 1200);
+    await log(`fit button: ${$('btn-fit').textContent.trim()}`);
+    await shot('N2b_fit_frame');
+    await click('btn-fit', 1200);
+    await log(`back button: ${$('btn-fit').textContent.trim()}`);
+    await shot('N2c_back');
+  }
+
   async function run() {
     await waitFor(() => app() && visible('welcome'));
     const wide = app().cssW > 700; // iPad
@@ -247,7 +289,7 @@
     await click('btn-files-close', 400);
   }
 
-  run().then(() => shot('FINISHED')).catch(async (e) => {
+  (window.__SHOT_SET === 'new' ? runNew() : run()).then(() => shot('FINISHED')).catch(async (e) => {
     await log(`ERROR ${e && e.stack ? e.stack : e}`);
     try { await shot('ERROR'); } catch { /* 外側が時間切れで止める */ }
   });
