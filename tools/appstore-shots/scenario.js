@@ -95,6 +95,19 @@
     await sleep(8000);
     fitZoom = app().view.zoom;
     fitCenter = { x: app().view.cx, y: app().view.cy };
+    await newScenes();
+  }
+
+  /** 図面全体の表示（アプリの全体表示の計算そのまま）に戻し、その倍率と中心を覚え直す */
+  const refit = async () => {
+    const a = app();
+    a.view = a.fitView(); a.requestDraw(true);
+    await sleep(800);
+    fitZoom = a.view.zoom;
+    fitCenter = { x: a.view.cx, y: a.view.cy };
+  };
+
+  async function newScenes() {
 
     // 新①：レイヤ・線色ごとの表示。パネルを開いてから、パネルに隠れない所に図面全体を合わせる（アプリの全体表示の計算そのまま）
     const fitAboveSheet = async () => { const a = app(); a.view = a.fitView(a.visibleFit(), true); a.requestDraw(true); await sleep(800); };
@@ -126,6 +139,58 @@
     await click('btn-fit', 1200);
     await log(`back button: ${$('btn-fit').textContent.trim()}`);
     await shot('N2c_back');
+  }
+
+  // ---- 10 枚構成用（SHOT_SET=v10）：背景の白黒の切り替え（09）と、ボタンを隠して図面を広く見る（10） ----
+  async function viewScenes() {
+    const seg = async (value) => { $('seg-bg').querySelector(`[data-value=${value}]`).click(); await sleep(1200); };
+    // 09：いつもの黒背景 → 「表示」の「背景」で白にする（白背景では明るい線が暗く描き直される。アプリの表示設定そのまま）
+    await refit();
+    await sleep(HINT_MS);
+    await shot('V9a_dark_fit');
+    await setView(1.8, fitCenter.x, fitCenter.y);
+    await shot('V9b_dark_zoom');
+    await click('btn-display', 800);
+    await shot('V9c_dark_panel');
+    await seg('light');
+    await log(`background: ${document.body.dataset.bg}`);
+    await shot('V9d_light_panel');
+    await click('btn-display-close', 800);
+    await shot('V9e_light_zoom');
+    await setView(1, fitCenter.x, fitCenter.y);
+    await refit();
+    await shot('V9f_light_fit');
+    // 黒背景に戻す
+    await click('btn-display', 800);
+    await seg('dark');
+    await click('btn-display-close', 800);
+    await log(`background back: ${document.body.dataset.bg}`);
+
+    // 10：いつもの画面 → 右上のボタンで、ボタンやパネルを隠して図面を広く見る
+    await refit();
+    await sleep(HINT_MS);
+    await shot('V10a_normal_fit');
+    await click('btn-ui-hide', 1500);
+    await log(`ui hidden: ${document.body.classList.contains('ui-hidden')}`);
+    await shot('V10b_hidden_fit');
+    await click('btn-ui-show', 1500);
+    await refit();
+    await setView(1.8, fitCenter.x, fitCenter.y);
+    await shot('V10c_normal_zoom');
+    await click('btn-ui-hide', 1500);
+    await shot('V10d_hidden_zoom');
+    await click('btn-ui-show', 1500);
+    await log(`ui shown: ${!document.body.classList.contains('ui-hidden')}`);
+  }
+
+  /** 10 枚構成用：いつもの場面すべて → 新しい2枚の場面 → 09・10 の場面 */
+  async function runV10() {
+    await run();
+    await sleep(HINT_MS);
+    await refit();
+    await newScenes();
+    await refit();
+    await viewScenes();
   }
 
   async function run() {
@@ -289,7 +354,7 @@
     await click('btn-files-close', 400);
   }
 
-  (window.__SHOT_SET === 'new' ? runNew() : run()).then(() => shot('FINISHED')).catch(async (e) => {
+  ({ new: runNew, v10: runV10 }[window.__SHOT_SET] || run)().then(() => shot('FINISHED')).catch(async (e) => {
     await log(`ERROR ${e && e.stack ? e.stack : e}`);
     try { await shot('ERROR'); } catch { /* 外側が時間切れで止める */ }
   });

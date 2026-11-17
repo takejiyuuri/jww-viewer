@@ -224,3 +224,40 @@ workflows:
     artifacts:
       - screenshots/**/*.png
       - screenshots/**/*.txt
+
+  ios-screenshots-v10:
+    name: App Store 撮影（10枚構成：iPad Pro 13インチと iPhone 16 Plus、すべての場面と 09・10 用の場面）
+    instance_type: mac_mini_m2
+    max_build_duration: 75
+    environment:
+      node: 22
+      xcode: latest
+    scripts:
+      - name: npm の依存を入れる
+        script: npm ci
+      - name: 撮影用の Web をビルドし、10枚構成用の自動手順を入れる
+        script: |
+          NODE_ENV=development npx vite build
+          SHOT_SET=v10 node tools/appstore-shots/inject.mjs dist
+      - name: Web を iOS プロジェクトへ写す
+        script: npx cap sync ios
+      - name: シミュレータ向けにビルドする（署名なし）
+        script: |
+          set -o pipefail
+          xcodebuild \
+            -project ios/App/App.xcodeproj \
+            -scheme App \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/derived \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+      - name: iPad Pro 13インチ（2064×2752）で撮る
+        script: SHOT_DEVICE="iPad Pro 13-inch" SHOT_LABEL=ipad_v10 tools/appstore-shots/run-sim.sh
+        ignore_failure: true
+      - name: iPhone 16 Plus（1290×2796）で撮る
+        script: SHOT_DEVICE="iPhone 16 Plus" SHOT_LABEL=iphone_v10 tools/appstore-shots/run-sim.sh
+    artifacts:
+      - screenshots/**/*.png
+      - screenshots/**/*.txt
