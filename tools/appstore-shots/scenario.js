@@ -118,10 +118,11 @@
     const o = app().origins.get(c.id);
     const outside = toS(-8, DIM_Y);
     await dragHold(toS(o.x, o.y), outside);
-    await shot('X2a_origin_drag_magnifier');
     await release(outside);
+    // 拡大鏡は、線の交わる所へ動かしている途中を撮る（外側の何もない所だと拡大鏡の中が空になるため）
     const inside = toS(X[2], DIM_Y);
     await dragHold(toS(-8, DIM_Y), inside);
+    await shot('X2a_origin_drag_magnifier');
     await release(inside);
     await click('btn-ruishin-undo', HINT_MS);
     await log(`undo ${$('btn-ruishin-undo').disabled} redo ${$('btn-ruishin-redo').disabled}`);
