@@ -212,6 +212,38 @@
     await click('btn-display', 800);
     await shot('X7c_display');
     await click('btn-display-close', 400);
+
+    // ---- 8. ZIP の読み込み ----
+    // 計測に戻してから開く（開いた直後は計測が選ばれた、いつもの画面にする）
+    await click('btn-tool-measure', 600);
+    // 「ファイルから選ぶ」で ZIP（見本の図面 1 枚だけ）を選んだのと同じに、ファイルの選択欄へ渡す
+    // （iOS のファイル選択の画面は自動では押せないため。そのあとの読み込みはアプリの処理そのまま）
+    const zipBuf = await (await fetch('shot-sample.zip')).arrayBuffer();
+    const zipFile = new File([zipBuf], '見本図面.zip', { type: 'application/zip' });
+    const input = $('file');
+    let viaInput = false;
+    try {
+      const dt = new DataTransfer();
+      dt.items.add(zipFile);
+      input.files = dt.files;
+      app().pickAgreed = true;
+      input.dispatchEvent(new Event('change'));
+      viaInput = true;
+    } catch { /* 下で直接渡す */ }
+    const opened = () => $('title').textContent.endsWith('.jww') && $('loading').classList.contains('hidden')
+      && (app().recent || []).length > 0;
+    try { await waitFor(opened, 6000); } catch {
+      viaInput = false;
+      await app().openPicked(zipFile, true);
+      await waitFor(opened);
+    }
+    await log(`zip opened (${viaInput ? 'input' : 'direct'}): ${$('title').textContent}`);
+    await sleep(HINT_MS);
+    await shot('X8b_zip_opened');
+    await click('btn-open', 900);
+    await log(`files: ${$('files-panel').textContent.replace(/\s+/g, ' ').slice(0, 200)}`);
+    await shot('X8a_files_panel');
+    await click('btn-files-close', 400);
   }
 
   run().then(() => shot('FINISHED')).catch(async (e) => {

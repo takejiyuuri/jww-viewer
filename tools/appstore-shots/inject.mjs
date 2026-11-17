@@ -8,6 +8,8 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const dist = process.argv[2] ?? path.join(here, '..', '..', 'dist');
 const html = path.join(dist, 'index.html');
 copyFileSync(path.join(here, 'scenario.js'), path.join(dist, 'shot-scenario.js'));
+// 8 枚目（ZIP の読み込み）用：アプリの見本の図面 1 枚だけを入れた ZIP
+copyFileSync(path.join(here, 'shot-sample.zip'), path.join(dist, 'shot-sample.zip'));
 const src = readFileSync(html, 'utf8');
 if (!src.includes('shot-scenario.js')) {
   writeFileSync(html, src.replace('</body>', '<script src="./shot-scenario.js"></script>\n</body>'));

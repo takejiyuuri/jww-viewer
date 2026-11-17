@@ -28,8 +28,10 @@ for rt, devs in d.items():
         continue
     ver = [int(x) for x in rt.rsplit("iOS-", 1)[-1].split("-") if x.isdigit()]
     for dev in devs:
-        if want in dev["name"] and (best is None or ver > best[0]):
-            best = (ver, dev["udid"], dev["name"], rt)
+        # 名前がぴったり同じものを優先する（「iPhone 16」で「iPhone 16 Plus」を選ばないように）
+        exact = dev["name"] == want
+        if (exact or want in dev["name"]) and (best is None or (exact, ver) > (best[4], best[0])):
+            best = (ver, dev["udid"], dev["name"], rt, exact)
 if best:
     print(best[1]); print(best[2] + " / " + best[3], file=sys.stderr)
 ' "$1"
@@ -37,7 +39,7 @@ if best:
 UDID=$(pick "$DEVICE")
 [ -z "$UDID" ] && [ "$DEVICE" = "iPad Pro 13-inch" ] && UDID=$(pick "iPad Air 13-inch")
 if [ -z "$UDID" ]; then
-  TYPE=$(xcrun simctl list devicetypes -j | python3 -c 'import json,sys; t=[x for x in json.load(sys.stdin)["devicetypes"] if sys.argv[1] in x["name"]]; print(t[-1]["identifier"] if t else "")' "$DEVICE")
+  TYPE=$(xcrun simctl list devicetypes -j | python3 -c 'import json,sys; a=json.load(sys.stdin)["devicetypes"]; t=[x for x in a if x["name"]==sys.argv[1]] or [x for x in a if sys.argv[1] in x["name"]]; print(t[-1]["identifier"] if t else "")' "$DEVICE")
   RUNTIME=$(xcrun simctl list runtimes -j | python3 -c 'import json,sys; r=[x for x in json.load(sys.stdin)["runtimes"] if x.get("isAvailable") and x["platform"]=="iOS"]; print(r[-1]["identifier"] if r else "")')
   echo "== $DEVICE が無いので作ります: $TYPE / $RUNTIME"
   UDID=$(xcrun simctl create "shot-$LABEL" "$TYPE" "$RUNTIME")
@@ -98,4 +100,6 @@ cp "$DOCS/shot-log.txt" "$OUT/shot-log.txt" 2>/dev/null || true
 echo "== 撮った画像"
 ls -la "$OUT"
 for f in "$OUT"/${LABEL}_*.png; do [ -f "$f" ] && sips -g pixelWidth -g pixelHeight "$f" | tail -2 | tr '\n' ' ' && echo " $f"; done
+# 次の機種を続けて撮るときのために、このシミュレータは止めておく
+xcrun simctl shutdown "$UDID" 2>/dev/null || true
 exit $STATUS

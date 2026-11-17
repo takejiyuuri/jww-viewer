@@ -40,7 +40,8 @@ Mac がなくても、Codemagic の Mac で iPad のシミュレータを動か�
 | X4b_volume / X4c_angle | 体積（高さ 2400）／角度 |
 | X5_magnifier_snap | 計測中の拡大鏡と吸着 |
 | X6a_record_badges / X6b_records_list / X6c_records_copied | 記録の札／記録の一覧／コピー |
-| P4a_inspect / P4b_layers / X7c_display | 属性／レイヤ／表示 |
+| P4a_inspect / P4b_layers / X7c_display | 属性（前に計測の記録を「すべて消す」で消す）／レイヤ／表示 |
+| X8b_zip_opened / X8a_files_panel | ZIP（見本の図面 1 枚、shot-sample.zip）を選択欄に渡して開いた直後／「ファイル」の図面を開く画面 |
 
 ## 手元で試す
 
@@ -49,3 +50,8 @@ NODE_ENV=development npx vite build --outDir /tmp/shot-dist
 node tools/appstore-shots/inject.mjs /tmp/shot-dist
 node tools/appstore-shots/local-test.mjs /tmp/shot-dist /tmp/shot-out 1032 1376 2
 ```
+
+## iPhone
+
+Codemagic のワークフロー `ios-screenshots-iphone` が、同じビルドで iPhone 16 Plus（1290×2796）と iPhone 16（1179×2556）を続けて撮る
+（出力は `screenshots/iphone_1290x2796/` と `screenshots/iphone_1179x2556/`）。

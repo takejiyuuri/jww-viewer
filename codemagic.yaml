@@ -153,3 +153,40 @@ workflows:
     artifacts:
       - screenshots/**/*.png
       - screenshots/**/*.txt
+  ios-screenshots-iphone:
+    name: App Store 撮影（iPhone シミュレータ 2 機種）
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      node: 22
+      xcode: latest
+    scripts:
+      - name: npm の依存を入れる
+        script: npm ci
+      - name: 撮影用の Web をビルドし、自動手順を入れる
+        script: |
+          # window.__jww（図面の座標を読む開発用の窓口）を出すため NODE_ENV=development でビルドする
+          NODE_ENV=development npx vite build
+          node tools/appstore-shots/inject.mjs dist
+      - name: Web を iOS プロジェクトへ写す
+        script: npx cap sync ios
+      - name: シミュレータ向けにビルドする（署名なし）
+        script: |
+          set -o pipefail
+          xcodebuild \
+            -project ios/App/App.xcodeproj \
+            -scheme App \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/derived \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+      - name: iPhone 16 Plus（1290×2796）で撮る
+        script: SHOT_DEVICE="iPhone 16 Plus" SHOT_LABEL=iphone_1290x2796 tools/appstore-shots/run-sim.sh
+        ignore_failure: true
+      - name: iPhone 16（1179×2556）で撮る
+        script: SHOT_DEVICE="iPhone 16" SHOT_LABEL=iphone_1179x2556 tools/appstore-shots/run-sim.sh
+    artifacts:
+      - screenshots/**/*.png
+      - screenshots/**/*.txt
