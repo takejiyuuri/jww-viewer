@@ -1,5 +1,5 @@
 // 計測の一時記録を確かめる。記録する（距離・面積）、「記録 N」の一覧、行を押して記録へ動く、図面の札を押す、
-// 1 件消す、コピー、札を隠す、上限、別の図面を開く前の確認と、渡された図面で記録が消えたときの知らせ、横向きの一覧。
+// 1 件消す、コピー、札を隠す、上限、別の図面を開く前の確認（アプリの中の窓）と、渡された図面で記録が消えたときの知らせ、横向きの一覧。
 import { chromium, devices } from 'playwright';
 import { startServer } from './serve.mjs';
 import { defaultSample } from './samples.mjs';
@@ -261,32 +261,44 @@ const badgeInk = (page, b) => page.evaluate(({ x, y }) => {
   await page.click('#btn-clear');
   await page.waitForTimeout(1200);
 
-  // 11. 別の図面を開く前に確かめる。やめれば記録はそのまま
+  // 11. 別の図面を開く前に、アプリの中の窓で確かめる（iOS の確認は英語になるため使わない）。やめれば記録はそのまま
   await page.click('#btn-open');
   await page.waitForSelector('#recent-list [data-open]', { timeout: 5000 });
-  let dialog = '';
-  page.once('dialog', (d) => { dialog = d.message(); void d.dismiss(); });
+  let nativeAsked = false;
+  const onNative = (d) => { nativeAsked = true; void d.dismiss(); };
+  page.on('dialog', onNative);
   let chooser = false;
   const onChooser = () => { chooser = true; };
   page.on('filechooser', onChooser);
   await page.click('#btn-pick-file');
   await page.waitForTimeout(300);
+  const ask = await page.evaluate(() => ({
+    shown: !document.getElementById('confirm-dialog').classList.contains('hidden'),
+    title: document.getElementById('confirm-title').textContent,
+    ok: document.getElementById('btn-confirm-ok').textContent,
+    cancel: document.getElementById('btn-confirm-cancel').textContent,
+  }));
+  await page.click('#btn-confirm-cancel');
+  await page.waitForTimeout(300);
   page.off('filechooser', onChooser);
   const s11 = await state(page);
   const filesOpen = await page.evaluate(() => !document.getElementById('files-panel').classList.contains('hidden'));
-  check('記録があるときに「ファイルから選ぶ」を押すと確かめ、やめればファイルの選択を出さず記録も残す',
-    dialog === '計測の記録（1 件）は消えます。別の図面を開きますか？' && !chooser && s11.n === 1 && filesOpen,
-    { dialog, chooser, n: s11.n, filesOpen });
-  // 開くと答えれば、開き直した図面で記録は消える
-  let dialog2 = '';
-  page.once('dialog', (d) => { dialog2 = d.message(); void d.accept(); });
+  check('記録があるときに「ファイルから選ぶ」を押すとアプリの中の窓で確かめ、「やめる」ならファイルの選択を出さず記録も残す',
+    ask.shown && ask.title === '計測の記録（1 件）が消えます' && ask.ok === '消して開く' && ask.cancel === 'やめる'
+      && !chooser && s11.n === 1 && filesOpen && !nativeAsked,
+    { ask, chooser, n: s11.n, filesOpen, nativeAsked });
+  // 「消して開く」と答えれば、開き直した図面で記録は消える
   await page.click('#recent-list [data-open]');
+  await page.waitForTimeout(400);
+  const ask2 = await page.evaluate(() => document.getElementById('confirm-title').textContent);
+  await page.click('#btn-confirm-ok');
   await page.waitForFunction(() => window.__jww.records.length === 0, null, { timeout: 60000 });
   await page.waitForTimeout(600);
   const s11b = await state(page);
-  check('最近の図面から開くと答えると、読み込んだあと記録は消え、「記録 N」も札も消える',
-    dialog2.includes('1 件') && s11b.n === 0 && !s11b.chipShown && s11b.badges.length === 0 && s11b.focus === null,
-    { dialog2, n: s11b.n, chip: s11b.chipShown });
+  check('最近の図面から「消して開く」と答えると、読み込んだあと記録は消え、「記録 N」も札も消える',
+    ask2.includes('1 件') && s11b.n === 0 && !s11b.chipShown && s11b.badges.length === 0 && s11b.focus === null && !nativeAsked,
+    { ask2, n: s11b.n, chip: s11b.chipShown });
+  page.off('dialog', onNative);
 
   // 12. 渡された図面（共有・ドラッグと同じく、確かめずに開く）では、開いたあと記録が消えたことを知らせる
   await measureAndRecord(page, [[110, 300], [280, 300]]);
@@ -296,7 +308,8 @@ const badgeInk = (page, b) => page.evaluate(({ x, y }) => {
   await page.waitForFunction(() => window.__jww.records.length === 0, null, { timeout: 60000 });
   await page.waitForTimeout(300);
   const s12 = await state(page);
-  check('渡された図面を開くと確かめずに開き、前の記録が消えたことを知らせる', !asked && s12.n === 0
+  const asked2 = await page.evaluate(() => !document.getElementById('confirm-dialog').classList.contains('hidden'));
+  check('渡された図面を開くと確かめずに開き、前の記録が消えたことを知らせる', !asked && !asked2 && s12.n === 0
     && s12.hint.includes('計測の記録（1 件）は消えました'), { asked, hint: s12.hint });
   await ctx.close();
 }

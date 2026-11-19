@@ -54,11 +54,11 @@ const ABOUT_LINKS = '<p class="about-links">'
  */
 const HOWTO_ITEMS = [
   '1 本指で図面を動かし、2 本指で拡大・縮小します。「全体」で図面全体に戻ります',
-  '「計測」（最初はこれ）：タップで計測点を置き、距離・面積・体積・角度を測ります。長押しで拡大鏡、置いた点はつまんで動かせます。点は交点や線の上に吸い付きます',
+  '「計測」（最初はこれ）：タップで計測点を置き、距離・面積・体積・角度を測ります。長押しで拡大鏡、置いた点はつまんで動かせます。点は交点や線の上に吸い付きます。「すべて消去」で消した点は、次の点を置くまで「元に戻す」で戻せます',
   '「累進」：パネルの「累進表示」を入れると、図面の寸法を起点からの累進寸法に直して表示します。切るか、ほかのツールに切り替えると元の寸法に戻ります',
   '起点の移動：寸法の列をタップして選び、起点の丸を指で動かします。交点や線の上に吸い付きます。寸法線の外へ動かすと、寸法線が起点まで伸びて見えます（図面は変わりません）',
   '「寸法線上のみ」：入れると、起点は寸法線の上だけを動き、寸法線がほかの線と交わる所に吸い付きます',
-  '戻る・進む：累進のパネル右上の ↶ で起点を 1 つ前に戻し、↷ で戻した操作をやり直します。「この列を戻す」「全列を戻す」で起点を最初の端に戻せます',
+  '戻る・進む：累進のパネル右上の ↶ で起点を 1 つ前に戻し、↷ で戻した操作をやり直します。「この列を戻す」「全列を戻す」で起点を最初の端に戻せます。レイヤの ↶ ↷ はレイヤの表示だけを戻し・進めます',
   '「属性」では図形をタップすると、レイヤ・線色・線種・長さが分かります',
   '「レイヤ」でレイヤごとに表示を切り替えられます。最初は Jw_cad と同じ表示です。「表示」で背景や線の色を切り替えられます',
 ].map((t) => `<li>${t}</li>`).join('');
@@ -241,6 +241,13 @@ class App {
   private topShownAt = 0;
   /** 戻す・消去で点がなくなったあと、値の段をしまうまでのタイマー */
   private idleTimer = 0;
+  /**
+   * 「すべて消去」で消した点と、消したときの図面・計測の種類。次に点を置く・種類を変える・別の図面を開く・
+   * DXF の単位や縮尺を変えるまでは「元に戻す」で戻せる。戻したら空にする（二度は戻さない）
+   */
+  private cleared: { points: MeasurePoint[]; drawing: number; mode: MeasureMode } | null = null;
+  /** 開いた図面の通し番号（onLoaded のたびに増やす）。消した点を別の図面に戻さないために使う */
+  private drawingNo = 0;
   /** 色の一覧を閉じるために図面に触れた。このタップでは点を置かない */
   private swallowTap = false;
   /** 高さの窓を、ほかの種類から体積に切り替えるために開いている。高さを決めたときに体積にする */
@@ -258,6 +265,10 @@ class App {
   private pickAgreed = false;
   /** 一覧に並べた ZIP の中の図面は、記録が消えることを確かめてから開いたもの */
   private zipAgreed = false;
+  /** 確かめる窓で「消す」などを押したときにすること。窓を出していなければ null */
+  private confirmAction: (() => void) | null = null;
+  /** 確かめる窓を出した時刻。出した直後に続けて押したタップで、危険なボタンが押されないようにする */
+  private confirmShownAt = 0;
 
   /** 背景の白黒と単色表示。端末ごとの好みとして次回も使う */
   private display: DisplaySettings = loadDisplay();
@@ -704,8 +715,11 @@ class App {
   }
 
   /** アプリに入れた見本の図面を開く。最近の一覧や次の起動には残さない */
-  private async openSample(): Promise<void> {
-    if (!this.confirmDiscard()) return;
+  private openSample(): void {
+    this.whenDiscardOk(() => void this.loadSample());
+  }
+
+  private async loadSample(): Promise<void> {
     try {
       void this.load(await fetchSample(), SAMPLE_NAME, false);
     } catch {
@@ -717,10 +731,15 @@ class App {
   private openZipChoice(index: number): void {
     const entry = this.zipChoices[index];
     if (!entry) return;
-    if (!this.zipAgreed && !this.confirmDiscard()) return;
-    this.clearZipChoices();
-    this.openSheet(null);
-    void this.load(entry.buffer, entry.name);
+    const open = (): void => {
+      // 確かめているあいだに一覧が出し直されていたら（別の ZIP を開いたなど）、古い図面は開かない
+      if (this.zipChoices[index] !== entry) return;
+      this.clearZipChoices();
+      this.openSheet(null);
+      void this.load(entry.buffer, entry.name);
+    };
+    if (this.zipAgreed) open();
+    else this.whenDiscardOk(open);
   }
 
   private clearZipChoices(): void {
@@ -748,6 +767,10 @@ class App {
     const index = new SnapIndex(scene);
     this.scene = scene;
     this.info = info;
+    // 前の図面のために出していた確かめる窓は閉じる（窓の答えを新しい図面に当てない）。消した点も前の図面のものなので戻さない
+    this.closeConfirm(false);
+    this.drawingNo++;
+    this.cleared = null;
     this.renderer.setScene(scene);
     this.textLayer.setTexts(scene.texts);
     this.snapIndex = index;
@@ -2134,6 +2157,8 @@ class App {
     }
 
     this.points.push(p);
+    // 次の点を置いたら、「すべて消去」で消した点はもう戻さない（いまの計測と混ざらないように）
+    this.cleared = null;
     // 新しく測り始めたら、見せていた記録はしまう（色の違う 2 つの計測が重なって紛れないように）
     this.clearFocus();
     // 最初の点が乗ったレイヤグループの縮尺を既定にする
@@ -2221,11 +2246,14 @@ class App {
   private fillReadout(fromButton: boolean): void {
     const value = el('readout-value');
     const detail = el('readout-detail');
-    const scale = el('btn-scale');
     const n = this.points.length;
     el<HTMLButtonElement>('btn-undo').disabled = n === 0;
     el<HTMLButtonElement>('btn-clear').disabled = n === 0;
-    this.setIdle(n === 0, fromButton);
+    // 「すべて消去」のあとは、値の段の代わりに「元に戻す」の段を出す（次の点を置くまで）
+    const restorable = n === 0 && this.canRestore();
+    el('readout').classList.toggle('undoing', restorable);
+    if (restorable) el('undo-main').textContent = `${this.cleared!.points.length}\u00a0点を消しました`;
+    this.setIdle(n === 0 && !restorable, fromButton);
     detail.classList.remove('compact');
 
     if (this.measurePrefs.mode === 'angle') {
@@ -2239,7 +2267,7 @@ class App {
 
     if (n < 2) {
       value.textContent = '—';
-      scale.textContent = `1/${formatScale(this.measureScale)}`;
+      this.setScaleText(`1/${formatScale(this.measureScale)}`);
       detail.textContent = n === 0 ? '' : `1 点目は${SNAP_LABEL[this.points[0].kind]}。2 点目をタップしてください`;
       return;
     }
@@ -2252,7 +2280,7 @@ class App {
 
     value.textContent = formatLength(segs[segs.length - 1]);
     // 表示している長さ（最後の区間）に使った縮尺
-    scale.textContent = `1/${formatScale(m.scales[m.scales.length - 1])}`;
+    this.setScaleText(`1/${formatScale(m.scales[m.scales.length - 1])}`);
 
     let text: string;
     if (segs.length > 1) {
@@ -2280,7 +2308,7 @@ class App {
     const detail = el('readout-detail');
     const n = this.points.length;
     // 角度は縮尺によらないが、縮尺のボタンはいつもの表示のままにする
-    el('btn-scale').textContent = `1/${formatScale(this.measureScale)}`;
+    this.setScaleText(`1/${formatScale(this.measureScale)}`);
     if (n < 3) {
       value.textContent = '—';
       if (n === 0) {
@@ -2317,7 +2345,7 @@ class App {
     const height = this.measurePrefs.height;
     const m = measureArea(this.points, this.measureScale, this.manualScale);
     // 囲んだ範囲全体に使った縮尺
-    el('btn-scale').textContent = `1/${formatScale(m.scale)}`;
+    this.setScaleText(`1/${formatScale(m.scale)}`);
 
     if (n < 3) {
       value.textContent = '—';
@@ -2345,6 +2373,51 @@ class App {
       // 数と「点」が別の行に分かれないようにつなぐ
       detail.textContent = `${warn}外周 ${formatLength(m.perimeter)} ／ ${n}\u00a0点`;
     }
+  }
+
+  /** 縮尺のボタンの文字（切り詰めるのは内側の span。押せる所をボタンの外へ広げるため） */
+  private setScaleText(text: string): void {
+    const span = el('btn-scale').querySelector('.scale-text');
+    if (span) span.textContent = text;
+  }
+
+  /** 「すべて消去」で消した点を、いま元に戻せるか（同じ図面・同じ種類で、まだ次の点を置いていない） */
+  private canRestore(): boolean {
+    const c = this.cleared;
+    return c !== null && this.scene !== null && this.points.length === 0
+      && c.drawing === this.drawingNo && c.mode === this.measurePrefs.mode;
+  }
+
+  /** 計測点をすべて消す。消した点は、次の点を置くまで「元に戻す」で戻せる */
+  private clearPoints(): void {
+    if (this.points.length === 0) return;
+    this.cleared = { points: this.points.map((p) => ({ ...p })), drawing: this.drawingNo, mode: this.measurePrefs.mode };
+    this.points = [];
+    this.syncAutoScale();
+    this.updateReadout();
+    // 消去のあった所に「元に戻す」が出るので、続けて押したタップですぐ戻さない
+    this.topShownAt = performance.now();
+    this.requestDraw();
+  }
+
+  /** 「すべて消去」で消した点を戻す。戻したら覚えていた点は捨てる（二度押しても、もう一度は戻さない） */
+  private restoreCleared(): void {
+    const c = this.cleared;
+    const ok = this.canRestore();
+    this.cleared = null;
+    if (!c || !ok) {
+      this.updateReadout();
+      this.hint('元に戻せる点はありません');
+      return;
+    }
+    this.points = c.points.map((p) => ({ ...p }));
+    this.syncAutoScale();
+    this.clearFocus();
+    this.updateReadout();
+    // 「元に戻す」のあった所に記録・戻す・消去が戻ってくるので、続けて押したタップで消去などを押さない
+    this.topShownAt = performance.now();
+    this.hint(`消した ${c.points.length} 点を元に戻しました`);
+    this.requestDraw();
   }
 
   /**
@@ -2399,6 +2472,8 @@ class App {
   }
 
   private setMeasurePrefs(next: MeasurePrefs): void {
+    // 計測の種類を変えたら、「すべて消去」で消した点はもう戻さない（別の種類の計測として戻ると紛らわしい）
+    if (next.mode !== this.measurePrefs.mode) this.cleared = null;
     this.measurePrefs = next;
     saveMeasurePrefs(next);
     this.buildMeasureControls();
@@ -2540,6 +2615,7 @@ class App {
     el('records-summary').textContent = n === 0 ? '' : `${n} 件・別の図面を開くと消えます`;
     const badges = el('btn-records-badges');
     badges.setAttribute('aria-pressed', String(this.showBadges));
+    badges.classList.toggle('on', this.showBadges);
     el<HTMLButtonElement>('btn-records-copy').disabled = n === 0;
     el<HTMLButtonElement>('btn-records-clear').disabled = n === 0;
     const pad = (v: number): string => String(v).padStart(2, '0');
@@ -2569,15 +2645,22 @@ class App {
     this.updateRecordsUi();
   }
 
-  /** 記録をすべて消す（先に確かめる） */
+  /** 記録をすべて消す（先にアプリの中の窓で確かめる） */
   private clearRecords(): void {
     const n = this.records.length;
-    if (n === 0 || !window.confirm(`計測の記録（${n} 件）をすべて消しますか？`)) return;
-    this.records = [];
-    this.nextRecordNo = 1;
-    this.focusNo = null;
-    this.updateRecordsUi();
-    this.hint('計測の記録をすべて消しました');
+    if (n === 0) return;
+    this.askConfirm({
+      title: `計測の記録（${n} 件）をすべて消しますか？`,
+      text: '消した記録は元に戻せません。',
+      ok: '消す',
+    }, () => {
+      if (this.records.length === 0) return;
+      this.records = [];
+      this.nextRecordNo = 1;
+      this.focusNo = null;
+      this.updateRecordsUi();
+      this.hint('計測の記録をすべて消しました');
+    });
   }
 
   /** 記録をすべて文にして写す（図面の名前を 1 行目に）。クリップボードが使えなければ古い仕組みで写す */
@@ -2596,12 +2679,50 @@ class App {
   }
 
   /**
-   * 別の図面を開くと記録が消えるので、記録があれば開いてよいかを聞く。開いてよければ true。
+   * 別の図面を開くと記録が消えるので、記録があれば開いてよいかを聞き、よければ then をする。記録がなければすぐにする。
+   * then は「消して開く」を押したその場で呼ぶので、その中でファイルの選択を出せる（iOS は押した直後でないと出せない）。
    * 共有やドラッグで渡された図面では聞けないので、開いたあとで消えたことを知らせる（onLoaded）
    */
-  private confirmDiscard(): boolean {
+  private whenDiscardOk(then: () => void): void {
     const n = this.records.length;
-    return n === 0 || window.confirm(`計測の記録（${n} 件）は消えます。別の図面を開きますか？`);
+    if (n === 0) {
+      then();
+      return;
+    }
+    this.askConfirm({
+      title: `計測の記録（${n} 件）が消えます`,
+      text: '別の図面を開くと、いまの図面の計測の記録は消えます。消して開きますか？',
+      ok: '消して開く',
+    }, then);
+  }
+
+  /**
+   * アプリの中の確かめる窓を出す（iOS の確認は英語の「Cancel」「OK」になるため）。ok は赤い危険なボタンの文字。
+   * 最初は「やめる」を選んだ状態にして、うっかり Enter などで消さないようにする
+   */
+  private askConfirm(text: { title: string; text: string; ok: string }, action: () => void): void {
+    this.confirmAction = action;
+    this.confirmShownAt = performance.now();
+    el('confirm-title').textContent = text.title;
+    el('confirm-text').textContent = text.text;
+    el('btn-confirm-ok').textContent = text.ok;
+    this.toggleColors(false);
+    el('confirm-dialog').classList.remove('hidden');
+    el('btn-confirm-cancel').focus({ preventScroll: true });
+  }
+
+  /**
+   * 確かめる窓を閉じる。accept なら覚えておいたことをする（ボタンを押したその場で呼ぶので、ファイルの選択も出せる）。
+   * 窓を出していなければ何もしない
+   */
+  private closeConfirm(accept: boolean): void {
+    const action = this.confirmAction;
+    this.confirmAction = null;
+    const box = el('confirm-dialog');
+    if (box.classList.contains('hidden') && !action) return;
+    box.classList.add('hidden');
+    (document.activeElement as HTMLElement | null)?.blur?.();
+    if (accept && action) action();
   }
 
   /** 記録の札を置く所（図面座標）。面積・体積は囲んだ範囲の真ん中、距離はいちばん長い区間の中点、角度は頂点 */
@@ -3039,17 +3160,23 @@ class App {
     this.undoRemove = null;
     this.clearZipChoices();
     if (this.recent.length === 0) {
-      // 記録が消えることは、選択を出す前に聞く（iOS は押したその場でないと選択を出せないが、confirm はその場で答えが返る）
-      if (!this.confirmDiscard()) return;
-      this.openSheet(null);
-      this.pickAgreed = true;
-      el<HTMLInputElement>('file').click();
+      // 記録が消えることは、選択を出す前に聞く。iOS は押したその場でないと選択を出せないので、
+      // 記録がなければこのタップで、あれば窓の「消して開く」を押したそのタップで選択を出す
+      this.whenDiscardOk(() => this.pickFile());
       return;
     }
     this.renderRecent();
     // 最初の画面（読み込めなかったときの知らせも）は、一覧を出しているあいだしまう（一覧が下に隠れないように）
     el('welcome').classList.add('hidden');
     this.openSheet('files-panel');
+  }
+
+  /** ファイルの選択を出す（押したその場で呼ぶこと。記録が消えることは確かめてある） */
+  private pickFile(): void {
+    // 選ばずにやめたときに、図面がなければ最初の画面が見えているように
+    this.closeFiles();
+    this.pickAgreed = true;
+    el<HTMLInputElement>('file').click();
   }
 
   /** 図面を開くシートを閉じる。図面をまだ開いていなければ、最初の画面に戻す */
@@ -3096,10 +3223,15 @@ class App {
   }
 
   /** 最近開いた図面を開き直す */
-  private async openRecent(key: string): Promise<void> {
+  private openRecent(key: string): void {
+    if (!this.recent.some((r) => r.key === key)) return;
+    this.whenDiscardOk(() => void this.loadRecentNow(key));
+  }
+
+  /** 最近開いた図面を読み出して開く（記録が消えることは確かめてある） */
+  private async loadRecentNow(key: string): Promise<void> {
     const entry = this.recent.find((r) => r.key === key);
     if (!entry) return;
-    if (!this.confirmDiscard()) return;
     let buffer: ArrayBuffer | null;
     try {
       buffer = await loadRecent(key);
@@ -3169,16 +3301,25 @@ class App {
     if (isNative) file.accept = [...OPEN_EXTS, '.zip', 'application/octet-stream'].join(',');
     el('btn-open').addEventListener('click', () => this.openFiles());
     el('btn-open-2').addEventListener('click', () => this.openFiles());
-    el('btn-sample').addEventListener('click', () => void this.openSample());
+    el('btn-sample').addEventListener('click', () => this.openSample());
     // 最初の画面の「使い方を見る」の中身（図面情報の「使い方を見る」と同じ）
     el('welcome-howto').querySelector('.tips')!.innerHTML = HOWTO_ITEMS;
     el('btn-files-close').addEventListener('click', () => this.closeFiles());
-    el('btn-pick-file').addEventListener('click', () => {
-      if (!this.confirmDiscard()) return;
-      // 選ばずにやめたときに、図面がなければ最初の画面が見えているように
-      this.closeFiles();
-      this.pickAgreed = true;
-      file.click();
+    el('btn-pick-file').addEventListener('click', () => this.whenDiscardOk(() => this.pickFile()));
+
+    // ---- 確かめる窓 ----
+    el('btn-confirm-ok').addEventListener('click', () => {
+      // 窓が出た直後に続けて押したタップでは、危険なボタンを押さない
+      if (performance.now() - this.confirmShownAt < 350) return;
+      this.closeConfirm(true);
+    });
+    el('btn-confirm-cancel').addEventListener('click', () => this.closeConfirm(false));
+    el('confirm-dialog').addEventListener('click', (e) => {
+      // 窓の外（暗くした所）に触れたらやめる
+      if (e.target === e.currentTarget) this.closeConfirm(false);
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && this.confirmAction) this.closeConfirm(false);
     });
     el('zip-list').addEventListener('click', (e) => {
       const open = (e.target as HTMLElement).closest<HTMLElement>('[data-zip]');
@@ -3189,7 +3330,7 @@ class App {
       const remove = target.closest<HTMLElement>('[data-remove]');
       const open = target.closest<HTMLElement>('[data-open]');
       if (remove?.dataset.remove !== undefined) void this.forgetRecent(remove.dataset.remove);
-      else if (open?.dataset.open !== undefined) void this.openRecent(open.dataset.open);
+      else if (open?.dataset.open !== undefined) this.openRecent(open.dataset.open);
       else if (target.closest('[data-undo]')) void this.undoForget();
     });
 
@@ -3208,6 +3349,7 @@ class App {
     el('btn-tool-inspect').addEventListener('click', () => this.setTool('inspect'));
 
     el('btn-ortho').addEventListener('click', () => {
+      // 入・切を切り替えたことは、スイッチの絵とボタンの色で分かる
       this.ortho = !this.ortho;
       el('btn-ortho').classList.toggle('on', this.ortho);
       el('btn-ortho').setAttribute('aria-pressed', String(this.ortho));
@@ -3225,10 +3367,12 @@ class App {
 
     el('btn-clear').addEventListener('click', () => {
       if (this.topJustShown()) return;
-      this.points = [];
-      this.syncAutoScale();
-      this.updateReadout(true);
-      this.requestDraw();
+      this.clearPoints();
+    });
+    el('btn-restore').addEventListener('click', () => {
+      // 消去を続けて 2 回押したときの 2 回目で、すぐに戻さない
+      if (this.topJustShown()) return;
+      this.restoreCleared();
     });
 
     // ---- 計測の記録 ----
@@ -3617,6 +3761,8 @@ class App {
     for (const slot of info.scaleSlots) slot.scale = scale;
     for (const g of info.groups) g.scale = scale;
     for (const p of this.points) if (p.scale !== null) p.scale = scale;
+    // 単位や縮尺を変えたら、「すべて消去」で消した点は前の縮尺のものなので戻さない
+    this.cleared = null;
     this.manualScale = false;
     this.measureScale = scale;
     this.defaultScale = scale;

@@ -829,6 +829,8 @@ await page.waitForTimeout(200);
   const p0 = await page.evaluate(() => {
     const a = window.__jww;
     a.points = [];
+    // 「すべて消去」の「元に戻す」の段は出さない（1 段のパネルから 1 点目を置いたときを確かめる）
+    a.cleared = null;
     a.updateReadout();
     const r = document.getElementById('readout').getBoundingClientRect();
     return { top: r.top, x: a.cssW - 40 };

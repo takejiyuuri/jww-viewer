@@ -212,6 +212,14 @@ const overlayAt = (x, y) => page.evaluate(([x, y]) => {
   check('色の一覧を開いたまま図面を押すと、一覧が閉じるだけで点は置かない', !after.shown && after.n === before, { before, after });
 
   // 置いた点のすぐそばを押しても、点はつままれず動かない
+  // （色の一覧は 44px 角の 2 段なので、点が一覧の裏に隠れないよう、点を画面の上のほうへ寄せておく）
+  await page.evaluate(() => {
+    const a = window.__jww;
+    const p = a.points[0];
+    a.view.cy = p.y - ((a.cssH / 2 - 200) * a.dpr) / a.view.zoom;
+    a.requestDraw();
+  });
+  await page.waitForTimeout(150);
   const pts0 = await page.evaluate(() => JSON.stringify(window.__jww.points.map((p) => [p.x, p.y])));
   const near0 = await page.evaluate(() => {
     const a = window.__jww;

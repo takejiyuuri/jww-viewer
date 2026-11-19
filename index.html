@@ -46,10 +46,12 @@
     <symbol id="i-display" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor" stroke="none"/></symbol>
     <symbol id="i-fit" viewBox="0 0 24 24"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></symbol>
     <symbol id="i-ortho" viewBox="0 0 24 24"><path d="M5 4v15h15"/><path d="M5 13.5h5.5V19"/></symbol>
+    <!-- 戻る（↶）と進む（↷）。計測・累進・レイヤの「戻る」「進む」はどれもこの 1 組を使う（進むは戻るを左右に返した形） -->
     <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 6 4 11l5 5"/><path d="M4 11h10.5a5 5 0 0 1 0 10H12"/></symbol>
+    <symbol id="i-redo" viewBox="0 0 24 24"><path d="m15 6 5 5-5 5"/><path d="M20 11H9.5a5 5 0 0 0 0 10H12"/></symbol>
     <symbol id="i-clear" viewBox="0 0 24 24"><path d="M4 7h16"/><path d="M9 7V4.5h6V7"/><path d="M6.2 7l.9 13h9.8l.9-13"/></symbol>
+    <!-- 「前の範囲」（全体のボタン）。操作の取り消しではなく見ていた範囲へ戻るので、↶ とは別の形にする -->
     <symbol id="i-back" viewBox="0 0 24 24"><path d="M5 12.5A7 7 0 1 0 12 5.5H7"/><path d="M9.5 2.5 6.5 5.5l3 3"/></symbol>
-    <symbol id="i-forward" viewBox="0 0 24 24"><path d="M19 12.5A7 7 0 1 1 12 5.5h5"/><path d="m14.5 2.5 3 3-3 3"/></symbol>
     <symbol id="i-expand" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-6.5 6.5M10 20H4v-6M4 20l6.5-6.5"/></symbol>
     <symbol id="i-shrink" viewBox="0 0 24 24"><path d="M20 10h-6V4M14 10l6.5-6.5M4 14h6v6M10 14l-6.5 6.5"/></symbol>
   </defs>
@@ -89,14 +91,23 @@
     <span id="readout-value" class="readout-value" aria-live="polite">—</span>
     <div id="readout-detail" class="detail"></div>
     <button id="btn-record" class="icon-btn record-btn" aria-label="この計測を記録する" disabled>記録</button>
-    <button id="btn-undo" class="icon-btn" aria-label="1 点戻す"><svg class="ico"><use href="#i-undo"/></svg></button>
-    <button id="btn-clear" class="icon-btn" aria-label="すべて消去"><svg class="ico"><use href="#i-clear"/></svg></button>
+    <button id="btn-undo" class="icon-btn" aria-label="戻る：1 点戻す"><svg class="ico"><use href="#i-undo"/></svg></button>
+    <!-- 点をすべて消す（危険な操作なので赤）。押し間違えないよう、戻すとの間を広めに空ける -->
+    <button id="btn-clear" class="icon-btn danger" aria-label="すべて消去"><svg class="ico"><use href="#i-clear"/></svg></button>
+  </div>
+  <!-- 「すべて消去」のあと、次の点を置くまで出す。消した点を元に戻せる（値の段と同じ高さ・同じ位置） -->
+  <div id="readout-undo" class="readout-undo" aria-live="polite">
+    <div class="undo-text">
+      <span id="undo-main" class="undo-main"></span>
+      <span class="undo-sub">次の点を置くまで戻せます</span>
+    </div>
+    <button id="btn-restore" class="pill restore-btn"><svg class="ico"><use href="#i-undo"/></svg>元に戻す</button>
   </div>
   <div class="readout-bar">
     <!-- 読み上げでは「計測に使う縮尺 1/100」と、いまの縮尺（ボタンの文字）まで読む -->
     <span id="scale-name" hidden>計測に使う縮尺</span>
-    <button id="btn-scale" class="chip small" aria-labelledby="scale-name btn-scale">1/—</button>
-    <button id="btn-ortho" class="pill on" aria-pressed="true" aria-label="直交（水平・垂直に拘束）"><svg class="ico"><use href="#i-ortho"/></svg><span class="label">直交</span></button>
+    <button id="btn-scale" class="chip small" aria-labelledby="scale-name btn-scale"><span class="scale-text">1/—</span></button>
+    <button id="btn-ortho" class="pill toggle on" aria-pressed="true" aria-label="直交（水平・垂直に拘束）"><span class="tgl" aria-hidden="true"></span><svg class="ico"><use href="#i-ortho"/></svg><span class="label">直交</span></button>
     <button id="btn-color" class="icon-btn color-btn" aria-label="計測の色" aria-haspopup="true" aria-expanded="false"><span class="color-dot"></span></button>
     <div id="seg-mode" class="segmented mode-seg" role="group" aria-label="計測の種類">
       <button data-mode="length" aria-pressed="true" class="on">距離</button>
@@ -124,6 +135,22 @@
   </div>
 </div>
 
+<!--
+  消す前・記録が消える前に確かめる窓。iOS アプリの確認（window.confirm）は「Cancel」「OK」と英語で出るので、アプリの中に出す。
+  危険な操作のボタンは赤（「消す」など）、やめるは左。「ファイルから選ぶ」は、この窓のボタンを押したその場で選択を出す
+  （iOS は押した直後でないとファイルの選択を出せない）
+-->
+<div id="confirm-dialog" class="dialog-wrap hidden">
+  <div class="dialog confirm" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-text">
+    <div id="confirm-title" class="dialog-title"></div>
+    <div id="confirm-text" class="sub"></div>
+    <div class="dialog-actions">
+      <button id="btn-confirm-cancel" class="pill">やめる</button>
+      <button id="btn-confirm-ok" class="pill danger-fill">消す</button>
+    </div>
+  </div>
+</div>
+
 <!-- タップした図形の属性 -->
 <!--
   操作ボタンは常に同じ 3 つを同じ位置に置く（図形を選んでいないときは押せないだけ）。
@@ -136,8 +163,8 @@
     <span id="inspect-kind" class="inspect-kind">属性</span>
     <span class="panel-top-end">
       <span id="inspect-tag" class="tag hidden"></span>
-      <button id="btn-layer-undo" class="icon-btn head-btn" aria-label="表示を 1 つ前に戻す" disabled><svg class="ico"><use href="#i-back"/></svg></button>
-      <button id="btn-layer-redo" class="icon-btn head-btn" aria-label="戻した表示をやり直す" disabled><svg class="ico"><use href="#i-forward"/></svg></button>
+      <button id="btn-layer-undo" class="icon-btn head-btn" aria-label="戻る：レイヤの表示を 1 つ前に戻す" disabled><svg class="ico"><use href="#i-undo"/></svg></button>
+      <button id="btn-layer-redo" class="icon-btn head-btn" aria-label="進む：戻したレイヤの表示をやり直す" disabled><svg class="ico"><use href="#i-redo"/></svg></button>
     </span>
   </div>
   <div id="inspect-body" class="inspect-body"></div>
@@ -157,13 +184,14 @@
     <span class="panel-top-end">
       <span id="ruishin-tag" class="tag hidden"></span>
       <button id="btn-ruishin-undo" class="icon-btn head-btn" aria-label="戻る：起点を 1 つ前に戻す" disabled><svg class="ico"><use href="#i-undo"/></svg></button>
-      <button id="btn-ruishin-redo" class="icon-btn head-btn" aria-label="進む：戻した起点の操作をやり直す" disabled><svg class="ico flip-x"><use href="#i-undo"/></svg></button>
+      <button id="btn-ruishin-redo" class="icon-btn head-btn" aria-label="進む：戻した起点の操作をやり直す" disabled><svg class="ico"><use href="#i-redo"/></svg></button>
     </span>
   </div>
   <div id="ruishin-body" class="inspect-body ruishin-body"></div>
   <div id="ruishin-actions" class="panel-actions ruishin-actions">
-    <button id="btn-ruishin-on" class="pill" aria-pressed="false" aria-label="累進表示：寸法を累進寸法に直して表示する">累進表示</button>
-    <button id="btn-ruishin-along" class="pill" aria-pressed="false" aria-label="寸法線上のみ：起点を寸法線の上だけで動かす">寸法線上のみ</button>
+    <!-- 入・切のスイッチ（小さなスイッチの絵で状態を見せる）。「戻す」は押すたびに働く実行のボタン -->
+    <button id="btn-ruishin-on" class="pill toggle" aria-pressed="false" aria-label="累進表示：寸法を累進寸法に直して表示する"><span class="tgl" aria-hidden="true"></span><span class="label">累進表示</span></button>
+    <button id="btn-ruishin-along" class="pill toggle" aria-pressed="false" aria-label="寸法線上のみ：起点を寸法線の上だけで動かす"><span class="tgl" aria-hidden="true"></span><span class="label">寸法線上のみ</span></button>
     <button id="btn-ruishin-reset" class="pill">全列を戻す</button>
   </div>
 </section>
@@ -222,8 +250,9 @@
       <div id="records-summary" class="sub"></div>
       <div class="section-actions">
         <button id="btn-records-copy" class="chip small">コピー</button>
-        <button id="btn-records-badges" class="chip small" aria-pressed="true">札を表示</button>
-        <button id="btn-records-clear" class="chip small">すべて消す</button>
+        <button id="btn-records-badges" class="chip small toggle on" aria-pressed="true"><span class="tgl" aria-hidden="true"></span>札を表示</button>
+        <!-- 記録をすべて消す（危険な操作なので赤）。押し間違えないよう、ほかのボタンから離す -->
+        <button id="btn-records-clear" class="chip small danger">すべて消す</button>
       </div>
     </div>
     <div id="records-list" class="recent-list"></div>
@@ -236,8 +265,8 @@
     <strong>レイヤ</strong>
     <!-- 戻る・進むは属性の見出しのものと同じ履歴を行き来する -->
     <span class="sheet-head-end">
-      <button id="btn-layer-list-undo" class="icon-btn head-btn" aria-label="表示を 1 つ前に戻す" disabled><svg class="ico"><use href="#i-back"/></svg></button>
-      <button id="btn-layer-list-redo" class="icon-btn head-btn" aria-label="戻した表示をやり直す" disabled><svg class="ico"><use href="#i-forward"/></svg></button>
+      <button id="btn-layer-list-undo" class="icon-btn head-btn" aria-label="戻る：レイヤの表示を 1 つ前に戻す" disabled><svg class="ico"><use href="#i-undo"/></svg></button>
+      <button id="btn-layer-list-redo" class="icon-btn head-btn" aria-label="進む：戻したレイヤの表示をやり直す" disabled><svg class="ico"><use href="#i-redo"/></svg></button>
       <button id="btn-layer-close" class="chip">閉じる</button>
     </span>
   </div>
