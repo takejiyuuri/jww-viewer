@@ -1760,6 +1760,16 @@ body.ui-hidden .ui-show {
   /* 計測パネルは 2 段に収まるのでスクロールさせない（上に浮かべる色の一覧が切れないように） */
   #readout {
     overflow: visible;
+    /*
+     * 横向きは横に余裕があるので、計測パネルだけ少し広げて、距離・面積・体積・角度を 1 つ 44px 以上の幅で
+     * 縮尺・直交・色と同じ段に並べる（別の段にすると、低い横画面では図面の見える所が狭くなる）。
+     * 直交に「直交」の文字が付く幅（700px より広い画面）は 410px、文字なしは 380px
+     */
+    width: var(--readout-w);
+  }
+
+  #shell {
+    --readout-w: 410px;
   }
 
   /* 右に寄せた幅の狭いパネルでは、値の文字を小さくして内訳の幅を空ける */
@@ -1930,6 +1940,11 @@ body.ui-hidden .ui-show {
     right: var(--edge-right);
     bottom: calc(var(--bar-bottom) + var(--panel-stack, 0px));
     width: max(300px, min(360px, 48vw));
+  }
+
+  /* 下が計測のパネルのときは、計測のパネル（横向きでは少し広い）に幅をそろえる */
+  #shell:has(> #readout:not(.hidden)) #layer-panel.collapsed {
+    width: var(--readout-w);
   }
 
   /*
@@ -2275,5 +2290,74 @@ body[data-bg="light"] #inspect-actions {
     grid-column: 1 / -1;
     justify-content: flex-end;
     margin-top: 12px;
+  }
+}
+
+/*
+ * ---- 狭い画面：距離・面積・体積・角度を、操作の段の下の別の段に並べる（main.ts の fitModeRow が決める） ----
+ * 1 つずつ幅 44px 以上・押せる所の高さ 44px 以上にする。幅に余裕のある画面（iPad など）は 1 段のまま。
+ * 段は点の有無で変わらず、パネルは下に揃えて置くので、点を置いたり消したりしてもボタンは動かない。
+ * 押せる所：上の段（縮尺・直交・色）は上へ 3px・下へ 5px、下の段のボタンは見た目の上へ 5px・下へ 6px（入れ物の余白 2px を含む）。
+ * 段の間は 10px なので、押せる所は重ならない（間に 2px の押しても何も起きない所が残る）
+ */
+#readout.modes-row .readout-bar {
+  flex-wrap: wrap;
+  row-gap: 10px;
+}
+
+#readout.modes-row .readout-bar .mode-seg {
+  flex: 1 0 100%;
+  order: 1;
+}
+
+#readout.modes-row .readout-bar .mode-seg button {
+  padding: 8px 2px;
+  font-size: 14px;
+}
+
+#readout.modes-row .readout-bar .mode-seg button::after {
+  inset: -5px -1px -6px;
+}
+
+#readout.modes-row .readout-bar #btn-scale,
+#readout.modes-row .readout-bar .pill,
+#readout.modes-row .readout-bar .icon-btn {
+  height: 36px;
+  min-height: 36px;
+}
+
+#readout.modes-row .readout-bar #btn-scale::after,
+#readout.modes-row .readout-bar .pill::after,
+#readout.modes-row .readout-bar .icon-btn::after {
+  top: -4px;
+  bottom: -6px;
+}
+
+/* 別の段にしたときは操作の段に余裕があるので、直交は狭い画面でもスイッチと「直交」の文字で見せる */
+#readout.modes-row #btn-ortho {
+  width: auto;
+  padding: 0 10px 0 8px;
+}
+
+#readout.modes-row #btn-ortho .label {
+  display: inline;
+}
+
+#readout.modes-row #btn-ortho .ico {
+  display: none;
+}
+
+#readout.modes-row #btn-ortho .tgl {
+  display: block;
+}
+
+#readout.modes-row #btn-ortho::before {
+  content: none;
+}
+
+/* 横向きの狭い画面（直交はアイコンだけ）の計測パネルの幅。距離・面積…を 1 段に並べられる幅（上の横向きの説明を参照） */
+@media (orientation: landscape) and (max-height: 500px) and (max-width: 700px) {
+  #shell {
+    --readout-w: 380px;
   }
 }

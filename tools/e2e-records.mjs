@@ -109,7 +109,8 @@ const badgeInk = (page, b) => page.evaluate(({ x, y }) => {
   // 2. 面積を記録する
   await page.click('#seg-mode [data-mode="area"]');
   await page.waitForTimeout(1200);
-  await measureAndRecord(page, [[100, 345], [290, 345], [290, 450], [100, 450]]);
+  // 狭い画面では計測パネルが 3 段（距離・面積…が別の段）になるので、パネルにかからない高さに置く
+  await measureAndRecord(page, [[100, 320], [290, 320], [290, 410], [100, 410]]);
   const s2 = await state(page);
   check('面積を記録すると 2 件になり、札が 2 つ出る', s2.n === 2 && s2.modes[1] === 'area' && s2.points === 0 && s2.badges.length === 2
     && s2.chipText === '記録 2' && s2.hint.includes('② を記録しました'), s2);

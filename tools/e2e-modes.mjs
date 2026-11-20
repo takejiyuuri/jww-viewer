@@ -29,35 +29,46 @@ const open = async (opts) => {
   return { ctx, page };
 };
 
-// ---------- 1. 狭い画面から横向きまで、操作の段が 1 行に収まる ----------
-for (const [name, opts] of [
-  ['縦 393', { ...devices['iPhone 14 Pro'], hasTouch: true }],
-  ['縦 375', { viewport: { width: 375, height: 667 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true }],
-  ['縦 320', { viewport: { width: 320, height: 568 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true }],
-  ['横 667', { viewport: { width: 667, height: 375 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true }],
-  ['横 568', { viewport: { width: 568, height: 320 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true }],
+// ---------- 1. 狭い画面から横向きまで、操作の段が収まる ----------
+// 1.3 から、距離・面積・体積・角度は 1 つ 44px 以上の幅で押せるようにする。
+// 縦の狭い画面では縮尺・直交・色の段の下の別の段に並べ、横向きはパネルを少し広げて 1 段のまま
+for (const [name, opts, stacked] of [
+  ['縦 393', { ...devices['iPhone 14 Pro'], hasTouch: true }, true],
+  ['縦 375', { viewport: { width: 375, height: 667 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true }, true],
+  ['縦 320', { viewport: { width: 320, height: 568 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true }, true],
+  ['横 667', { viewport: { width: 667, height: 375 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true }, false],
+  ['横 568', { viewport: { width: 568, height: 320 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true }, false],
 ]) {
   const { ctx, page } = await open(opts);
   const bar = await page.evaluate(() => {
     const panel = document.getElementById('readout').getBoundingClientRect();
-    const ids = ['btn-scale', 'btn-ortho', 'btn-color', 'seg-mode'];
+    const ids = ['btn-scale', 'btn-ortho', 'btn-color'];
     const rects = ids.map((id) => document.getElementById(id).getBoundingClientRect());
     const mids = rects.map((r) => r.top + r.height / 2);
+    const seg = document.getElementById('seg-mode').getBoundingClientRect();
     const segs = [...document.querySelectorAll('#seg-mode button')];
+    const segRects = segs.map((b) => b.getBoundingClientRect());
+    const segMids = segRects.map((r) => r.top + r.height / 2);
     return {
-      oneRow: Math.max(...mids) - Math.min(...mids) < 2,
-      inside: rects.every((r) => r.left >= panel.left - 0.5 && r.right <= panel.right + 0.5),
-      ordered: rects.every((r, i) => i === 0 || r.left >= rects[i - 1].right - 0.5),
+      topRow: Math.max(...mids) - Math.min(...mids) < 2,
+      segSameRow: Math.abs(seg.top + seg.height / 2 - mids[0]) < 2 && seg.left >= rects[2].right - 0.5,
+      segBelow: seg.top >= Math.max(...rects.map((r) => r.bottom)),
+      segOneRow: Math.max(...segMids) - Math.min(...segMids) < 2,
+      inside: [...rects, seg].every((r) => r.left >= panel.left - 0.5 && r.right <= panel.right + 0.5 && r.bottom <= panel.bottom + 0.5),
+      ordered: [...rects, ...segRects].every((r, i, all) => i === 0 || i === 3 || r.left >= all[i - 1].right - 0.5),
       overflow: segs.filter((b) => b.scrollWidth > b.clientWidth + 1).map((b) => b.textContent),
       // 文字が 2 行に折り返すと背が伸びる
-      tall: segs.filter((b) => b.getBoundingClientRect().height > 36).map((b) => b.textContent),
+      tall: segs.filter((b) => b.getBoundingClientRect().height > 40).map((b) => b.textContent),
       panelH: Math.round(panel.height),
-      segWidth: Math.round(rects[3].width),
+      minBtn: Math.round(Math.min(...segRects.map((r) => r.width))),
       count: segs.length,
     };
   });
-  check(`${name}：縮尺・直交・色・距離／面積／体積／角度が 1 行に並び、折り返さず、パネルからはみ出さない`,
-    bar.count === 4 && bar.oneRow && bar.inside && bar.ordered && bar.overflow.length === 0 && bar.tall.length === 0 && bar.panelH < 70 && bar.segWidth >= 96, bar);
+  check(stacked
+    ? `${name}：縮尺・直交・色が 1 行、その下に距離／面積／体積／角度が 1 行に並び（1 つ 44 以上の幅）、折り返さず、パネルからはみ出さない`
+    : `${name}：縮尺・直交・色・距離／面積／体積／角度が 1 行に並び（1 つ 44 以上の幅）、折り返さず、パネルからはみ出さない`,
+    bar.count === 4 && bar.topRow && (stacked ? bar.segBelow && bar.panelH < 115 : bar.segSameRow && bar.panelH < 70) && bar.segOneRow && bar.inside
+      && bar.ordered && bar.overflow.length === 0 && bar.tall.length === 0 && bar.minBtn >= 44, bar);
   // 大きな体積（1/100 の図で 514 m² × 3 m）でも、値と内訳（底面と高さ）が切れない
   const fits = await page.evaluate(() => {
     const a = window.__jww;

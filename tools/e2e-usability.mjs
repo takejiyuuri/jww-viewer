@@ -1,8 +1,10 @@
 // 1.3 の使いやすさの改善を確かめる。
 // ① 確かめる窓（iOS の英語の確認の代わり）：日本語、危険なボタンは赤、やめる・窓の外・Esc でやめる、出た直後の押し間違い、
 //    ファイルの選択は窓のボタンを押したその場で出る、別の図面が届いたら窓を閉じる。
-// ② 押せる所の大きさ：iPhone SE 相当（320×568・375×667）・通常（390×844）・横向き（667×375・568×320・852×393）・iPad で、
-//    ボタンの押せる所が 44×44 以上か、見えているボタンの上に隣の押せる所が重なっていないか、押せる所が図面の側へはみ出していないか。
+// ② 押せる所の大きさ：iPhone SE 相当（320×568・375×667）・通常（390×844）・大きい iPhone（430×932）・横向き（667×375・568×320・852×393・932×430）・
+//    iPad の縦横で、ボタンの押せる所が 44×44 以上か（距離・面積・体積・角度も例外なし）、見えているボタンの上に隣の押せる所が重なっていないか、
+//    押せる所が図面の側へはみ出していないか。距離・面積…は狭い画面では別の段に並び、点を置いたり消したりしても動かないか、
+//    パネルがツールバーや上のバーに重ならないか、パネルのすぐ上で図面をずらす・つまむことができるか。
 // ③ 「すべて消去」のあとの「元に戻す」：戻せる・二度は戻らない・続けて押した 2 回目で戻らない・次の点を置いたら戻せない・
 //    種類を変えたら戻せない・別の図面には戻さない。
 // ④ 入・切のスイッチと実行のボタンの見分け、危険な操作の赤と離し方。
@@ -525,21 +527,48 @@ const measureHits = (page, sel) => page.evaluate((sel) => {
   return out;
 }, sel);
 
+/**
+ * 画面の大きさと、距離・面積・体積・角度の並べ方（'row' は操作の段の下の別の段、'one' は 1 段のまま）。
+ * 幅の狭い縦の iPhone（SE・通常）は別の段。幅に余裕のある画面（大きい iPhone の縦・横向き・iPad）は 1 段のまま
+ */
 const SIZES = [
-  ['iPhone SE（初代）縦 320×568', phone(320, 568)],
-  ['iPhone SE（第2・3世代）縦 375×667', phone(375, 667)],
-  ['通常の iPhone 縦 390×844', phone(390, 844, 3)],
-  ['iPhone SE 横 667×375', phone(667, 375)],
-  ['iPhone SE（初代）横 568×320', phone(568, 320)],
-  ['通常の iPhone 横 852×393', phone(852, 393, 3)],
-  ['iPad 縦 820×1180', { viewport: { width: 820, height: 1180 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true }],
+  ['iPhone SE（初代）縦 320×568', phone(320, 568), 'row'],
+  ['iPhone SE（第2・3世代）縦 375×667', phone(375, 667), 'row'],
+  ['通常の iPhone 縦 390×844', phone(390, 844, 3), 'row'],
+  ['大きい iPhone 縦 430×932', phone(430, 932, 3), 'one'],
+  ['iPhone SE 横 667×375', phone(667, 375), 'one'],
+  ['iPhone SE（初代）横 568×320', phone(568, 320), 'one'],
+  ['通常の iPhone 横 852×393', phone(852, 393, 3), 'one'],
+  ['大きい iPhone 横 932×430', phone(932, 430, 3), 'one'],
+  ['iPad 縦 820×1180', { viewport: { width: 820, height: 1180 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true }, 'one'],
+  ['iPad 横 1180×820', { viewport: { width: 1180, height: 820 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true }, 'one'],
 ];
 
-/** 幅が 44 に届かなくても、原則の例外として数えるもの（距離・面積・体積・角度の 4 つは、狭い画面では 1 行に入りきらない） */
-const WIDTH_EXCEPTIONS = new Set(['length', 'area', 'volume', 'angle']);
-const segWidths = [];
+/** 計測パネルの操作の段（縮尺・直交・色・距離／面積／体積／角度）の位置 */
+const barPlaces = (page) => page.evaluate(() => ['#btn-scale', '#btn-ortho', '#btn-color', ...['length', 'area', 'volume', 'angle'].map((m) => `#seg-mode [data-mode="${m}"]`)]
+  .map((sel) => {
+    const r = document.querySelector(sel).getBoundingClientRect();
+    return [Math.round(r.left * 2) / 2, Math.round(r.top * 2) / 2, Math.round(r.width * 2) / 2, Math.round(r.height * 2) / 2];
+  }));
 
-for (const [name, opts] of SIZES) {
+/** 指で図面を動かす（1 本でずらす・2 本でつまむ）。Playwright の touchscreen は 1 点しか送れないので Input.dispatchTouchEvent を使う */
+const touchGesture = async (page, frames) => {
+  const cdp = await page.context().newCDPSession(page);
+  for (const [type, pts] of frames) {
+    await cdp.send('Input.dispatchTouchEvent', { type, touchPoints: pts.map((p, i) => ({ x: p[0], y: p[1], id: i + 1, radiusX: 10, radiusY: 10, force: 1 })) });
+    await page.waitForTimeout(16);
+  }
+  await cdp.detach();
+  await page.waitForTimeout(250);
+};
+const viewOf = (page) => page.evaluate(() => {
+  const a = window.__jww;
+  return { cx: a.view.cx, cy: a.view.cy, zoom: a.view.zoom, n: a.points.length, mode: a.measurePrefs.mode };
+});
+
+const segMin = {};
+
+for (const [name, opts, layout] of SIZES) {
   const { ctx, page } = await open(opts);
   const bad = [];
   const covered = [];
@@ -549,13 +578,24 @@ for (const [name, opts] of SIZES) {
         covered.push(`${label}:${r.id}`);
         continue;
       }
-      const narrowOk = WIDTH_EXCEPTIONS.has(r.id);
-      if (narrowOk) segWidths.push({ size: name, id: r.id, w: r.w, h: r.h });
-      if ((r.w < 43.9 && !narrowOk) || r.h < 43.9 || r.stolen > 0 || !r.inside) bad.push({ state: label, ...r });
+      if (['length', 'area', 'volume', 'angle'].includes(r.id)) segMin[name] = Math.min(segMin[name] ?? Infinity, r.w);
+      if (r.w < 43.9 || r.h < 43.9 || r.stolen > 0 || !r.inside) bad.push({ state: label, ...r });
     }
   };
+  // 計測：点がないとき（操作の段だけ）
+  const lay = await page.evaluate(() => {
+    const ro = document.getElementById('readout');
+    const s = document.getElementById('btn-scale').getBoundingClientRect();
+    const g = document.getElementById('seg-mode').getBoundingClientRect();
+    return { row: ro.classList.contains('modes-row'), segBelow: g.top >= s.bottom, segRight: g.left >= s.right };
+  });
+  check(`${name}：距離・面積・体積・角度は${layout === 'row' ? '操作の段の下の別の段に並ぶ' : '1 段のまま（いままでの並び）'}`,
+    layout === 'row' ? lay.row && lay.segBelow : !lay.row && lay.segRight && !lay.segBelow, lay);
+  await audit('計測（点なし）', '#readout button');
+  const place0 = await barPlaces(page);
   // 計測：点を置いて値の段が出ているとき
   await placePoints(page, 3);
+  const place1 = await barPlaces(page);
   await audit('上のバー', '#topbar button');
   await audit('計測', '#readout button');
   await audit('ツールバー', '#toolbar button');
@@ -573,10 +613,40 @@ for (const [name, opts] of SIZES) {
     };
   });
   check(`${name}：計測パネルのすぐ上と上のバーのすぐ下は図面のまま（押せる所が図面へはみ出さない）`, edge.aboveReadout && edge.belowTopbar, edge);
+  // 計測パネルが下のツールバー・上のバーに重ならず、値の数字が見えている
+  const room = await page.evaluate(() => {
+    const ro = document.getElementById('readout').getBoundingClientRect();
+    const tb = document.getElementById('toolbar').getBoundingClientRect();
+    const top = document.getElementById('topbar').getBoundingClientRect();
+    const v = document.getElementById('readout-value').getBoundingClientRect();
+    const hit = (a, b) => a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5;
+    const ve = document.elementFromPoint(v.left + Math.min(v.width / 2, 20), v.top + v.height / 2);
+    return {
+      toolbar: !hit(ro, tb), topbar: ro.top >= top.bottom - 0.5,
+      inView: ro.top >= 0 && ro.bottom <= innerHeight + 0.5 && ro.left >= 0 && ro.right <= innerWidth + 0.5,
+      value: !!ve?.closest('#readout-value'),
+    };
+  });
+  check(`${name}：計測パネルは下のツールバー・上のバーに重ならず、計測の結果（値）が見えている`, room.toolbar && room.topbar && room.inView && room.value, room);
+  // パネルのすぐ上の図面を指でずらす・つまむと、図面が動くだけ（点・測り方は変わらない）
+  {
+    const ro = await page.evaluate(() => { const r = document.getElementById('readout').getBoundingClientRect(); return { top: r.top, left: r.left, w: r.width }; });
+    const x = ro.left + ro.w / 2;
+    const y = ro.top - 14;
+    const v0 = await viewOf(page);
+    await touchGesture(page, [['touchStart', [[x, y]]], ...[1, 2, 3, 4, 5, 6].map((i) => ['touchMove', [[x - i * 8, y - i * 6]]]), ['touchEnd', []]]);
+    const v1 = await viewOf(page);
+    const cy = y - 40;
+    await touchGesture(page, [['touchStart', [[x - 30, cy], [x + 30, cy]]], ...[1, 2, 3, 4, 5, 6].map((i) => ['touchMove', [[x - 30 - i * 8, cy], [x + 30 + i * 8, cy]]]), ['touchEnd', []]]);
+    const v2 = await viewOf(page);
+    check(`${name}：計測パネルのすぐ上で図面をずらす・つまむと図面が動き、点や測り方は変わらない`,
+      (v1.cx !== v0.cx || v1.cy !== v0.cy) && v2.zoom > v1.zoom * 1.05 && v2.n === v0.n && v1.n === v0.n && v2.mode === v0.mode, { v0, v1, v2 });
+  }
   // 「すべて消去」のあと（元に戻すの段）
   await page.click('#btn-clear');
   await wait(page, 500);
   await audit('元に戻す', '#readout button');
+  const place2 = await barPlaces(page);
   const fits = await page.evaluate(() => {
     const m = document.getElementById('undo-main');
     const s = document.querySelector('.undo-sub');
@@ -587,6 +657,17 @@ for (const [name, opts] of SIZES) {
   check(`${name}：元に戻すの段の文字が切れずに収まる`, fits.main && fits.sub && fits.inside, fits);
   await page.click('#btn-restore');
   await wait(page, 500);
+  const place3 = await barPlaces(page);
+  // 点を 1 つずつ戻して 0 にし、値の段をしまったあと
+  for (let i = 0; i < 3; i++) {
+    await page.click('#btn-undo');
+    await wait(page, 500);
+  }
+  await wait(page, 1200);
+  const place4 = await barPlaces(page);
+  const same = [place1, place2, place3, place4].every((p) => JSON.stringify(p) === JSON.stringify(place0));
+  check(`${name}：点を置く・消す・元に戻す・1 点ずつ戻すで、縮尺・直交・色・距離／面積／体積／角度の位置が動かない`, same, { place0, place1, place2, place3, place4 });
+  await placePoints(page, 2);
   // 色の一覧
   await page.click('#btn-color');
   await frame(page);
@@ -645,10 +726,26 @@ for (const [name, opts] of SIZES) {
   await ctx.close();
 }
 
-// 距離・面積・体積・角度の幅（原則の例外）を、画面ごとにいちばん狭いもので知らせる
-const segMin = {};
-for (const s of segWidths) segMin[s.size] = Math.min(segMin[s.size] ?? Infinity, s.w);
-check('（例外・記録のみ）距離・面積・体積・角度の押せる幅（高さは 44 以上）。狭い画面では 4 つを 1 行に並べるため 44 に届かない', true, { segMin });
+// 画面を回すと並べ方が決め直される（計測以外の道具を出しているあいだに回しても、計測に戻したときに合う）
+{
+  const { ctx, page } = await open(phone(390, 844, 3));
+  const rowNow = () => page.evaluate(() => document.getElementById('readout').classList.contains('modes-row'));
+  const r0 = await rowNow();
+  await page.setViewportSize({ width: 844, height: 390 });
+  await wait(page, 500);
+  const r1 = await rowNow();
+  await page.click('#btn-tool-inspect');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await wait(page, 500);
+  await page.click('#btn-tool-measure');
+  await frame(page);
+  const r2 = await rowNow();
+  check('画面を回すと距離・面積…の並べ方が決め直される（縦 390 は別の段、横は 1 段、ほかの道具のあいだに回しても合う）', r0 && !r1 && r2, { r0, r1, r2 });
+  await ctx.close();
+}
+
+// 距離・面積・体積・角度の押せる幅（画面ごとにいちばん狭いもの）。すべて 44 以上（例外なし）
+check('距離・面積・体積・角度の押せる幅は、どの画面でも 44 以上（例外なし）', Object.keys(segMin).length === SIZES.length && Object.values(segMin).every((w) => w >= 43.9), { segMin });
 
 check('コンソールにエラーがない', errors.length === 0, { errors: errors.slice(0, 5) });
 

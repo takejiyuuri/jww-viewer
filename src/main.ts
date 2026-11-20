@@ -1155,12 +1155,35 @@ class App {
     return true;
   }
 
+  /**
+   * 距離・面積・体積・角度の 4 つが、操作の段（縮尺・直交・色の右）で 1 つ 44px 以上の幅を取れないときは、
+   * 操作の段の下の別の段に並べる（狭い画面）。幅に余裕があるときは 1 段のまま。
+   * パネルの幅は画面の大きさと向きだけで決まるので、パネルを出したときと画面の大きさが変わったときに決め直す
+   * （点を置いたり消したりしても段は変わらず、ボタンも動かない）
+   */
+  private fitModeRow(): void {
+    const box = el('readout');
+    const bar = box.querySelector<HTMLElement>('.readout-bar');
+    if (!bar || box.classList.contains('hidden')) return;
+    // 並べ方で直交の幅が変わる（別の段にすると「直交」の文字を出す）ので、いったん 1 段に戻してから測る。
+    // こうすると、前の並べ方（画面を回す前など）によらず、同じ幅なら同じ並べ方になる
+    box.classList.remove('modes-row');
+    const w = bar.clientWidth;
+    if (w === 0) return;
+    // 1 段に並べるのに要る幅：縮尺・直交・色とその間（8px × 3）、4 つのボタン（44px）とその間（2px × 3）、枠の内側の余白（2px × 2）
+    const others = ['btn-scale', 'btn-ortho', 'btn-color'].reduce((sum, id) => sum + el(id).offsetWidth, 0);
+    const need = others + 8 * 3 + 44 * 4 + 2 * 3 + 2 * 2;
+    box.classList.toggle('modes-row', w < need);
+  }
+
   private resize(): void {
     // 横向きのまま端末の向きを逆にしたときは、大きさが同じでもツールバーが反対側へ移るので測り直す
     const railMoved = this.updateRail();
     this.dpr = Math.min(window.devicePixelRatio || 1, 3);
     // 画面の数値（innerHeight）ではなく、図面の要素の実際の大きさで描く。
     // ホーム画面から開いたとき（iOS 26）は innerHeight が本当の高さより短く報告されることがあるため
+    // 計測パネルの幅が変わるので、距離・面積…を 1 段に並べるか決め直す
+    this.fitModeRow();
     const box = el('stage').getBoundingClientRect();
     const w = Math.round(box.width) || window.innerWidth;
     const h = Math.round(box.height) || window.innerHeight;
@@ -3022,6 +3045,7 @@ class App {
   private updatePanels(): void {
     const loaded = this.scene !== null;
     el('readout').classList.toggle('hidden', !loaded || this.tool !== 'measure');
+    this.fitModeRow();
     el('inspect-panel').classList.toggle('hidden', !loaded || this.tool !== 'inspect');
     el('ruishin-panel').classList.toggle('hidden', !loaded || this.tool !== 'ruishin');
     for (const [id, t] of [['btn-tool-ruishin', 'ruishin'], ['btn-tool-measure', 'measure'], ['btn-tool-inspect', 'inspect']] as const) {
