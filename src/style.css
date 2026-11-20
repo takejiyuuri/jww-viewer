@@ -164,6 +164,10 @@ html.standalone #shell {
   background: #2a2d38;
 }
 
+.chip:disabled {
+  opacity: 0.35;
+}
+
 /*
  * 押せる所は見た目より少し広げ、指先（44pt 前後）で押せるようにする。
  * 枠（1px）の外へ上下 5px、左右は隣のボタンとの間（8px）の半分の 4px まで
@@ -200,7 +204,7 @@ html.standalone #shell {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  min-height: 30px;
+  min-height: 36px;
 }
 
 /*
@@ -231,17 +235,25 @@ html.standalone #shell {
 }
 
 /*
- * 戻す・消去の押せる所は、その間と下の段（距離・面積…）の方へは広げない。
- * 消去（点をすべて消す）を押し間違えないよう、間は押しても何も起きない所のままにする
+ * 記録・戻す・消去の押せる所は、上（パネルの上の余白）へ 8px 広げて高さ 44px にする
+ * （::after の位置はボタンの枠 1px の内側から測るので、指定は枠の分 1px 大きい）。下の段（距離・面積…）の方へは広げない。
+ * 幅も 44px にするが、消去（点をすべて消す）を押し間違えないよう、戻すとの間は広め（14px）に空け、
+ * その真ん中は押しても何も起きない所のままにする
  */
+#btn-record::after {
+  inset: -9px -3px 0;
+}
+
 #btn-undo::after {
-  right: -1px;
-  bottom: -1px;
+  inset: -9px -5px 0;
+}
+
+#btn-clear {
+  margin-left: 6px;
 }
 
 #btn-clear::after {
-  left: -1px;
-  bottom: -1px;
+  inset: -9px -5px 0;
 }
 
 /* 記録。図面の上の札と同じ色にして、押すと札になることを示す。押せる所は戻すの側へ広げない */
@@ -252,11 +264,6 @@ html.standalone #shell {
   font-weight: 700;
   color: var(--record);
   border-color: rgba(94, 234, 212, 0.45);
-}
-
-#btn-record::after {
-  right: -1px;
-  bottom: -1px;
 }
 
 .readout-top .detail {
@@ -294,14 +301,40 @@ html.standalone #shell {
 /* 縮尺の数字の桁が変わっても、隣の直交が横にずれないよう幅を決めておく */
 .readout-bar #btn-scale {
   width: 60px;
-  /* 文字を切り詰めるので押せる所を外へ広げられない。隣のボタンと同じ高さにして押しやすくする */
   min-height: 36px;
   padding-left: 4px;
   padding-right: 4px;
   text-align: center;
+}
+
+/* 文字を切り詰めるのは内側の span（ボタンそのものは押せる所を外へ広げるので切り詰めない） */
+.readout-bar #btn-scale .scale-text {
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/*
+ * 操作の段（縮尺・直交・色）の押せる所は、下（パネルの下の余白）へ広げて高さ 44px 以上にする。
+ * 上は値の段との間（6px）の手前まで、左右は隣との間（8px）の半分まで
+ */
+.readout-bar #btn-scale::after,
+.readout-bar .pill::after,
+.readout-bar .icon-btn::after {
+  content: "";
+  position: absolute;
+  inset: -3px -4px -10px;
+}
+
+.readout-bar #btn-scale::after {
+  left: -1px;
+  right: -1px;
+}
+
+.readout-bar #btn-color::after {
+  left: -5px;
+  right: -5px;
 }
 
 .readout-bar .pill {
@@ -334,7 +367,7 @@ html.standalone #shell {
 
 /* 白黒は、背景に合わせて白か黒になることを半分ずつで示す */
 .color-dot.mono,
-.color-pop button.mono {
+.color-pop button.mono::before {
   background: linear-gradient(135deg, #ffffff 50%, #111318 50%);
 }
 
@@ -342,16 +375,19 @@ html.standalone #shell {
   border-color: var(--fg);
 }
 
-/* 色の一覧。操作の段の上に浮かべる */
+/*
+ * 色の一覧。操作の段の上に浮かべる。1 つずつ 44px 角で押せるよう、4 色ずつ 2 段に並べる
+ */
 .color-pop {
   position: absolute;
   left: 0;
   right: 0;
   bottom: calc(100% + 8px);
-  display: flex;
-  justify-content: space-between;
-  gap: 6px;
-  padding: 9px 10px;
+  display: grid;
+  grid-template-columns: repeat(4, 44px);
+  justify-content: space-around;
+  gap: 4px 6px;
+  padding: 6px 10px;
   border-radius: 14px;
   border: 1px solid var(--line);
   background: var(--panel-solid);
@@ -368,25 +404,25 @@ html.standalone #shell {
 .color-pop button {
   appearance: none;
   position: relative;
-  flex: 0 1 40px;
-  min-width: 0;
-  aspect-ratio: 1;
+  width: 44px;
+  height: 44px;
   border-radius: 50%;
   border: 0;
   padding: 0;
+  background: transparent;
+}
+
+/* 色の丸はボタン（44px 角）の内側に描く */
+.color-pop button::before {
+  content: "";
+  position: absolute;
+  inset: 5px;
+  border-radius: 50%;
   background: var(--c);
   box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.35);
 }
 
-/* 押せる所は丸の間（6px）の半分まで広げる */
-.color-pop button::after {
-  content: "";
-  position: absolute;
-  inset: -3px;
-  border-radius: 50%;
-}
-
-.color-pop button.on {
+.color-pop button.on::before {
   box-shadow: 0 0 0 2px var(--panel-solid), 0 0 0 4px var(--fg);
 }
 
@@ -409,11 +445,14 @@ html.standalone #shell {
   border-radius: 8px;
 }
 
-/* 見た目の高さ（パネルの高さ）は変えずに、押せる所だけ上下に広げる。左右は隣との間（2px）の半分まで */
+/*
+ * 見た目の高さ（パネルの高さ）は変えずに、押せる所だけ上下に広げる（高さ 44px 以上）。
+ * 上は値の段との間（6px）の手前まで、下はパネルの下の余白へ。左右は隣との間（2px）の半分まで
+ */
 .readout-bar .mode-seg button::after {
   content: "";
   position: absolute;
-  inset: -5px -1px;
+  inset: -5px -1px -11px;
 }
 
 .icon-btn {
@@ -472,7 +511,13 @@ html.standalone #shell {
   margin-top: 9px;
 }
 
+/* 属性・累進のパネルの下の操作ボタンは、指で押しやすい高さ（44px）にする */
+.panel-actions .pill {
+  min-height: 44px;
+}
+
 .pill {
+  position: relative;
   flex: 1;
   min-width: 0;
   display: inline-flex;
@@ -547,10 +592,26 @@ body[data-bg="light"] #ruishin-panel {
   flex-shrink: 0;
 }
 
-/* 属性の見出しの行の、表示を戻る・進むボタン */
+/*
+ * 見出しの行の戻る・進むボタン（属性・累進・レイヤ一覧で同じ大きさ）。幅 44px、押せる所は上下に 4px 広げて 44px 角。
+ * 戻ると進むの間（8px）へは広げないので、隣どうしで押せる所が重ならない
+ */
 .head-btn {
-  width: 36px;
-  height: 32px;
+  width: 44px;
+  height: 36px;
+}
+
+.head-btn::after {
+  inset: -5px -1px;
+}
+
+/* 累進のパネルの戻る・進むは 1.2 と同じ高さ（38px）のまま。押せる所は同じく 44px 角 */
+#ruishin-panel .head-btn {
+  height: 38px;
+}
+
+#ruishin-panel .head-btn::after {
+  inset: -4px -1px;
 }
 
 .head-btn .ico {
@@ -904,6 +965,9 @@ body[data-bg="light"] #ruishin-panel {
 
 .group-row.pick {
   cursor: pointer;
+  /* 縮尺を選ぶ行は、指で押しやすい高さにする */
+  min-height: 44px;
+  align-items: center;
 }
 
 .group-row.active {
@@ -950,9 +1014,10 @@ body[data-bg="light"] #ruishin-panel {
 }
 
 .about-links a {
-  /* 指で押しやすいよう、行の高さいっぱいを押せるようにする */
-  display: inline-block;
-  padding: 8px 0;
+  /* 指で押しやすいよう、行の高さいっぱい（44px）を押せるようにする */
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
   color: var(--accent);
 }
 
@@ -1074,6 +1139,12 @@ body[data-bg="light"] .panel {
   flex-shrink: 0;
 }
 
+/* 小さなボタンも、押せる所は上下へ 7px 広げて高さ 44px 以上にする（指定は枠の分 1px 大きい） */
+.chip.small::after {
+  top: -8px;
+  bottom: -8px;
+}
+
 /* 間が 6px なので、押せる所の左右は間の半分（枠の外 3px）までにして、隣と重ねない */
 .section-actions .chip::after {
   left: -4px;
@@ -1191,7 +1262,8 @@ body[data-bg="light"] .panel {
   display: flex;
   border: 0;
   background: transparent;
-  padding: 5px 2px 5px 8px;
+  /* 行の高さを 44px にして、スイッチを押しやすくする */
+  padding: 9px 2px 9px 8px;
   flex-shrink: 0;
 }
 
@@ -1395,9 +1467,19 @@ body.ui-hidden .ui-show {
   color: var(--record);
 }
 
+/* 札の表示のスイッチは、入れているあいだ札と同じ色 */
 #btn-records-badges[aria-pressed="true"] {
   border-color: var(--record);
   color: var(--record);
+}
+
+#btn-records-badges[aria-pressed="true"] .tgl {
+  background: var(--record);
+}
+
+/* 「すべて消す」は、コピー・札の表示から離して置く */
+#btn-records-clear {
+  margin-left: 10px;
 }
 
 /* ---- レイヤシート ---- */
@@ -1444,6 +1526,7 @@ body.ui-hidden .ui-show {
 .lg-head {
   flex: 1;
   min-width: 0;
+  min-height: 44px;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -1657,6 +1740,11 @@ body.ui-hidden .ui-show {
   margin-top: 4px;
 }
 
+/* 窓のボタンは指で押しやすい高さ（44px）にする */
+.dialog-actions .pill {
+  min-height: 44px;
+}
+
 /* ---- 横向き：パネルを右に寄せて、図面を縦いっぱいに見せる ---- */
 @media (orientation: landscape) and (max-height: 500px) {
   .panel,
@@ -1672,6 +1760,16 @@ body.ui-hidden .ui-show {
   /* 計測パネルは 2 段に収まるのでスクロールさせない（上に浮かべる色の一覧が切れないように） */
   #readout {
     overflow: visible;
+    /*
+     * 横向きは横に余裕があるので、計測パネルだけ少し広げて、距離・面積・体積・角度を 1 つ 44px 以上の幅で
+     * 縮尺・直交・色と同じ段に並べる（別の段にすると、低い横画面では図面の見える所が狭くなる）。
+     * 直交に「直交」の文字が付く幅（700px より広い画面）は 410px、文字なしは 380px
+     */
+    width: var(--readout-w);
+  }
+
+  #shell {
+    --readout-w: 410px;
   }
 
   /* 右に寄せた幅の狭いパネルでは、値の文字を小さくして内訳の幅を空ける */
@@ -1787,8 +1885,9 @@ body.ui-hidden .ui-show {
    */
   #topbar,
   body[data-bg="light"] #topbar {
-    padding-left: var(--edge-left);
-    padding-right: var(--edge-right);
+    /* 端のボタンの押せる所（外へ 4px）が、ツールバーの列に食い込まないよう 4px 内側から並べる */
+    padding-left: calc(var(--edge-left) + 4px);
+    padding-right: calc(var(--edge-right) + 4px);
     background: none;
   }
 
@@ -1841,6 +1940,11 @@ body.ui-hidden .ui-show {
     right: var(--edge-right);
     bottom: calc(var(--bar-bottom) + var(--panel-stack, 0px));
     width: max(300px, min(360px, 48vw));
+  }
+
+  /* 下が計測のパネルのときは、計測のパネル（横向きでは少し広い）に幅をそろえる */
+  #shell:has(> #readout:not(.hidden)) #layer-panel.collapsed {
+    width: var(--readout-w);
   }
 
   /*
@@ -1937,18 +2041,21 @@ body[data-bg="light"] #inspect-actions {
   padding: 8px 2px;
   white-space: nowrap;
   /* 指で押しやすい高さを取る（3 つのボタンは横に等分して並べる） */
-  min-height: 40px;
+  min-height: 44px;
 }
 
-/* 累進のパネルの「戻る」「進む」。指で押しやすい大きさにする */
-#ruishin-panel .head-btn {
-  width: 44px;
-  height: 38px;
-}
+/* 狭い画面では、文字の長さに合わせて幅を分ける（「寸法線上のみ」にスイッチの絵が入るように） */
+@media (max-width: 374px), (orientation: landscape) and (max-height: 500px) and (max-width: 700px) {
+  .ruishin-actions {
+    gap: 5px;
+  }
 
-/* 「進む」は「戻る」の矢印を左右に返して使う */
-.ico.flip-x {
-  transform: scaleX(-1);
+  .ruishin-actions .pill {
+    flex: 1 1 auto;
+    font-size: 12px;
+    padding: 8px 3px;
+    gap: 4px;
+  }
 }
 
 /*
@@ -1967,5 +2074,290 @@ body[data-bg="light"] #inspect-actions {
   .tool .ico {
     width: 18px;
     height: 18px;
+  }
+}
+
+/* ---- 上のバーのボタン：見た目は少し大きく（高さ 36px）、押せる所は 44px 角以上 ---- */
+#topbar .chip {
+  min-height: 36px;
+}
+
+#topbar .chip.icon {
+  width: 36px;
+}
+
+/*
+ * 上下はバーの余白（8px）の内側まで、左右は隣との間（8px）の半分まで広げる（図面の側へ出さず、隣とも重ねない）。
+ * ::after の位置は枠（1px）の内側から測るので、指定は枠の分 1px 大きい
+ */
+#topbar .chip::after {
+  inset: -6px -5px;
+}
+
+/* ---- 入・切のスイッチと、押すたびに働く実行のボタンを見分ける ---- */
+/*
+ * 入・切のボタン（直交・累進表示・寸法線上のみ・札を表示）には小さなスイッチの絵を付ける。
+ * 入れているあいだは緑（札は札の色）でつまみが右、切っているあいだは灰色でつまみが左。
+ * 実行のボタン（全列を戻す・レイヤだけ表示など）にはスイッチを付けない
+ */
+.tgl {
+  position: relative;
+  flex: none;
+  width: 22px;
+  height: 13px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.24);
+  transition: background 0.15s;
+}
+
+.tgl::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  transition: left 0.15s;
+}
+
+.toggle[aria-pressed="true"] .tgl {
+  background: var(--accent);
+}
+
+.toggle[aria-pressed="true"] .tgl::after {
+  left: 11px;
+}
+
+/* 切っているあいだは、地を透かして文字を控えめにする（実行のボタンより一段静かに） */
+.pill.toggle[aria-pressed="false"],
+.chip.toggle[aria-pressed="false"] {
+  background: transparent;
+  color: var(--dim);
+}
+
+.chip.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+/* 実行のボタン（押すたびに働く）は、地をはっきりさせてスイッチと見分ける */
+.panel-actions .pill:not(.toggle) {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+/* 計測パネルの直交は、広い画面ではスイッチと「直交」の文字だけにする（距離・面積…の幅を減らさないように） */
+#btn-ortho .ico {
+  display: none;
+}
+
+/* 狭い画面では直交はアイコンだけなので、スイッチの代わりに右上の小さな灯りで入・切を見せる */
+@media (max-width: 374px), (orientation: landscape) and (max-height: 500px) and (max-width: 700px) {
+  #btn-ortho .ico {
+    display: block;
+  }
+
+  #btn-ortho .tgl {
+    display: none;
+  }
+
+  #btn-ortho::before {
+    content: "";
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.3);
+  }
+
+  #btn-ortho[aria-pressed="true"]::before {
+    background: var(--accent);
+    box-shadow: 0 0 4px var(--accent);
+  }
+}
+
+/* ---- 危険な操作（消す）は赤 ---- */
+.icon-btn.danger,
+.chip.danger {
+  color: #ff6b6b;
+  border-color: rgba(255, 107, 107, 0.5);
+}
+
+.icon-btn.danger {
+  background: rgba(255, 107, 107, 0.08);
+}
+
+.icon-btn.danger:active,
+.chip.danger:active {
+  background: rgba(255, 107, 107, 0.2);
+}
+
+/* 確かめる窓の「消す」「消して開く」 */
+.pill.danger-fill {
+  background: #d93a3f;
+  border-color: #d93a3f;
+  color: #fff;
+}
+
+.pill.danger-fill:active {
+  background: #b83035;
+}
+
+/* ---- 「すべて消去」のあとの「元に戻す」の段（値の段と同じ高さ・同じ位置） ---- */
+.readout-undo {
+  display: none;
+  align-items: center;
+  gap: 10px;
+  height: 36px;
+  margin-bottom: 6px;
+  min-width: 0;
+}
+
+.readout.undoing .readout-undo {
+  display: flex;
+}
+
+.readout.undoing .readout-top {
+  display: none;
+}
+
+.undo-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+
+.undo-main {
+  font-size: 14px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.undo-sub {
+  font-size: 11.5px;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.readout-undo .restore-btn {
+  flex: none;
+  height: 36px;
+  padding: 0 12px 0 9px;
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+.readout-undo .restore-btn .ico {
+  width: 18px;
+  height: 18px;
+}
+
+/* 押せる所は上（パネルの上の余白）へ 8px と左右へ 4px 広げる。下の段の方へは広げない（指定は枠の分 1px 大きい） */
+.readout-undo .restore-btn::after {
+  content: "";
+  position: absolute;
+  inset: -9px -5px 0;
+}
+
+/* ---- 確かめる窓 ---- */
+.dialog.confirm .sub {
+  margin-top: 6px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* やめると危険なボタンの間を少し広げる */
+.dialog.confirm .dialog-actions {
+  gap: 12px;
+  margin-top: 16px;
+}
+
+@media (orientation: landscape) and (max-height: 500px) {
+  .dialog.confirm .dialog-actions {
+    grid-row: 3;
+    grid-column: 1 / -1;
+    justify-content: flex-end;
+    margin-top: 12px;
+  }
+}
+
+/*
+ * ---- 狭い画面：距離・面積・体積・角度を、操作の段の下の別の段に並べる（main.ts の fitModeRow が決める） ----
+ * 1 つずつ幅 44px 以上・押せる所の高さ 44px 以上にする。幅に余裕のある画面（iPad など）は 1 段のまま。
+ * 段は点の有無で変わらず、パネルは下に揃えて置くので、点を置いたり消したりしてもボタンは動かない。
+ * 押せる所：上の段（縮尺・直交・色）は上へ 3px・下へ 5px、下の段のボタンは見た目の上へ 5px・下へ 6px（入れ物の余白 2px を含む）。
+ * 段の間は 10px なので、押せる所は重ならない（間に 2px の押しても何も起きない所が残る）
+ */
+#readout.modes-row .readout-bar {
+  flex-wrap: wrap;
+  row-gap: 10px;
+}
+
+#readout.modes-row .readout-bar .mode-seg {
+  flex: 1 0 100%;
+  order: 1;
+}
+
+#readout.modes-row .readout-bar .mode-seg button {
+  padding: 8px 2px;
+  font-size: 14px;
+}
+
+#readout.modes-row .readout-bar .mode-seg button::after {
+  inset: -5px -1px -6px;
+}
+
+#readout.modes-row .readout-bar #btn-scale,
+#readout.modes-row .readout-bar .pill,
+#readout.modes-row .readout-bar .icon-btn {
+  height: 36px;
+  min-height: 36px;
+}
+
+#readout.modes-row .readout-bar #btn-scale::after,
+#readout.modes-row .readout-bar .pill::after,
+#readout.modes-row .readout-bar .icon-btn::after {
+  top: -4px;
+  bottom: -6px;
+}
+
+/* 別の段にしたときは操作の段に余裕があるので、直交は狭い画面でもスイッチと「直交」の文字で見せる */
+#readout.modes-row #btn-ortho {
+  width: auto;
+  padding: 0 10px 0 8px;
+}
+
+#readout.modes-row #btn-ortho .label {
+  display: inline;
+}
+
+#readout.modes-row #btn-ortho .ico {
+  display: none;
+}
+
+#readout.modes-row #btn-ortho .tgl {
+  display: block;
+}
+
+#readout.modes-row #btn-ortho::before {
+  content: none;
+}
+
+/* 横向きの狭い画面（直交はアイコンだけ）の計測パネルの幅。距離・面積…を 1 段に並べられる幅（上の横向きの説明を参照） */
+@media (orientation: landscape) and (max-height: 500px) and (max-width: 700px) {
+  #shell {
+    --readout-w: 380px;
   }
 }
