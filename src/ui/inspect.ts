@@ -112,6 +112,57 @@ export function pickEntity(
   return -1;
 }
 
+/**
+ * レイヤ選択で、指の位置で選べる図形の候補（重なった線を選び分けるため）。拾う段は pickEntity と同じで、
+ * ①指のすぐ近くの線（半径の 0.35 倍以内）②文字（小さい文字から）③少し離れた線 ④点 ⑤塗り（手前に描かれたものから）。
+ * 同じ段の中は指に近い順、同じならレイヤの番号の小さい順、それも同じなら図形の番号の小さい順にする
+ * （同じ所を同じようにタップすれば、いつも同じ並びになる）。同じレイヤの図形は最初の 1 つだけにする
+ */
+export function pickCandidates(
+  scene: Scene,
+  index: SnapIndex,
+  x: number, y: number, radius: number,
+  visible: (color: number, layer: number) => boolean,
+  textShown?: (text: number) => boolean,
+): number[] {
+  const layerOf = scene.entities.layer;
+  const found: { entity: number; tier: number; key: number }[] = [];
+  for (const near of index.linesNear(x, y, radius)) {
+    found.push({ entity: scene.lineEntity[near.index], tier: near.dist <= radius * 0.35 ? 0 : 2, key: near.dist });
+  }
+  const pad = radius * 0.15;
+  for (let i = 0; i < scene.texts.length; i++) {
+    const t = scene.texts[i];
+    if (!visible(t.color, t.layer)) continue;
+    if (textShown && !textShown(i)) continue;
+    if (!textContains(t, x, y, pad)) continue;
+    found.push({ entity: t.entity, tier: 1, key: t.width * t.height });
+  }
+  for (const near of index.pointsNear(x, y, radius * 0.6)) {
+    found.push({ entity: scene.snapPointEntity[near.index], tier: 3, key: near.dist });
+  }
+  const tri = scene.triPos;
+  const tris = tri.length / 6;
+  for (let i = tris - 1; i >= 0; i--) {
+    if (!visible(scene.triColor[i * 3], scene.triLayer[i * 3])) continue;
+    if (inTriangle(x, y, tri[i * 6], tri[i * 6 + 1], tri[i * 6 + 2], tri[i * 6 + 3], tri[i * 6 + 4], tri[i * 6 + 5])) {
+      // 後から描かれた塗りほど手前にあるので、手前から並べる
+      found.push({ entity: scene.triEntity[i], tier: 4, key: tris - i });
+    }
+  }
+  found.sort((a, b) => a.tier - b.tier || a.key - b.key || layerOf[a.entity] - layerOf[b.entity] || a.entity - b.entity);
+  const seen = new Set<number>();
+  const out: number[] = [];
+  for (const f of found) {
+    if (f.entity < 0) continue;
+    const layer = layerOf[f.entity];
+    if (seen.has(layer)) continue;
+    seen.add(layer);
+    out.push(f.entity);
+  }
+  return out;
+}
+
 export function entityShape(scene: Scene, i: number): Highlight {
   const e = scene.entities;
   const ls = e.lineStart[i], lc = e.lineCount[i];

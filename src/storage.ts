@@ -462,3 +462,51 @@ export function saveViewState(name: string, state: ViewState): void {
     // 保存できなくても表示には影響しない
   }
 }
+
+// ---------- レイヤ・表示のパネルの大きさ ----------
+// 指で変えた大きさを、パネルごとに、縦（高さ）と横（幅）で別々に覚える。端末ごとの好みなので localStorage に置く。
+// 無ければ既定の大きさで出す（1.3 以前から更新したときも同じ）。読み書きできなくても、パネルは既定の大きさで使える
+
+export type SizedPanel = 'layer' | 'display';
+
+export interface PanelSize {
+  /** 縦の画面（iPhone の縦・iPad）での高さ（CSS ピクセル） */
+  h?: number;
+  /** 横の iPhone で右に寄せたときの幅（CSS ピクセル） */
+  w?: number;
+}
+
+export type PanelSizes = Record<SizedPanel, PanelSize>;
+
+const PANEL_SIZE_KEY = 'jww-viewer:panel-size';
+
+function sizeValue(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 20 && v <= 10000 ? Math.round(v) : undefined;
+}
+
+export function loadPanelSizes(): PanelSizes {
+  const sizes: PanelSizes = { layer: {}, display: {} };
+  try {
+    const v = JSON.parse(localStorage.getItem(PANEL_SIZE_KEY) ?? 'null') as Record<string, Record<string, unknown>> | null;
+    if (!v || typeof v !== 'object') return sizes;
+    for (const id of ['layer', 'display'] as const) {
+      const p = v[id];
+      if (!p || typeof p !== 'object') continue;
+      const h = sizeValue(p.h);
+      const w = sizeValue(p.w);
+      if (h !== undefined) sizes[id].h = h;
+      if (w !== undefined) sizes[id].w = w;
+    }
+  } catch {
+    // 読めなければ既定の大きさ
+  }
+  return sizes;
+}
+
+export function savePanelSizes(s: PanelSizes): void {
+  try {
+    localStorage.setItem(PANEL_SIZE_KEY, JSON.stringify(s));
+  } catch {
+    // 保存できなくても、開いている間の大きさは変わらない
+  }
+}

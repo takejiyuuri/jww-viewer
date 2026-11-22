@@ -86,84 +86,55 @@ const covered = (page, ids) => page.evaluate((ids) => ids.filter((id) => {
   return !hit || !n.contains(hit);
 }), ids);
 
-// ---------- 1. レイヤ一覧：見出しを押すと縮み、もう一度押すと戻る ----------
+// ---------- 1. レイヤ一覧：ツールバーのすぐ上に出し、見出しを上下にずらして高さを自由に変える（仕様書 9-12） ----------
 {
   const { ctx, page } = await open({ ...devices['iPhone 14 Pro'], hasTouch: true });
   await page.click('#btn-layers');
   await frame(page);
   const open0 = await panel(page, 'layer-panel', '.sheet-body');
-  // 見出しの「レイヤ」の文字を押す
+  // ツールバーは覆わず、道具・レイヤ・表示・全体のボタンを押せる。計測のパネルは、一覧を開いているあいだ見せない
+  const under = await covered(page, ['btn-tool-measure', 'btn-tool-ruishin', 'btn-tool-inspect', 'btn-layers', 'btn-display', 'btn-fit']);
+  const geo = await page.evaluate(() => ({
+    bottom: document.getElementById('layer-panel').getBoundingClientRect().bottom,
+    barTop: document.getElementById('toolbar').getBoundingClientRect().top,
+    readout: getComputedStyle(document.getElementById('readout')).visibility,
+  }));
+  check('縦向きでレイヤ一覧は下のツールバーのすぐ上に出て、ツールバーのボタンはどれも押せる（計測のパネルは見せない）',
+    open0.shown && open0.bodyShown && geo.bottom <= geo.barTop + 0.5 && geo.barTop - geo.bottom < 12 && under.length === 0 && geo.readout === 'hidden',
+    { open0, geo, under });
+  // 見出しの「レイヤ」の文字を押しただけでは、大きさは変わらない（2 段の切り替えはしない）
   await page.click('#layer-panel .sheet-head strong');
   await frame(page);
   const tapped = await panel(page, 'layer-panel', '.sheet-body');
-  // 縮めた見出しは、計測のパネルとツールバーの上に浮かび、どちらのボタンも押せる
-  const roTop = await page.evaluate(() => document.getElementById('readout').getBoundingClientRect().top);
-  const under = await covered(page, ['btn-tool-measure', 'btn-tool-inspect', 'btn-layers', 'btn-display', 'btn-fit', 'btn-scale', 'btn-ortho', 'btn-color', 'seg-mode']);
-  check('縦向きでレイヤ一覧の見出しを押すと、見出しだけに縮み、計測のパネルとツールバーの上に浮かぶ（どのボタンも押せる）',
-    open0.shown && open0.bodyShown && tapped.collapsed && !tapped.bodyShown && tapped.h < 90
-      && tapped.bottom <= roTop + 1 && roTop - tapped.bottom < 16 && under.length === 0,
-    { open0, tapped, roTop, under });
-  // 縮めたまま色の一覧を開いても、色の丸は縮めた見出しに隠れず押せる
-  await page.click('#btn-color');
-  await frame(page);
-  const dots = await page.evaluate(() => [...document.querySelectorAll('#color-pop button')].filter((b) => {
-    const r = b.getBoundingClientRect();
-    return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) !== b;
-  }).length);
-  await page.click('#btn-color');
-  check('縦向きで縮めたレイヤ一覧があっても、色の一覧の 8 色とも押せる', dots === 0, { hidden: dots });
-  // 縮めた見出しのすぐ上に 1 点目を置いても、伸びた計測のパネルと一緒に上がる見出しに隠れない
-  await page.waitForTimeout(500);
-  const headTop = await page.evaluate(() => document.getElementById('layer-panel').getBoundingClientRect().top);
-  await page.touchscreen.tap(200, headTop - 10);
-  await page.waitForTimeout(400);
-  const placed = await page.evaluate(() => {
-    const a = window.__jww;
-    const p = a.points[0];
-    const out = {
-      n: a.points.length,
-      sy: p ? a.cssH / 2 - ((p.y - a.view.cy) * a.view.zoom) / a.dpr : null,
-      top: document.getElementById('layer-panel').getBoundingClientRect().top,
-    };
-    a.points = [];
-    a.updateReadout();
-    return out;
-  });
-  check('縮めたレイヤ一覧のすぐ上に 1 点目を置いても、パネルと一緒に上がる見出しに点が隠れない',
-    placed.n === 1 && placed.sy !== null && placed.sy < placed.top, placed);
-  await page.click('#layer-panel .sheet-head strong');
-  await frame(page);
-  const back = await panel(page, 'layer-panel', '.sheet-body');
-  check('縮めたレイヤ一覧の見出しを押すと元に戻る', !back.collapsed && back.bodyShown && Math.abs(back.h - open0.h) < 2, back);
+  check('縦向きでレイヤ一覧の見出しを押しただけでは、大きさは変わらない', Math.abs(tapped.h - open0.h) < 0.5, { open0: open0.h, tapped: tapped.h });
 
-  // ---------- 2. 見出しを下へずらすと縮み、上へずらすと戻る ----------
+  // ---------- 2. 見出しを下へずらすと低く、上へずらすと高くなり、離した所で止まる ----------
   await dragHead(page, '#layer-panel .sheet-head', 140);
   const down = await panel(page, 'layer-panel', '.sheet-body');
-  check('レイヤ一覧の見出しを下へずらすと縮む', down.collapsed && !down.bodyShown, down);
+  check('レイヤ一覧の見出しを下へずらすと、ずらした分だけ低くなる（中は見えたまま）', Math.abs(down.h - (open0.h - 140)) <= 1 && down.bodyShown, { open0: open0.h, down: down.h });
   await dragHead(page, '#layer-panel .sheet-head', -80);
   const up = await panel(page, 'layer-panel', '.sheet-body');
-  check('縮めたレイヤ一覧の見出しを上へずらすと戻る', !up.collapsed && up.bodyShown, up);
-  // 少しずらしただけなら縮めない（元の位置へ戻る）
-  await dragHead(page, '#layer-panel .sheet-head', 20);
-  const small = await page.evaluate(() => ({
-    collapsed: document.getElementById('layer-panel').classList.contains('collapsed'),
-    transform: document.getElementById('layer-panel').style.transform,
-  }));
-  check('見出しを少しずらしただけなら縮めず、元の位置へ戻る', !small.collapsed && small.transform === '', small);
-  // 横になでただけでは、押したことにしない（縮めない）
+  check('見出しを上へずらすと、ずらした分だけ高くなる', Math.abs(up.h - (down.h + 80)) <= 1, { down: down.h, up: up.h });
+  // つまみをつかんでも同じ
+  await dragHead(page, '#layer-panel .sheet-head', 30, { from: '#layer-panel .grab' });
+  const grabbed = await panel(page, 'layer-panel', '.sheet-body');
+  check('つまみをつかんで下へずらしても低くなる', Math.abs(grabbed.h - (up.h - 30)) <= 1, { up: up.h, grabbed: grabbed.h });
+  // 横になでただけでは、高さは変わらない
   await dragHead(page, '#layer-panel .sheet-head', 0, { dx: 160 });
   const side = await panel(page, 'layer-panel', '.sheet-body');
-  check('見出しを横になでただけでは、縮めも戻しもしない', !side.collapsed && side.bodyShown, side);
+  check('見出しを横になでただけでは、高さは変わらない', Math.abs(side.h - grabbed.h) < 0.5, { grabbed: grabbed.h, side: side.h });
 
-  // ---------- 3. 縮めても見出しのボタンは押せる。開き直すと元の大きさ ----------
-  await page.click('#layer-panel .sheet-head strong');
-  await frame(page);
+  // ---------- 3. 低くしても見出しのボタンは押せる。開き直すと前の高さ ----------
+  await dragHead(page, '#layer-panel .sheet-head', 600);
+  const low = await panel(page, 'layer-panel', '.sheet-body');
   await page.click('#btn-layer-close');
   const closed = await panel(page, 'layer-panel', '.sheet-body');
+  const ro = await page.evaluate(() => getComputedStyle(document.getElementById('readout')).visibility);
   await page.click('#btn-layers');
   await frame(page);
   const reopened = await panel(page, 'layer-panel', '.sheet-body');
-  check('縮めたままでも「閉じる」は押せ、開き直すと元の大きさで出る', !closed.shown && reopened.shown && !reopened.collapsed && reopened.bodyShown, { closed, reopened });
+  check('いちばん低くしても「閉じる」は押せ（閉じると計測のパネルが戻る）、開き直すと前の高さで出る',
+    low.h < 160 && !closed.shown && ro === 'visible' && reopened.shown && Math.abs(reopened.h - low.h) < 0.5, { low: low.h, closed, ro, reopened: reopened.h });
   await page.click('#btn-layer-close');
 
   // ---------- 4. 属性のパネル：見出しを下へずらすと縮み、見出し（種類）は見えたまま ----------
@@ -344,7 +315,7 @@ const covered = (page, ids) => page.evaluate((ids) => ids.filter((id) => {
   await ctx.close();
 }
 
-// ---------- 6. 横向き：縮めたレイヤ一覧は、見出しだけを右下に残す ----------
+// ---------- 6. 横向き：レイヤ一覧は右に縦長。左の縁のつまみを左右にずらして幅を変える（上下にずらしても変わらない） ----------
 {
   const { ctx, page } = await open({ viewport: { width: 852, height: 393 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
   await page.click('#btn-layers');
@@ -354,33 +325,15 @@ const covered = (page, ids) => page.evaluate((ids) => ids.filter((id) => {
   check('横向き 852 でシートを開いているあいだは、シートの左にはみ出す計測のパネルを見せず、押せない', sliver.vis === 'hidden' && !sliver.onPanel, sliver);
   await dragHead(page, '#layer-panel .sheet-head', 120);
   const c = await panel(page, 'layer-panel', '.sheet-body');
-  const ro = await page.evaluate(() => {
-    const r = document.getElementById('readout').getBoundingClientRect();
-    return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, vis: getComputedStyle(document.getElementById('readout')).visibility };
-  });
-  const cw = await page.evaluate(() => {
-    const r = document.getElementById('layer-panel').getBoundingClientRect();
-    return { left: r.left, right: r.right };
-  });
-  check('横向きでも、レイヤ一覧の見出しを下へずらすと見出しだけになり、右下の計測のパネルの上に載る（重ならない・幅がそろう）',
-    o.bodyShown && c.collapsed && !c.bodyShown && c.top > c.vh * 0.4 && c.bottom <= ro.top + 1 && ro.top - c.bottom < 16
-      && ro.vis === 'visible' && Math.abs(cw.left - ro.left) < 1 && Math.abs(cw.right - ro.right) < 1, { o, c, ro, cw });
-  // 縮めた一覧は色の一覧と同じ所に来るが、色の一覧を開いているあいだは色の丸が前に出て、8 色とも押せる
-  await page.click('#btn-color');
-  await frame(page);
-  const dots = await page.evaluate(() => [...document.querySelectorAll('#color-pop button')].filter((b) => {
-    const r = b.getBoundingClientRect();
-    return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) !== b;
-  }).length);
-  await page.click('#color-pop button[data-color="orange"]');
-  await frame(page);
-  const picked = await page.evaluate(() => ({
-    color: window.__jww.measurePrefs.color,
-    collapsed: document.getElementById('layer-panel').classList.contains('collapsed'),
-    open: !document.getElementById('layer-panel').classList.contains('hidden'),
-  }));
-  check('横向きで縮めたレイヤ一覧があっても、色の一覧の 8 色とも押せ、選べる（レイヤ一覧は縮めたまま）',
-    dots === 0 && picked.color === 'orange' && picked.collapsed && picked.open, { hidden: dots, picked });
+  const w = () => page.evaluate(() => document.getElementById('layer-panel').getBoundingClientRect().width);
+  const w0 = await w();
+  check('横向きでは、見出しを下へずらしても縮まない（右に縦長のまま）', Math.abs(c.h - o.h) < 0.5 && c.bodyShown, { o: o.h, c: c.h });
+  await dragHead(page, '#layer-panel .sheet-head', 0, { dx: -60, from: '#layer-panel .resize-edge' });
+  const w1 = await w();
+  await dragHead(page, '#layer-panel .sheet-head', 0, { dx: 25, from: '#layer-panel .resize-edge' });
+  const w2 = await w();
+  check('横向きでは、左の縁のつまみを左へずらすと広がり、右へずらすと狭まる（離した所で止まる）',
+    Math.abs(w1 - (w0 + 60)) <= 1 && Math.abs(w2 - (w1 - 25)) <= 1, { w0, w1, w2 });
   // ダイナミックアイランドの側（ツールバーの列の反対側）の端で長押ししても、拡大鏡は安全領域に入れない
   const island = await page.evaluate(async () => {
     const a = window.__jww;
@@ -590,7 +543,7 @@ const covered = (page, ids) => page.evaluate((ids) => ids.filter((id) => {
   await ctx.close();
 }
 
-// ---------- 9. 低い横画面で属性のパネルが高くても、縮めたレイヤ一覧は上のバーにかからない ----------
+// ---------- 9. 低い横画面で属性のパネルが高くても、レイヤ一覧は上のバーにかからず、属性のパネルは隠れている ----------
 {
   const { ctx, page } = await open({ viewport: { width: 852, height: 320 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
   await page.click('#btn-tool-inspect');
@@ -604,21 +557,21 @@ const covered = (page, ids) => page.evaluate((ids) => ids.filter((id) => {
   });
   await page.click('#btn-layers');
   await frame(page);
-  await dragHead(page, '#layer-panel .sheet-head', 120);
+  await dragHead(page, '#layer-panel .sheet-head', 0, { dx: -400, from: '#layer-panel .resize-edge' });
   await page.waitForTimeout(200);
   await frame(page);
   const r = await page.evaluate(() => {
     const l = document.getElementById('layer-panel').getBoundingClientRect();
-    const p = document.getElementById('inspect-panel').getBoundingClientRect();
     const bar = document.getElementById('btn-info').getBoundingClientRect();
     return {
-      collapsed: document.getElementById('layer-panel').classList.contains('collapsed'),
-      layerTop: l.top, layerBottom: l.bottom, panelTop: p.top, barBottom: bar.bottom,
+      layerTop: l.top, layerLeft: l.left, barBottom: bar.bottom,
+      inspect: getComputedStyle(document.getElementById('inspect-panel')).visibility,
     };
   });
-  const under = await covered(page, ['btn-info', 'btn-ui-hide', 'btn-open', 'btn-layer-undo', 'btn-layer-redo']);
-  check('低い横画面で属性のパネルが高くても、縮めたレイヤ一覧は上のバーにかからず（⤢・i が押せる）、属性のパネルの上に載る',
-    r.collapsed && r.layerTop >= r.barBottom && r.layerBottom <= r.panelTop + 1 && under.length === 0, { ...r, under });
+  // 属性のパネル（その見出しの丸矢印も）は、一覧を開いているあいだ隠している（一覧の見出しに同じ丸矢印がある）
+  const under = await covered(page, ['btn-info', 'btn-ui-hide', 'btn-open', 'btn-layer-list-undo', 'btn-layer-list-redo']);
+  check('低い横画面で属性のパネルが高くても、レイヤ一覧（いちばん広くしても）は上のバーにかからず（⤢・i が押せる）、属性のパネルは隠れている',
+    r.layerTop >= r.barBottom && r.layerLeft > 150 && r.inspect === 'hidden' && under.length === 0, { ...r, under });
   await ctx.close();
 }
 

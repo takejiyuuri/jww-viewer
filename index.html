@@ -262,8 +262,10 @@
   </div>
 </div>
 
-<div id="layer-panel" class="overlay-panel sheet hidden">
+<!-- レイヤ・表示のパネルは、つまみと見出し（横の iPhone では左の縁のつまみも）を指でずらして大きさを変える（main.ts の makeResizable） -->
+<div id="layer-panel" class="overlay-panel sheet sized hidden">
   <div class="grab" aria-hidden="true"></div>
+  <div class="resize-edge" aria-hidden="true"></div>
   <div class="sheet-head">
     <strong>レイヤ</strong>
     <!-- 戻る・進むは属性の見出しのものと同じ履歴を行き来する -->
@@ -273,7 +275,7 @@
       <button id="btn-layer-close" class="chip">閉じる</button>
     </span>
   </div>
-  <!-- 一覧を開いているあいだに図面の線をタップすると、その線のレイヤをここに出す（main.ts が書き込む） -->
+  <!-- 一覧を開いているあいだに図面の線をタップすると、その線のレイヤをここに出す（main.ts が書き込む。2 行分の決まった高さ） -->
   <div id="layer-pick" class="layer-pick" role="status" hidden></div>
   <div class="sheet-body">
     <div class="sheet-toolbar">
@@ -288,7 +290,9 @@
   </div>
 </div>
 
-<div id="display-panel" class="overlay-panel sheet hidden">
+<div id="display-panel" class="overlay-panel sheet sized hidden">
+  <div class="grab" aria-hidden="true"></div>
+  <div class="resize-edge" aria-hidden="true"></div>
   <div class="sheet-head">
     <strong>表示</strong>
     <button id="btn-display-close" class="chip">閉じる</button>

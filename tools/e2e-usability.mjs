@@ -466,13 +466,16 @@ const measureHits = (page, sel) => page.evaluate((sel) => {
       const e = document.elementFromPoint(x, y);
       return !!e && (e === b || b.contains(e));
     };
-    // 送れる一覧の端で一部が隠れているものは、見えている所だけでは測れないので数えない
+    // 送れる一覧の端で一部が隠れているものは、見えている所だけでは測れないので数えない。
+    // 送れる一覧では、押せる所（小さなボタンは上下へ 8px 広げている）が端にかかっているものも数えない
+    // （レイヤ・表示のパネルは高さを指で自由に変えられるので、一覧の端はどこにでも来る）
     let clipped = false;
     for (let p = b.parentElement; p && p !== document.body; p = p.parentElement) {
       const o = getComputedStyle(p);
       if (o.overflowY === 'visible' && o.overflowX === 'visible') continue;
       const c = p.getBoundingClientRect();
-      if (r.top < c.top || r.bottom > c.bottom || r.left < c.left || r.right > c.right) clipped = true;
+      const m = o.overflowY === 'auto' || o.overflowY === 'scroll' ? 8 : 0;
+      if (r.top - m < c.top || r.bottom + m > c.bottom || r.left < c.left || r.right > c.right) clipped = true;
     }
     // 真ん中が見えていない（ほかのものの下）ボタンも数えない
     if (clipped || !mine(r.left + r.width / 2, r.top + r.height / 2)) {

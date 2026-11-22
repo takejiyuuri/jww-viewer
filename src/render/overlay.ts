@@ -319,6 +319,17 @@ export class Overlay {
         ], k);
         ctx.restore();
       }
+      // レイヤ選択の長押しでは、指の下の線（離すと選ぶ線）を拡大鏡の中でも黄色で示す
+      if (s.layerPick && view2) {
+        ctx.save();
+        this.roundRect(x, y, size, size, 14 * k);
+        ctx.clip();
+        this.drawLayerPick(s.layerPick, (wx, wy) => [
+          cx + ((wx - view2.x) * view2.zoom * k) / view2.dpr,
+          cy - ((wy - view2.y) * view2.zoom * k) / view2.dpr,
+        ], k);
+        ctx.restore();
+      }
 
       // 中心は指が触れている場所。吸着先の印より控えめに、けれど見える程度に
       ctx.strokeStyle = INK[this.background].halo;
