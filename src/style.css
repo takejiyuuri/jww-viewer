@@ -1452,28 +1452,30 @@ body.ui-hidden .ui-show {
   color: var(--record);
 }
 
-/* 「札を表示」を切っているあいだだけ、「記録 N」の横に小さく「札なし」を添える */
+/* 「札を表示」を切っているあいだだけ、「記録 N」の横に札を隠している小さな印（目に斜線）を添える */
 #btn-records .badges-off {
-  margin-left: 6px;
-  padding: 1px 5px;
-  border: 1px solid currentColor;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 600;
+  width: 15px;
+  height: 15px;
+  margin-left: 5px;
+  vertical-align: -3px;
+  stroke-width: 2.2;
   color: var(--dim);
 }
 
-/* iPhone SE などの狭い縦の画面では、「札なし」を少し小さくして上のバーに収める */
+/*
+ * iPhone SE などの狭い縦の画面では、印を少し小さくして左右の余白を詰め、
+ * 札を出しているときとほぼ同じ幅（5px 増し）に収めて図面名の場所を残す
+ */
 @media (max-width: 359px) {
   #btn-records.no-badges {
-    padding-left: 10px;
-    padding-right: 10px;
+    padding-left: 8px;
+    padding-right: 8px;
   }
 
   #btn-records .badges-off {
-    margin-left: 4px;
-    padding: 0 3px;
-    font-size: 10px;
+    width: 14px;
+    height: 14px;
+    margin-left: 3px;
   }
 }
 

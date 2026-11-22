@@ -2644,11 +2644,16 @@ class App {
     const chip = el('btn-records');
     chip.classList.toggle('hidden', n === 0);
     chip.textContent = `記録 ${n}`;
-    // 「札を表示」を切っているあいだは、図面に札が出ない訳が分かるよう「札なし」を添える（自分で入れ直すまで切ったまま）
+    // 「札を表示」を切っているあいだは、図面に札が出ない訳が分かるよう、札を隠している印（目に斜線）を添える。
+    // 文字にすると狭い iPhone で図面名が見えなくなるので、小さな絵にする（自分で入れ直すまで切ったまま）
     if (!this.showBadges) {
-      const off = document.createElement('span');
-      off.className = 'badges-off';
-      off.textContent = '札なし';
+      const ns = 'http://www.w3.org/2000/svg';
+      const off = document.createElementNS(ns, 'svg');
+      off.setAttribute('class', 'ico badges-off');
+      off.setAttribute('aria-hidden', 'true');
+      const use = document.createElementNS(ns, 'use');
+      use.setAttribute('href', '#i-badges-off');
+      off.append(use);
       chip.append(off);
     }
     chip.classList.toggle('no-badges', !this.showBadges);

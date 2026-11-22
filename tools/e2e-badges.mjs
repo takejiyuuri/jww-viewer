@@ -2,9 +2,9 @@
 // ① 31 通りの操作（記録・種類の切り替え・点の追加・すべて消去と元に戻す・1 点ずつ戻す・体積の高さをやめる・拡大・縮小・全体・前の範囲・
 //    札を押す・図面を押す・一覧の開閉・札の表示の切り替え・ツールの切り替え・ボタンを隠す・横向き・裏へ回して戻る）のあとも、
 //    札の数が記録の数と合い、図面の上に札の色で描かれていること（「札を表示」を切っているときは描かないこと）。
-// ② 「札を表示」を切っているあいだは、上のバーの「記録 N」の横に「札なし」と出すこと。自動では入れ直さないこと
+// ② 「札を表示」を切っているあいだは、上のバーの「記録 N」の横に札を隠している小さな印（目に斜線）を出すこと。自動では入れ直さないこと
 //    （新しく記録しても・ツールを替えても・向きを変えても・裏へ回しても・別の図面を開いても切ったまま）。
-//    iPhone SE（320 幅）でも「記録 N 札なし」が切れずに収まり、隣のボタンと重ならないこと。
+//    iPhone SE（320 幅）でも「記録 N」と印が切れずに収まり、隣のボタンと重ならず、図面名の場所が残ること。
 // 図面は公開してよい見本（public/ruishin-sample.jww）を使う（samples/ がなくても動く）。
 import { chromium, devices } from 'playwright';
 import fs from 'node:fs';
@@ -79,12 +79,21 @@ const badgeState = (page) => page.evaluate(() => {
     }),
     chipShown: !chip.classList.contains('hidden'),
     chipText: chip.textContent,
-    offMark: chip.querySelector('.badges-off')?.textContent ?? null,
+    // 札を隠している印（目に斜線）。見えている大きさも返す
+    offMark: (() => {
+      const m = chip.querySelector('.badges-off');
+      if (!m) return null;
+      const q = m.getBoundingClientRect();
+      return { w: Math.round(q.width), h: Math.round(q.height), icon: m.querySelector('use')?.getAttribute('href') ?? null, hidden: m.getAttribute('aria-hidden') };
+    })(),
     aria: chip.getAttribute('aria-label'),
     listPressed: document.getElementById('btn-records-badges').getAttribute('aria-pressed'),
     tool: a.tool,
   };
 });
+
+/** 札を隠している印が出ているか（目に斜線の絵、13〜18px、読み上げでは読まない） */
+const markOk = (m) => !!m && m.icon === '#i-badges-off' && m.w >= 13 && m.w <= 18 && m.h >= 13 && m.hidden === 'true';
 
 /** 札が正しく出ているか（見せている記録＝一覧で押した記録は、札を切っていても出す） */
 const badgesOk = (s) => {
@@ -93,8 +102,7 @@ const badgesOk = (s) => {
   if (s.badges !== want) return false;
   if (s.badges > 0 && s.vis === 'hidden') return false;
   if (s.ink.some((i) => i.n < 20)) return false;
-  const chip = s.show ? `記録 ${s.recs}` : `記録 ${s.recs}札なし`;
-  return s.chipShown && s.chipText === chip && (s.show ? s.offMark === null : s.offMark === '札なし');
+  return s.chipShown && s.chipText === `記録 ${s.recs}` && (s.show ? s.offMark === null : markOk(s.offMark));
 };
 
 // ================= ① 31 通りの操作のあとも札が消えない =================
@@ -169,12 +177,12 @@ const badgesOk = (s) => {
   await page.click('#btn-records-badges');
   await page.waitForTimeout(300);
   const s19 = await step('19 「札を表示」を切る');
-  check('「札を表示」を切ると図面の札は描かず、「記録 N」の横に「札なし」', !s19.show && s19.badges === 0 && s19.offMark === '札なし'
+  check('「札を表示」を切ると図面の札は描かず、「記録 N」の横に札を隠している印', !s19.show && s19.badges === 0 && markOk(s19.offMark)
     && s19.listPressed === 'false' && s19.hiddenInk.every((n) => n < 20), s19);
   await page.click('#btn-records-badges');
   await page.waitForTimeout(300);
   const s20 = await step('20 「札を表示」を入れる');
-  check('「札を表示」を入れ直すと札が戻り、「札なし」は消える', s20.show && s20.badges === s20.recs && s20.offMark === null && s20.listPressed === 'true', s20);
+  check('「札を表示」を入れ直すと札が戻り、印は消える', s20.show && s20.badges === s20.recs && s20.offMark === null && s20.listPressed === 'true', s20);
   await page.click('#btn-records-close');
   await page.waitForTimeout(400);
   await step('21 一覧を閉じる');
@@ -215,12 +223,12 @@ const badgesOk = (s) => {
   await ctx.close();
 }
 
-// ================= ② 「札を表示」を切っているあいだの「札なし」 =================
+// ================= ② 「札を表示」を切っているあいだの印 =================
 {
   const { ctx, page } = await open({ ...devices['iPhone 14 Pro'], hasTouch: true });
   await record(page, [[110, 260], [280, 260]]);
   const on = await badgeState(page);
-  check('「札を表示」が入っているときは「記録 1」だけ（「札なし」は出さない）', on.show && on.chipText === '記録 1' && on.offMark === null
+  check('「札を表示」が入っているときは「記録 1」だけ（印は出さない）', on.show && on.chipText === '記録 1' && on.offMark === null
     && on.aria === '計測の記録（1 件）', on);
 
   await page.click('#btn-records');
@@ -234,7 +242,7 @@ const badgesOk = (s) => {
     const cs = getComputedStyle(document.querySelector('#btn-records .badges-off'));
     return { chip: { l: chip.left, r: chip.right, t: chip.top, b: chip.bottom, h: chip.height }, mark: { l: mark.left, r: mark.right, t: mark.top, b: mark.bottom }, color: cs.color };
   });
-  check('「札を表示」を切ると、「記録 1」の横（右）に「札なし」を出す', off.chipText === '記録 1札なし' && off.offMark === '札なし'
+  check('「札を表示」を切ると、「記録 1」の横（右）に札を隠している印を出す', off.chipText === '記録 1' && markOk(off.offMark)
     && geo.mark.l > geo.chip.l + 20 && geo.mark.r <= geo.chip.r && geo.mark.t >= geo.chip.t && geo.mark.b <= geo.chip.b, { off, geo });
   check('読み上げでも、札を表示していないことが分かる', off.aria === '計測の記録（1 件・図面の札は表示していません）', off);
 
@@ -242,7 +250,7 @@ const badgesOk = (s) => {
   await page.click('#seg-mode [data-mode="length"]');
   await record(page, [[120, 330], [270, 360]]);
   const s2 = await badgeState(page);
-  check('切ったまま新しく記録しても、自動では入れ直さない（「記録 2 札なし」、札は描かない）', !s2.show && s2.recs === 2 && s2.chipText === '記録 2札なし'
+  check('切ったまま新しく記録しても、自動では入れ直さない（「記録 2」と印、札は描かない）', !s2.show && s2.recs === 2 && s2.chipText === '記録 2' && markOk(s2.offMark)
     && s2.badges === 0 && s2.hiddenInk.every((n) => n < 20), s2);
 
   // ツール・向き・ボタンを隠す・裏へ回すでも切ったまま
@@ -268,22 +276,22 @@ const badgesOk = (s) => {
   });
   await page.waitForTimeout(500);
   const after = await badgeState(page);
-  check('ツールの切り替え・横向き・ボタンを隠す・裏へ回すのあとも切ったまま（「札なし」のまま）',
-    !land.show && land.offMark === '札なし' && !after.show && after.offMark === '札なし' && after.badges === 0, { land, after });
+  check('ツールの切り替え・横向き・ボタンを隠す・裏へ回すのあとも切ったまま（印のまま）',
+    !land.show && markOk(land.offMark) && !after.show && markOk(after.offMark) && after.badges === 0, { land, after });
 
-  // 一覧で記録を押したときは、その札だけ出す（「札なし」はそのまま）
+  // 一覧で記録を押したときは、その札だけ出す（印はそのまま）
   await page.click('#btn-records');
   await page.waitForTimeout(300);
   await page.click('#records-list .record-row >> nth=0');
   await page.waitForTimeout(500);
   const focused = await badgeState(page);
-  check('切っていても、一覧で押した記録の札だけは出す（「札なし」はそのまま）', !focused.show && focused.badges === 1 && focused.offMark === '札なし'
+  check('切っていても、一覧で押した記録の札だけは出す（印はそのまま）', !focused.show && focused.badges === 1 && markOk(focused.offMark)
     && focused.ink.every((i) => i.n >= 20), focused);
   // 記録を押すと一覧は閉じて図面を見せる（開いたままなら閉じる）
   if (await page.isVisible('#btn-records-close')) await page.click('#btn-records-close');
   await page.waitForTimeout(300);
 
-  // 別の図面を開いても切ったまま（記録は消えるので「記録 N」は隠れ、次に記録すると「札なし」付きで出る）
+  // 別の図面を開いても切ったまま（記録は消えるので「記録 N」は隠れ、次に記録すると印付きで出る）
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'badges-')), 'badges-other.jww');
   fs.writeFileSync(file, makeJww({ entities: [{ line: [0, 0, 100, 0], color: 2, style: 1 }, { line: [0, 0, 0, 60], color: 2, style: 1 }], scale: 100 }));
   await page.setInputFiles('#file', file);
@@ -292,25 +300,42 @@ const badgesOk = (s) => {
   const other = await badgeState(page);
   await record(page, [[110, 260], [280, 260]]);
   const other1 = await badgeState(page);
-  check('別の図面を開いても自動では入れ直さない（記録すると「記録 1 札なし」）', other.recs === 0 && !other.chipShown && !other.show
-    && other1.recs === 1 && other1.chipText === '記録 1札なし' && other1.badges === 0, { other, other1 });
+  check('別の図面を開いても自動では入れ直さない（記録すると「記録 1」と印）', other.recs === 0 && !other.chipShown && !other.show
+    && other1.recs === 1 && other1.chipText === '記録 1' && markOk(other1.offMark) && other1.badges === 0, { other, other1 });
 
-  // 入れ直すと「札なし」は消え、札が戻る
+  // 入れ直すと印は消え、札が戻る
   await page.click('#btn-records');
   await page.click('#btn-records-badges');
   await page.click('#btn-records-close');
   await page.waitForTimeout(300);
   const back = await badgeState(page);
-  check('自分で「札を表示」を入れ直すと「札なし」は消え、札が戻る', back.show && back.chipText === '記録 1' && back.offMark === null
+  check('自分で「札を表示」を入れ直すと印は消え、札が戻る', back.show && back.chipText === '記録 1' && back.offMark === null
     && back.badges === 1 && back.ink.every((i) => i.n >= 20), back);
   await page.screenshot({ path: path.join(process.argv[3] ?? os.tmpdir(), 'badges-on.png') }).catch(() => {});
   await ctx.close();
 }
 
-// ================= ③ 狭い iPhone でも「記録 N 札なし」が上のバーに収まる =================
+// ================= ③ 狭い iPhone でも「記録 N」と印が上のバーに収まり、図面名の場所が残る =================
+/** 上のバーのボタンと図面名の位置。ボタンの中の文字や印が枠の内側からはみ出していないかも見る */
+const topbar = (page) => page.evaluate(() => {
+  const ids = ['btn-open', 'title', 'btn-records', 'btn-ui-hide', 'btn-info'];
+  const boxes = ids.map((id) => {
+    const e = document.getElementById(id);
+    const q = e.getBoundingClientRect();
+    const range = document.createRange();
+    range.selectNodeContents(e);
+    const c = range.getBoundingClientRect();
+    const cs = getComputedStyle(e);
+    const innerL = q.left + parseFloat(cs.borderLeftWidth) + parseFloat(cs.paddingLeft);
+    const innerR = q.right - parseFloat(cs.borderRightWidth) - parseFloat(cs.paddingRight);
+    const cut = id !== 'title' && (c.left < innerL - 0.5 || c.right > innerR + 0.5);
+    return { id, l: q.left, r: q.right, t: q.top, b: q.bottom, w: q.width, h: q.height, cut };
+  });
+  return { boxes, text: document.getElementById('btn-records').textContent, vw: innerWidth };
+});
 for (const [w, h] of [[320, 568], [375, 667], [390, 844], [568, 320], [852, 393]]) {
   const { ctx, page } = await open({ viewport: { width: w, height: h }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
-  // 記録を 12 件にして、2 けたの「記録 12 札なし」で確かめる
+  // 記録を 12 件にして、2 けたの「記録 12」で確かめる
   const vp = page.viewportSize();
   const y = Math.max(110, vp.height * 0.3);
   for (let i = 0; i < 12; i++) {
@@ -320,32 +345,26 @@ for (const [w, h] of [[320, 568], [375, 667], [390, 844], [568, 320], [852, 393]
     await page.click('#btn-record');
     await frame(page);
   }
+  await page.waitForTimeout(300);
+  const onBar = await topbar(page);
   await page.click('#btn-records');
   await page.click('#btn-records-badges');
   await page.click('#btn-records-close');
   await page.waitForTimeout(400);
-  const r = await page.evaluate(() => {
-    const ids = ['btn-open', 'title', 'btn-records', 'btn-ui-hide', 'btn-info'];
-    const boxes = ids.map((id) => {
-      const e = document.getElementById(id);
-      const q = e.getBoundingClientRect();
-      // 中の文字が枠の内側（余白の内側）からはみ出していないか
-      const range = document.createRange();
-      range.selectNodeContents(e);
-      const c = range.getBoundingClientRect();
-      const cs = getComputedStyle(e);
-      const innerL = q.left + parseFloat(cs.borderLeftWidth) + parseFloat(cs.paddingLeft);
-      const innerR = q.right - parseFloat(cs.borderRightWidth) - parseFloat(cs.paddingRight);
-      const cut = id !== 'title' && (c.left < innerL - 0.5 || c.right > innerR + 0.5);
-      return { id, l: q.left, r: q.right, t: q.top, b: q.bottom, w: q.width, h: q.height, cut };
-    });
-    return { boxes, text: document.getElementById('btn-records').textContent, vw: innerWidth };
-  });
+  const r = await topbar(page);
+  const mark = (await badgeState(page)).offMark;
   const [open1, title, chip, hide, info] = r.boxes;
+  const titleOn = onBar.boxes[1].w;
   const inside = r.boxes.every((b) => b.l >= -0.5 && b.r <= r.vw + 0.5);
   const order = open1.r <= title.l + 0.5 && title.r <= chip.l + 0.5 && chip.r <= hide.l + 0.5 && hide.r <= info.l + 0.5;
-  check(`${w}×${h}：「記録 12 札なし」が切れずに 1 行で上のバーに収まり、ほかのボタンと重ならない`,
-    r.text === '記録 12札なし' && r.boxes.every((b) => !b.cut && b.h <= 40) && inside && order && hide.w >= 36 && info.w >= 36 && open1.w >= 40, r);
+  check(`${w}×${h}：「記録 12」と印が切れずに 1 行で上のバーに収まり、ほかのボタンと重ならない`,
+    r.text === '記録 12' && markOk(mark) && r.boxes.every((b) => !b.cut && b.h <= 40) && inside && order
+      && hide.w >= 36 && info.w >= 36 && open1.w >= 40, { ...r, mark });
+  // 印を出しても図面名の場所が残る。狭い SE（360 未満）では札を出しているときから 6px までしか狭くしない。
+  // ほかの画面は印の幅（約 20px）だけ狭くなるが、図面名には 60px 以上残る
+  const loss = titleOn - title.w;
+  check(`${w}×${h}：印を出しても図面名の場所が残る（札を出しているとき ${Math.round(titleOn)}px → ${Math.round(title.w)}px）`,
+    w < 360 ? loss <= 6 && title.w >= 30 : loss <= 22 && title.w >= 60, { titleOn, titleOff: title.w, loss });
   await ctx.close();
 }
 
