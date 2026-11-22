@@ -25,7 +25,7 @@ import { DETECT_BYTES, NATIVE_FORMATS, WEB_FORMATS, detectFormat, unsupportedRea
 import { drawingsInZip, isZipHead, type ZipEntry } from './jww/zip.ts';
 import { DXF_SCALES, DXF_UNITS } from './dxf/units.ts';
 import { extractChains } from './ruishin/extract.ts';
-import { along, defaultOrigin, onChain, type Chain, type Origin } from './ruishin/ordinate.ts';
+import { SAME_POINT, along, defaultOrigin, onChain, type Chain, type Origin } from './ruishin/ordinate.ts';
 import { MIN_OPERABLE_TEXT, textHeightCss, type OrdinateLayer } from './ruishin/draw.ts';
 
 /** 吸着先を探す半径（CSS ピクセル） */
@@ -1971,7 +1971,7 @@ class App {
     el('btn-ruishin-undo').addEventListener('click', () => this.undoOrigin());
     el('btn-ruishin-redo').addEventListener('click', () => this.redoOrigin());
     el('btn-ruishin-reset').addEventListener('click', () => {
-      const targets = this.activeChain >= 0 ? this.chains.filter((c) => c.id === this.activeChain) : this.chains;
+      const targets = this.resetTargets();
       const changed: OriginStep = [];
       for (const c of targets) {
         const before = this.origins.get(c.id);
@@ -1981,6 +1981,7 @@ class App {
       }
       if (changed.length) this.pushOriginPast(changed);
       this.updateRuishinPanel();
+      if (!changed.length) return;
       this.hint(this.activeChain >= 0 ? 'この列の起点を最初の端に戻しました' : 'すべての列の起点を最初の端に戻しました');
       this.requestDraw();
     });
@@ -2046,6 +2047,23 @@ class App {
     this.requestDraw(true);
   }
 
+  /** 「この列を戻す」「全列を戻す」の対象。列を選んでいればその列、選んでいなければ全列 */
+  private resetTargets(): Chain[] {
+    return this.activeChain >= 0 ? this.chains.filter((c) => c.id === this.activeChain) : this.chains;
+  }
+
+  /**
+   * 対象の列のどれかで、起点が最初の端から動いているか（戻すものがあるときだけ「戻す」を押せる）。
+   * 指で端へ戻して吸着したときの、計算のごくわずかなずれ（累進の値で起点を端と同じとみなす 0.001 mm 以内）は動いていないとみなす
+   */
+  private canResetOrigins(): boolean {
+    return this.resetTargets().some((c) => {
+      const o = this.origins.get(c.id);
+      const d = defaultOrigin(c);
+      return !!o && Math.hypot(o.x - d.x, o.y - d.y) > SAME_POINT;
+    });
+  }
+
   /** 累進寸法のパネルの文言とボタン */
   private updateRuishinPanel(): void {
     el<HTMLButtonElement>('btn-ruishin-undo').disabled = !this.ruishinOn || this.originPast.length === 0;
@@ -2059,7 +2077,7 @@ class App {
     const reset = el('btn-ruishin-reset');
     reset.textContent = c ? 'この列を戻す' : '全列を戻す';
     reset.setAttribute('aria-label', c ? 'この列の起点を最初の端に戻す' : 'すべての列の起点を最初の端に戻す');
-    el<HTMLButtonElement>('btn-ruishin-reset').disabled = !this.ruishinOn || this.chains.length === 0;
+    el<HTMLButtonElement>('btn-ruishin-reset').disabled = !this.ruishinOn || !this.canResetOrigins();
     tag.classList.toggle('hidden', !(c && c.mismatch));
     tag.textContent = '寸法値を優先';
     if (this.chains.length === 0) {
@@ -2626,7 +2644,15 @@ class App {
     const chip = el('btn-records');
     chip.classList.toggle('hidden', n === 0);
     chip.textContent = `記録 ${n}`;
-    chip.setAttribute('aria-label', `計測の記録（${n} 件）`);
+    // 「札を表示」を切っているあいだは、図面に札が出ない訳が分かるよう「札なし」を添える（自分で入れ直すまで切ったまま）
+    if (!this.showBadges) {
+      const off = document.createElement('span');
+      off.className = 'badges-off';
+      off.textContent = '札なし';
+      chip.append(off);
+    }
+    chip.classList.toggle('no-badges', !this.showBadges);
+    chip.setAttribute('aria-label', `計測の記録（${n} 件${this.showBadges ? '' : '・図面の札は表示していません'}）`);
     this.renderRecords();
     this.requestDraw();
   }
@@ -3411,8 +3437,7 @@ class App {
     el('btn-records-copy').addEventListener('click', () => this.copyRecords());
     el('btn-records-badges').addEventListener('click', () => {
       this.showBadges = !this.showBadges;
-      this.renderRecords();
-      this.requestDraw();
+      this.updateRecordsUi();
       this.hint(this.showBadges ? '図面に記録の札を出します' : '記録の札を隠しました（一覧で押した記録は出します）');
     });
     el('btn-records-clear').addEventListener('click', () => this.clearRecords());

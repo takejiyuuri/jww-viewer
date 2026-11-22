@@ -197,11 +197,23 @@ await page.evaluate(() => {
   a.requestDraw(true);
 });
 await page.waitForTimeout(400);
+/** 起点が最初の端から動いている列の id */
+const movedChains = () => page.evaluate(async () => {
+  const a = window.__jww;
+  const m = await import('/src/ruishin/ordinate.ts');
+  return a.chains.filter((c) => {
+    const o = a.origins.get(c.id);
+    const d = m.defaultOrigin(c);
+    return o && (o.x !== d.x || o.y !== d.y);
+  }).map((c) => c.id);
+});
+
 // あとの検査で同じ見え方に戻すための表示範囲
 const goodView = await page.evaluate(() => ({ ...window.__jww.view }));
 {
   const t = await panelText();
   check('拡大すると、列の選択と起点のドラッグを案内する', t.note === PICK_HINT && t.reset === '全列を戻す', t);
+  check('起点をまだ動かしていないときは「全列を戻す」を押せない（灰色）', t.resetDisabled === true, t);
   await page.screenshot({ path: path.join(outDir, 'ruishin-1b-zoomed.png') });
 }
 
@@ -287,7 +299,9 @@ const bottom = (await page.evaluate(() => {
   await page.screenshot({ path: path.join(outDir, 'ruishin-4-off.png') });
   await page.click('#btn-ruishin-on');
   const t2 = await panelText();
-  check('オンに戻すと列の選択が外れ、ボタンは「全列を戻す」', t2.active === -1 && t2.reset === '全列を戻す' && !t2.resetDisabled, t2);
+  const moved2 = await movedChains();
+  check('オンに戻すと列の選択が外れ、ボタンは「全列を戻す」（動かした起点があるときだけ押せる）',
+    t2.active === -1 && t2.reset === '全列を戻す' && t2.resetDisabled === (moved2.length === 0), { ...t2, moved2 });
   await page.screenshot({ path: path.join(outDir, 'ruishin-5-on-again.png') });
 }
 
@@ -481,7 +495,8 @@ const near = (o, x) => Math.abs(o.x - x) < 1e-3;
   await ensureRuishinOn();
   const s0 = await toScreen(30, bottom.offset);
   await tap(s0.x, s0.y - 4);
-  await page.click('#btn-ruishin-reset'); // A：最初の端（x = 0）
+  // A：最初の端（x = 0）。すでに最初の端なら「この列を戻す」は押せないので、そのまま
+  if (!(await panelText()).resetDisabled) await page.click('#btn-ruishin-reset');
   const others0 = (await allOrigins());
   delete others0[bottom.id];
   const moveTo = async (x) => {
@@ -537,6 +552,108 @@ const near = (o, x) => Math.abs(o.x - x) < 1e-3;
   const size = await page.evaluate(() => ['btn-ruishin-undo', 'btn-ruishin-redo'].map((id) => { const r = document.getElementById(id).getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height), right: Math.round(r.right) }; }));
   check('「戻る」「進む」は見出しの右に並び、押しやすい大きさ（44×38 以上）', size.every((b) => b.w >= 44 && b.h >= 38 && b.right <= 393) && size[0].right < size[1].right, { size });
   await page.screenshot({ path: path.join(outDir, 'ruishin-11-undo-redo.png') });
+}
+
+// ---------- 11b. 「この列を戻す」「全列を戻す」は、戻す起点があるときだけ押せる（ないときは灰色） ----------
+{
+  await useView();
+  await ensureRuishinOn();
+  const resetState = () => page.evaluate(() => {
+    const b = document.getElementById('btn-ruishin-reset');
+    return { label: b.textContent, disabled: b.disabled, opacity: Number(getComputedStyle(b).opacity), active: window.__jww.activeChain };
+  });
+  // 全列を最初の端にそろえ、選択を外した状態から始める
+  await page.evaluate(async () => {
+    const a = window.__jww;
+    const m = await import('/src/ruishin/ordinate.ts');
+    for (const c of a.chains) a.origins.set(c.id, m.defaultOrigin(c));
+    a.activeChain = -1;
+    a.updateRuishinPanel();
+    a.requestDraw(true);
+  });
+  const allHome = await resetState();
+  check('全列が最初の端のときは「全列を戻す」を押せない（灰色）', allHome.label === '全列を戻す' && allHome.disabled && allHome.opacity < 0.5, allHome);
+  // 列を選んだだけ（まだ動かしていない）
+  const s0 = await toScreen(30, bottom.offset);
+  await tap(s0.x, s0.y - 4);
+  const selHome = await resetState();
+  check('選んだ列が最初の端のときは「この列を戻す」を押せない（灰色）', selHome.active === bottom.id && selHome.label === 'この列を戻す' && selHome.disabled && selHome.opacity < 0.5, selHome);
+  // 起点を動かすと押せる
+  const o0 = await originOf(bottom.id);
+  await drag(await toScreen(o0.x, bottom.offset), await toScreen(18.2, bottom.offset));
+  const selMoved = await resetState();
+  check('選んだ列の起点を動かすと「この列を戻す」を押せる（濃い色）', selMoved.label === 'この列を戻す' && !selMoved.disabled && selMoved.opacity === 1, selMoved);
+  // 押して戻すと、また押せなくなる
+  await page.click('#btn-ruishin-reset');
+  const selReset = await resetState();
+  const atHome = (await movedChains()).length === 0;
+  check('「この列を戻す」で戻すと、戻すものがなくなり押せなくなる', atHome && selReset.disabled, { selReset, atHome });
+  // 戻る・進むでも、戻すものがあるかどうかに合わせて変わる
+  await page.click('#btn-ruishin-undo');
+  const selUndo = await resetState();
+  await page.click('#btn-ruishin-redo');
+  const selRedo = await resetState();
+  check('戻るで起点が動いた所に戻ると押せる、進むで最初の端に戻ると押せない', !selUndo.disabled && selRedo.disabled, { selUndo, selRedo });
+  await page.click('#btn-ruishin-undo'); // 下の列は 18.2 の所
+  // 動かしていない別の列を選ぶと「この列を戻す」は押せない
+  // 別の列（同じ倍率のまま、その列の真ん中が画面の中ほどに来るよう表示をずらす）を選ぶ
+  const other = await page.evaluate(async (bid) => {
+    const a = window.__jww;
+    const m = await import('/src/ruishin/ordinate.ts');
+    const c = a.chains.find((o) => o.id !== bid);
+    if (!c) return null;
+    const [x, y] = m.onChain(c, (c.stops[0] + c.stops[c.stops.length - 1]) / 2);
+    a.view.cx = x;
+    a.view.cy = y;
+    a.requestDraw(true);
+    return { id: c.id, x, y };
+  }, bottom.id);
+  let otherSel = null;
+  if (other) {
+    await page.waitForTimeout(300);
+    const so = await toScreen(other.x, other.y);
+    await tap(so.x, so.y - 4);
+    otherSel = await resetState();
+  }
+  await useView();
+  check('動かしていない別の列を選ぶと「この列を戻す」は押せない', !!otherSel && otherSel.active === other.id && otherSel.label === 'この列を戻す' && otherSel.disabled, { other, otherSel });
+  // 選択を外すと「全列を戻す」になり、動かした列（下の列）があるので押せる
+  const empty = await page.evaluate(() => {
+    const a = window.__jww;
+    for (const [x, y] of [[40, 200], [350, 200], [200, 140], [60, 320], [330, 330]]) if (a.pickChain(x, y, true) < 0) return { x, y };
+    return null;
+  });
+  if (empty) await tap(empty.x, empty.y);
+  const allMoved = await resetState();
+  check('選択を外すと「全列を戻す」になり、動かした列があれば押せる', !!empty && allMoved.active === -1 && allMoved.label === '全列を戻す' && !allMoved.disabled, { empty, allMoved });
+  // 累進表示を切っているあいだは押せない。入れ直すと、動かした起点が残っているので押せる
+  await page.click('#btn-ruishin-on');
+  const off = await resetState();
+  await page.click('#btn-ruishin-on');
+  const onAgain = await resetState();
+  check('累進表示を切ると押せない、入れ直すと（起点はそのままなので）押せる', off.disabled && !onAgain.disabled, { off, onAgain });
+  // 「全列を戻す」を押すと、全部最初の端になり押せなくなる
+  await page.click('#btn-ruishin-reset');
+  const allReset = await resetState();
+  check('「全列を戻す」で戻すと押せなくなる', allReset.disabled && (await movedChains()).length === 0, allReset);
+  // 起点を最初の端と同じ所へ手で動かしたときも、戻すものはないので押せない
+  await tap(s0.x, s0.y - 4);
+  await setOriginT(bottom.id, 18.2);
+  await page.evaluate(() => window.__jww.updateRuishinPanel());
+  const byHandMoved = await resetState();
+  const home = await page.evaluate(async (id) => {
+    const a = window.__jww;
+    const m = await import('/src/ruishin/ordinate.ts');
+    return m.defaultOrigin(a.chains.find((c) => c.id === id));
+  }, bottom.id);
+  const o1 = await originOf(bottom.id);
+  await drag(await toScreen(o1.x, bottom.offset), await toScreen(home.x, home.y));
+  const byHand = await resetState();
+  const back = await originOf(bottom.id);
+  check('起点を手で最初の端へ戻したときも押せない（吸着でぴったり端に付いたとき）',
+    !byHandMoved.disabled && Math.hypot(back.x - home.x, back.y - home.y) < 1e-3 && byHand.disabled,
+    { byHandMoved, byHand, back, home });
+  await page.screenshot({ path: path.join(outDir, 'ruishin-11b-reset-disabled.png') });
 }
 
 // ---------- 12. 起点を寸法線の外へ動かすと、寸法線が起点まで伸びて見える（左右・上下・ドラッグ中・縮小・レイヤ） ----------
@@ -719,6 +836,8 @@ const extensionAt = (id) => page.evaluate(async (id) => {
   await page.waitForFunction(() => document.getElementById('title')?.textContent === 'oblique.jww', null, { timeout: 60000 });
   await page.waitForTimeout(600);
   await ensureRuishinOn();
+  const fresh = await panelText();
+  check('別の図面を開いた直後は、起点を動かしていないので「全列を戻す」を押せない', fresh.reset === '全列を戻す' && fresh.resetDisabled === true, fresh);
   const info = await page.evaluate(() => window.__jww.chains.map((c) => ({ id: c.id, ux: c.ux, uy: c.uy, lo: c.stops[0], hi: c.stops[c.stops.length - 1] })));
   const sc = info.find((c) => c.ux !== 0 && c.uy !== 0);
   await page.evaluate(() => { const a = window.__jww; a.view.zoom *= 0.6; a.requestDraw(true); });

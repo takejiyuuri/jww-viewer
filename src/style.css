@@ -1452,6 +1452,31 @@ body.ui-hidden .ui-show {
   color: var(--record);
 }
 
+/* 「札を表示」を切っているあいだだけ、「記録 N」の横に小さく「札なし」を添える */
+#btn-records .badges-off {
+  margin-left: 6px;
+  padding: 1px 5px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--dim);
+}
+
+/* iPhone SE などの狭い縦の画面では、「札なし」を少し小さくして上のバーに収める */
+@media (max-width: 359px) {
+  #btn-records.no-badges {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+
+  #btn-records .badges-off {
+    margin-left: 4px;
+    padding: 0 3px;
+    font-size: 10px;
+  }
+}
+
 /* 一覧を開いたままでも、上に図面の札が見えて押せるよう、画面の半分までにする */
 #records-panel {
   max-height: 50%;
@@ -2080,6 +2105,8 @@ body[data-bg="light"] #inspect-actions {
 /* ---- 上のバーのボタン：見た目は少し大きく（高さ 36px）、押せる所は 44px 角以上 ---- */
 #topbar .chip {
   min-height: 36px;
+  /* ボタンは縮めず（文字が 2 行に折れたり、押せる所が 44px より狭くなったりしないように）、狭いときは題名のほうを詰める */
+  flex: none;
 }
 
 #topbar .chip.icon {
