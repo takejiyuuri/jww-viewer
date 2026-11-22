@@ -746,6 +746,27 @@ body[data-bg="light"] #ruishin-panel {
   color: var(--accent);
 }
 
+/* 「累進」ボタンの角の小さな点。累進寸法を表示したまま「計測」を使っているあいだだけ出す（案内文を置かず、図面を狭めない） */
+#btn-tool-ruishin {
+  position: relative;
+}
+
+#btn-tool-ruishin .live-dot {
+  display: none;
+  position: absolute;
+  top: 5px;
+  right: 6px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--panel);
+}
+
+#btn-tool-ruishin.live .live-dot {
+  display: block;
+}
+
 /* 「前の範囲」に戻せるあいだの全体のボタン。図面の上の囲いと同じ橙 */
 .tool.back {
   background: #3a2406;
