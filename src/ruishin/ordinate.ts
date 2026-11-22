@@ -107,7 +107,7 @@ export interface OrdinateStop {
 }
 
 /** 起点に揃っているとみなす隔たり（図面座標 mm） */
-const SAME_POINT = 1e-3;
+export const SAME_POINT = 1e-3;
 
 /**
  * 起点から見た各端の累進の値。起点が端に乗っていなければ、起点の位置にも 0 の印を足す

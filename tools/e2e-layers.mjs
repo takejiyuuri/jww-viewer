@@ -111,10 +111,12 @@ let initialHidden = '';
     return {
       idle: box.classList.contains('idle'),
       height: box.getBoundingClientRect().height,
+      // 狭い画面では距離・面積・体積・角度を別の段に並べるので、操作の段は 2 行になる（1.3 から）
+      modesRow: box.classList.contains('modes-row'),
       value: shown('readout-value'), undo: shown('btn-undo'), clear: shown('btn-clear'),
     };
   });
-  check('点がないときの計測パネルは操作の 1 段で、長さ・戻す・消去を出さない', idle.idle && idle.height < 70 && !idle.value && !idle.undo && !idle.clear, idle);
+  check('点がないときの計測パネルは操作の段だけで、長さ・戻す・消去を出さない', idle.idle && idle.height < (idle.modesRow ? 115 : 70) && !idle.value && !idle.undo && !idle.clear, idle);
 }
 
 // 線が詰まっている場所まで寄せておく
@@ -829,6 +831,8 @@ await page.waitForTimeout(200);
   const p0 = await page.evaluate(() => {
     const a = window.__jww;
     a.points = [];
+    // 「すべて消去」の「元に戻す」の段は出さない（1 段のパネルから 1 点目を置いたときを確かめる）
+    a.cleared = null;
     a.updateReadout();
     const r = document.getElementById('readout').getBoundingClientRect();
     return { top: r.top, x: a.cssW - 40 };
