@@ -44,7 +44,7 @@ class Out {
 
 const VERSION = 700;
 
-function header(o, scale = 1) {
+function header(o, scale = 1, layerNames = {}, groupNames = []) {
   o.ascii('JwwData.');
   o.u32(VERSION);
   o.str('');   // メモ
@@ -58,8 +58,8 @@ function header(o, scale = 1) {
     for (let l = 0; l < 16; l++) { o.u32(g === 0 && l === 0 ? 3 : 2); o.u32(0); }
   }
   o.zeros(14 * 4 + 5 * 4 + 4 + 4 + 8 * 2 + 8 + 4 + 4 + 8 + 8 * 2 + 8 * 2);
-  for (let i = 0; i < 256; i++) o.str(''); // レイヤ名
-  for (let i = 0; i < 16; i++) o.str('');  // レイヤグループ名
+  for (let i = 0; i < 256; i++) o.str(layerNames[i] ?? ''); // レイヤ名（グループ × 16 + レイヤ の順）
+  for (let i = 0; i < 16; i++) o.str(groupNames[i] ?? '');  // レイヤグループ名
   o.zeros(8 + 8 + 4 + 8 + 8 + 8 + 4);      // 日影・天空図・2.5D の計算単位
   o.f64(1); o.f64(0); o.f64(0);             // 画面倍率・原点
   o.zeros(8 * 3);
@@ -79,12 +79,15 @@ function header(o, scale = 1) {
  * .jww のバイト列を作る。
  * doc: { entities: Entity[], defs?: { no, name?, entities: Entity[] }[], images?: { name, bytes }[] }
  * Entity: { line: [x1, y1, x2, y2], color? } | { text: string, at?: [x, y], angle?, size?, color? } | { ref: defNo, at?: [x, y] }
- *   | { dim: [x1, y1, x2, y2], value: string, size? }（寸法図形。値は寸法線の上の中ほどに書く）
- * doc.scale はすべてのレイヤグループの縮尺の分母（既定 1）
+ *   | { dim: [x1, y1, x2, y2], value: string, size?, textLayer? }（寸法図形。値は寸法線の上の中ほどに書く）
+ *   | { point: [x, y] } | { solid: [x1, y1, x2, y2, x3, y3, x4, y4] }（4 点を順に回る塗り）
+ *   どの図形も layer: [グループ, レイヤ]（既定 [0, 0]）を付けられる。寸法の値だけ別のレイヤにするなら textLayer
+ * doc.scale はすべてのレイヤグループの縮尺の分母（既定 1）。
+ * doc.layerNames は { グループ × 16 + レイヤ: 名前 }、doc.groupNames はグループ名の配列（どちらも ASCII のみ）
  */
 export function makeJww(doc) {
   const o = new Out();
-  header(o, doc.scale ?? 1);
+  header(o, doc.scale ?? 1, doc.layerNames ?? {}, doc.groupNames ?? []);
   // CArchive のクラス番号。新しいクラスはそのときの番号で登録し、クラスと直後のオブジェクトで 2 つ進む
   const classes = new Map();
   let mapCount = 1;
@@ -99,8 +102,8 @@ export function makeJww(doc) {
       mapCount += 1;
     }
   };
-  const common = (penStyle = 1, color = 1) => {
-    o.u32(0); o.u8(penStyle); o.u16(color); o.u16(1); o.u16(0); o.u16(0); o.u16(0);
+  const common = (penStyle = 1, color = 1, layer = [0, 0]) => {
+    o.u32(0); o.u8(penStyle); o.u16(color); o.u16(1); o.u16(layer[1] & 15); o.u16(layer[0] & 15); o.u16(0);
   };
   /** 文字の中身（CDataMoji の共通部より後ろ）。始点・角度（度）・字の高さ */
   const textBody = (str, x, y, angle = 0, size = 2.5) => {
@@ -112,10 +115,21 @@ export function makeJww(doc) {
     o.str(str);
   };
   const entity = (e) => {
+    const L = e.layer ?? [0, 0];
     if (e.line) {
       tag('CDataSen');
-      common(e.style ?? 1, e.color ?? 1);
+      common(e.style ?? 1, e.color ?? 1, L);
       for (const v of e.line) o.f64(v);
+    } else if (e.point) {
+      tag('CDataTen');
+      common(1, e.color ?? 1, L);
+      o.f64(e.point[0]); o.f64(e.point[1]); o.u32(0);
+    } else if (e.solid) {
+      const [x1, y1, x2, y2, x3, y3, x4, y4] = e.solid;
+      tag('CDataSolid');
+      common(1, e.color ?? 1, L);
+      // 格納順は 第1点 -> 第4点 -> 第2点 -> 第3点
+      for (const v of [x1, y1, x4, y4, x2, y2, x3, y3]) o.f64(v);
     } else if (e.dim) {
       const [x1, y1, x2, y2] = e.dim;
       const size = e.size ?? 2.5;
@@ -125,23 +139,24 @@ export function makeJww(doc) {
       // 値の始点：寸法線の中ほどから、文字の幅の半分だけ戻し、少し上へ
       const tx = mx - Math.cos(a) * w / 2 - Math.sin(a) * 0.6;
       const ty = my - Math.sin(a) * w / 2 + Math.cos(a) * 0.6;
+      const TL = e.textLayer ?? L;
       tag('CDataSunpou');
-      common(1, 1);
-      common(1, 1); for (const v of e.dim) o.f64(v);       // 寸法線
-      common(0, 1); textBody(e.value, tx, ty, (a * 180) / Math.PI, size); // 寸法値
+      common(1, 1, L);
+      common(1, 1, L); for (const v of e.dim) o.f64(v);       // 寸法線
+      common(0, 1, TL); textBody(e.value, tx, ty, (a * 180) / Math.PI, size); // 寸法値
       // Ver.4.20 以降：SXF の種類・補助線 2 本・矢印 2 点・基準点 2 点
       o.u16(0);
       const ext = e.ext ?? 4;
       const nx = -Math.sin(a) * ext, ny = Math.cos(a) * ext;
-      common(1, 1); o.f64(x1 - nx); o.f64(y1 - ny); o.f64(x1 + nx * 0.3); o.f64(y1 + ny * 0.3);
-      common(1, 1); o.f64(x2 - nx); o.f64(y2 - ny); o.f64(x2 + nx * 0.3); o.f64(y2 + ny * 0.3);
+      common(1, 1, L); o.f64(x1 - nx); o.f64(y1 - ny); o.f64(x1 + nx * 0.3); o.f64(y1 + ny * 0.3);
+      common(1, 1, L); o.f64(x2 - nx); o.f64(y2 - ny); o.f64(x2 + nx * 0.3); o.f64(y2 + ny * 0.3);
       for (const [px, py] of [[x1, y1], [x2, y2], [x1 - nx, y1 - ny], [x2 - nx, y2 - ny]]) {
-        common(1, 1); o.f64(px); o.f64(py); o.u32(1);
+        common(1, 1, L); o.f64(px); o.f64(py); o.u32(1);
       }
     } else if (e.text !== undefined) {
       const [x, y] = e.at ?? [0, 0];
       tag('CDataMoji');
-      common(0, e.color ?? 1);
+      common(0, e.color ?? 1, L);
       if (e.angle !== undefined || e.size !== undefined) {
         textBody(e.text, x, y, e.angle ?? 0, e.size ?? 2.5);
       } else {
@@ -153,7 +168,7 @@ export function makeJww(doc) {
     } else if (e.ref !== undefined) {
       const [x, y] = e.at ?? [0, 0];
       tag('CDataBlock');
-      common();
+      common(1, 1, L);
       o.f64(x); o.f64(y); o.f64(1); o.f64(1); o.f64(0);
       o.u32(e.ref);
     } else {

@@ -702,10 +702,14 @@ if (lineLayer >= 0) {
 }
 
 // ---------- 11b. シートを開いたまま長押ししても、拡大鏡はシートに重ならない ----------
+// レイヤ一覧を開いているあいだはレイヤ選択モードで、長押しでは計測の拡大鏡を出さない（仕様書 9 章）ので、「表示」のシートで確かめる
+await page.click('#btn-layer-close');
+await page.click('#btn-display');
+await page.waitForTimeout(250);
 {
   const s = await page.evaluate(async () => {
     const a = window.__jww;
-    const sheet = document.getElementById('layer-panel').getBoundingClientRect();
+    const sheet = document.getElementById('display-panel').getBoundingClientRect();
     const x = a.cssW * 0.3;
     const y = Math.max(80, sheet.top - 30);
     const stage = document.getElementById('stage');
@@ -719,6 +723,9 @@ if (lineLayer >= 0) {
   });
   check('シートを開いたままでも拡大鏡がシートに重ならない', s.open && s.m && s.m.y + s.m.size <= s.sheetTop + 0.5, s);
 }
+await page.click('#btn-display-close');
+await page.click('#btn-layers');
+await page.waitForTimeout(200);
 
 // ---------- 12. シートは同時に一つだけ ----------
 await page.click('#btn-layer-close');

@@ -57,6 +57,8 @@ export interface OverlayState {
   points: MeasurePoint[];
   /** 属性を見ている図形 */
   highlight: Highlight | null;
+  /** レイヤ選択モードで選んだ図形（黄色で描く）。選んでいないか、見えていなければ null */
+  layerPick: Highlight | null;
   /** 水平・垂直に拘束しているときの基準点と向き */
   constraint: { x: number; y: number; axis: Axis } | null;
   /** つまんで動かしている点の番号 */
@@ -106,6 +108,13 @@ export interface RecordBadge {
 
 /** 属性で見ている図形を目立たせる色 */
 const ACCENT = '#35d07f';
+
+/**
+ * レイヤ選択モードで選んだ図形の黄色と、その縁取り。
+ * 黒い背景では黄色そのものが、白い背景では黒い縁取りが目立つ。計測の色の「黄」や図面の黄色い線とは、太さと縁取りで見分ける
+ */
+const PICK = '#facc15';
+const PICK_EDGE = 'rgba(0, 0, 0, 0.9)';
 
 /**
  * 「前の範囲」を囲う色。Jw_cad の標準の線色（水色・白・緑・黄・ピンク・青・赤）にない橙にして、図面の線と見分ける
@@ -170,7 +179,7 @@ export class Overlay {
     // 何も描かないあいだは、この層ごと隠す。GPU で描く 2D キャンバス（Chrome で確認）では、
     // 描いていた状態から空になったあと、中身の変わらないコマで消したはずの前の絵（「前の範囲」の囲いなど）が
     // 1 コマおきに画面に出ることがある。隠しておけば出ない。切り替えは空かどうかが変わったときだけ
-    const empty = !s.backRect && !s.highlight && !s.constraint && s.points.length === 0 && !s.preview && !s.magnifier
+    const empty = !s.backRect && !s.highlight && !s.layerPick && !s.constraint && s.points.length === 0 && !s.preview && !s.magnifier
       && s.badges.length === 0 && !s.focus && !(s.ordinate && s.ordinate.chains.length);
     if (empty !== this.wasEmpty) {
       this.canvas.style.visibility = empty ? 'hidden' : '';
@@ -201,6 +210,9 @@ export class Overlay {
     if (s.highlight) {
       this.drawHighlight(s.highlight, (x, y) => this.toScreen(view, x, y), k);
     }
+
+    // レイヤ選択モードで選んだ図形。図面の上の目印なので、累進の数字・計測・記録の札より下に描く
+    if (s.layerPick) this.drawLayerPick(s.layerPick, (x, y) => this.toScreen(view, x, y), k);
 
     // 累進寸法。図面の一部として、計測や記録の札より下に描く
     if (s.ordinate && s.ordinate.chains.length) {
@@ -559,6 +571,78 @@ export class Overlay {
       ctx.stroke();
       ctx.strokeStyle = ACCENT;
       ctx.lineWidth = 2.5 * k;
+      ctx.stroke();
+    }
+  }
+
+  /**
+   * レイヤ選択モードで選んだ図形を黄色で描く。線は黒い縁取りを付けた太い黄色、塗りは暗く沈めてから黄色を重ね、
+   * 文字は枠で囲み、点は丸で囲む（属性の緑より太く、どちらの背景でも縁取りか黄色のどちらかがはっきり見える）
+   */
+  private drawLayerPick(h: Highlight, map: (x: number, y: number) => [number, number], k: number): void {
+    const ctx = this.ctx;
+
+    if (h.tris.length) {
+      ctx.beginPath();
+      for (let i = 0; i + 5 < h.tris.length; i += 6) {
+        const [ax, ay] = map(h.tris[i], h.tris[i + 1]);
+        const [bx, by] = map(h.tris[i + 2], h.tris[i + 3]);
+        const [cx, cy] = map(h.tris[i + 4], h.tris[i + 5]);
+        ctx.moveTo(ax, ay);
+        ctx.lineTo(bx, by);
+        ctx.lineTo(cx, cy);
+        ctx.closePath();
+      }
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
+      ctx.fill();
+      ctx.fillStyle = 'rgba(250, 204, 21, 0.55)';
+      ctx.fill();
+    }
+
+    if (h.lines.length) {
+      ctx.beginPath();
+      for (let i = 0; i + 3 < h.lines.length; i += 4) {
+        const [ax, ay] = map(h.lines[i], h.lines[i + 1]);
+        const [bx, by] = map(h.lines[i + 2], h.lines[i + 3]);
+        ctx.moveTo(ax, ay);
+        ctx.lineTo(bx, by);
+      }
+      ctx.strokeStyle = PICK_EDGE;
+      ctx.lineWidth = 8 * k;
+      ctx.stroke();
+      ctx.strokeStyle = PICK;
+      ctx.lineWidth = 4 * k;
+      ctx.stroke();
+    }
+
+    if (h.box) {
+      const b = h.box;
+      ctx.beginPath();
+      for (let i = 0; i < 4; i++) {
+        const [px, py] = map(b[i * 2], b[i * 2 + 1]);
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(250, 204, 21, 0.22)';
+      ctx.fill();
+      ctx.strokeStyle = PICK_EDGE;
+      ctx.lineWidth = 7 * k;
+      ctx.stroke();
+      ctx.strokeStyle = PICK;
+      ctx.lineWidth = 3 * k;
+      ctx.stroke();
+    }
+
+    if (h.point) {
+      const [px, py] = map(h.point[0], h.point[1]);
+      ctx.beginPath();
+      ctx.arc(px, py, 10 * k, 0, Math.PI * 2);
+      ctx.strokeStyle = PICK_EDGE;
+      ctx.lineWidth = 7 * k;
+      ctx.stroke();
+      ctx.strokeStyle = PICK;
+      ctx.lineWidth = 3.5 * k;
       ctx.stroke();
     }
   }

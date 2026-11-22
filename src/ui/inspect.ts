@@ -67,12 +67,14 @@ function inTriangle(
  * タップした位置にある図形を拾う。見えていない色・レイヤの図形は拾わない。
  * 線のすぐ近くなら線、文字の上なら文字、そうでなければ少し離れた線・点、最後に塗りの中、の順。
  * 塗りを最後にするのは、柱のように塗りの上に線や文字が載っているのが普通だから。
+ * textShown を渡すと、それが false の文字（累進で隠している元の寸法の数字など）は拾わない。
  */
 export function pickEntity(
   scene: Scene,
   index: SnapIndex,
   x: number, y: number, radius: number,
   visible: (color: number, layer: number) => boolean,
+  textShown?: (text: number) => boolean,
 ): number {
   const near = index.nearestLine(x, y, radius);
   if (near.index >= 0 && near.dist <= radius * 0.35) return scene.lineEntity[near.index];
@@ -84,6 +86,7 @@ export function pickEntity(
   for (let i = 0; i < scene.texts.length; i++) {
     const t = scene.texts[i];
     if (!visible(t.color, t.layer)) continue;
+    if (textShown && !textShown(i)) continue;
     if (!textContains(t, x, y, pad)) continue;
     const area = t.width * t.height;
     if (area < textArea) {

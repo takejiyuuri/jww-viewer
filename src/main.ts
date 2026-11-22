@@ -60,7 +60,7 @@ const HOWTO_ITEMS = [
   '「寸法線上のみ」：入れると、起点は寸法線の上だけを動き、寸法線がほかの線と交わる所に吸い付きます',
   '戻る・進む：累進のパネル右上の ↶ で起点を 1 つ前に戻し、↷ で戻した操作をやり直します。「この列を戻す」「全列を戻す」で起点を最初の端に戻せます。レイヤの ↶ ↷ はレイヤの表示だけを戻し・進めます',
   '「属性」では図形をタップすると、レイヤ・線色・線種・長さが分かります',
-  '「レイヤ」でレイヤごとに表示を切り替えられます。最初は Jw_cad と同じ表示です。「表示」で背景や線の色を切り替えられます',
+  '「レイヤ」でレイヤごとに表示を切り替えられます。最初は Jw_cad と同じ表示です。一覧を開いたまま図面の線をタップすると、その線のレイヤが黄色で分かります。「表示」で背景や線の色を切り替えられます',
 ].map((t) => `<li>${t}</li>`).join('');
 
 /** 図面情報に出す「使い方を見る」（押すと開き、もう一度押すと閉じる。図面や操作はそのまま） */
@@ -332,6 +332,14 @@ class App {
   /** 属性で長押ししている間、指の下にある図形 */
   private previewEntity = -1;
   private shapeCache: { index: number; shape: Highlight } | null = null;
+  /**
+   * レイヤ選択モード（レイヤ一覧を開いているあいだ）に図面で選んだ図形。その図形と、一覧の行を黄色で示す。
+   * 属性の選択（selected）とは別に持ち、属性の選択は変えない。無ければ -1
+   */
+  private layerPick = -1;
+  private layerPickShape: { index: number; shape: Highlight } | null = null;
+  /** 累進で表示しているあいだ隠している、元の寸法の数字（scene.texts の添字）。レイヤ選択では拾わない */
+  private ruishinHiddenTexts: ReadonlySet<number> = new Set();
   /**
    * 見えている図形での「全体」の範囲。色・レイヤの見え方ごとに、最近のものをいくつか覚えておく
    * （レイヤを隠して戻したときなどに求め直さない）
@@ -782,6 +790,9 @@ class App {
     this.selected = -1;
     this.previewEntity = -1;
     this.shapeCache = null;
+    this.layerPick = -1;
+    this.layerPickShape = null;
+    this.updateLayerPickBar();
     // 別の図面では、属性のパネルは縮めずに出す（縮めたままだと長さや線色の行が見えない）
     el('inspect-panel').classList.remove('collapsed');
     this.layerPast = [];
@@ -1263,6 +1274,7 @@ class App {
         : null,
       points: this.points,
       highlight: this.currentHighlight(),
+      layerPick: this.layerPickHighlight(),
       constraint: this.holding ? this.constraint : null,
       activeIndex: this.dragIndex,
       preview: this.preview,
@@ -1281,9 +1293,12 @@ class App {
     this.overlay.render(this.view, state);
   }
 
-  /** 属性で見ている図形（長押し中は指の下の図形）の形 */
+  /**
+   * 属性で見ている図形（長押し中は指の下の図形）の形。
+   * レイヤ選択モードのあいだは描かない（選択は残す）。モードで選んだ黄色の線と、緑の線が二つ並ばないように
+   */
   private currentHighlight(): Highlight | null {
-    if (!this.scene || this.tool !== 'inspect') return null;
+    if (!this.scene || this.tool !== 'inspect' || this.layerMode()) return null;
     const i = this.holding ? this.previewEntity : this.selected;
     if (i < 0) return null;
     if (this.shapeCache?.index !== i) {
@@ -1298,6 +1313,27 @@ class App {
       this.shapeCache = { index: i, shape };
     }
     return this.shapeCache.shape;
+  }
+
+  /**
+   * レイヤ選択モードで選んだ図形の形（黄色で描く）。モードを休んでいるあいだ（一覧を縮めているなど）と、
+   * その図形のレイヤ・色を隠しているあいだは描かない（一覧の行の黄色は残す。表示に戻せばまた描く）
+   */
+  private layerPickHighlight(): Highlight | null {
+    const i = this.layerPick;
+    const scene = this.scene;
+    if (!scene || i < 0 || !this.layerMode() || !this.entityVisible(i)) return null;
+    if (this.layerPickShape?.index !== i) {
+      const shape = entityShape(scene, i);
+      // 文字の枠は、その文字が見えているときだけ囲む（寸法線なら寸法値の枠。隠れていれば何もない所を囲むことになる）
+      const ti = scene.entities.text[i];
+      const t = scene.texts[ti];
+      if (shape.box && t && !(this.colorVisible[t.color] === 1 && this.layerMask[t.layer] === 1 && !this.ruishinHiddenTexts.has(ti))) {
+        shape.box = null;
+      }
+      this.layerPickShape = { index: i, shape };
+    }
+    return this.layerPickShape.shape;
   }
 
   /**
@@ -1371,6 +1407,8 @@ class App {
       if (this.swallowTap) return;
       // ボタンを隠しているあいだは見るだけ（値や戻す・消去が見えないので、点をつまんだり、長押しで置いたりしない）
       if (this.uiHidden()) return;
+      // レイヤ選択モードのあいだは、タップで線を選ぶだけにする（点・起点をつまんだり、長押しで置いたりしない）
+      if (this.layerMode()) return;
       if (this.tool === 'ruishin') {
         // 起点の丸をつまんだなら、その場で動かし始める
         const id = this.hitOrigin(e.clientX, e.clientY);
@@ -1509,6 +1547,14 @@ class App {
     const quick = performance.now() - this.downAt < 400;
     // 2 本以上触れていた操作はピンチなので、点を打たない。色の一覧を閉じるためのタップでも打たない
     const tap = this.pointers.size === 0 && this.maxPointers === 1 && quick && this.moved < 9 && !this.swallowTap;
+    // レイヤ選択モードのあいだは、タップした所の線を選んで、そのレイヤを一覧で示すだけにする。
+    // 計測の点・累進の列や起点・属性の選択・記録の札は、どれも変えない（図面を動かす・拡大縮小は今までどおり）
+    if (this.layerMode()) {
+      if (tap) this.pickLayerAt(e.clientX, e.clientY);
+      this.finishStroke();
+      this.requestDraw(true);
+      return;
+    }
     // 記録の札を押したら、その記録へ図面を動かして見せる（点は置かず、図形も選ばない）。見るだけなので、ボタンを隠していても働く
     const badge = tap ? this.badgeAt(e.clientX, e.clientY) : null;
     if (badge !== null) {
@@ -1819,6 +1865,8 @@ class App {
       for (const c of this.chains) for (const s of c.spans) if (s.text >= 0) hidden.add(s.text);
     }
     this.textLayer.setHidden(hidden);
+    this.ruishinHiddenTexts = hidden;
+    this.layerPickShape = null;
     this.requestDraw(true);
   }
 
@@ -2946,7 +2994,96 @@ class App {
     const w = this.toWorld(cssX, cssY);
     const r = SNAP_RADIUS * this.worldPerCssPx();
     return pickEntity(this.scene, this.snapIndex, w.x, w.y, r,
-      (color, layer) => this.colorVisible[color] === 1 && this.layerMask[layer] === 1);
+      (color, layer) => this.colorVisible[color] === 1 && this.layerMask[layer] === 1,
+      (ti) => !this.ruishinHiddenTexts.has(ti));
+  }
+
+  // ---------- レイヤ選択モード ----------
+
+  /**
+   * レイヤ選択モードか。下の「レイヤ」でレイヤ一覧を開いているあいだがモード。
+   * 一覧を見出しだけに縮めているあいだと、ボタンを隠しているあいだは休む（今までどおり計測などができる）
+   */
+  private layerMode(): boolean {
+    const panel = el('layer-panel');
+    return this.scene !== null && !panel.classList.contains('hidden') && !panel.classList.contains('collapsed') && !this.uiHidden();
+  }
+
+  /** レイヤ選択モードで、タップした所の線を選ぶ。何もない所なら選択を消す */
+  private pickLayerAt(cssX: number, cssY: number): void {
+    const i = this.pickAt(cssX, cssY);
+    this.setLayerPick(i);
+    if (i >= 0) {
+      tapFeedback();
+      this.revealLayerRow(false);
+    }
+  }
+
+  /**
+   * レイヤ選択で選ぶ図形を i にする（-1 で消す）。その行のグループを開いて、一覧の行と上の帯を合わせる。
+   * 表示・非表示も、表示の戻る・進むの履歴も変えない。図面も動かさない
+   */
+  private setLayerPick(i: number): void {
+    const scene = this.scene;
+    this.layerPick = scene && i >= 0 && i < scene.entities.count ? i : -1;
+    this.layerPickShape = null;
+    if (scene && this.layerPick >= 0) this.expandedGroups.add(scene.entities.layer[this.layerPick] >> 4);
+    if (!el('layer-panel').classList.contains('hidden')) this.buildLayerPanel();
+    this.updateLayerPickBar();
+    this.requestDraw(true);
+  }
+
+  /**
+   * 選んだレイヤの行を、一覧の真ん中へ送る（前後の行も見えるように）。always でなければ、行が見えていないときだけ送る
+   * （タップで選ぶたびに一覧が動くと、見ていた所を見失う）。一覧を開いたときは always（今までどおり）
+   */
+  private revealLayerRow(always: boolean): void {
+    const row = el('layer-list').querySelector<HTMLElement>('.l-row.mark');
+    if (!row || row.hidden || !row.offsetParent) return;
+    if (!always) {
+      const body = row.closest<HTMLElement>('.sheet-body');
+      if (body) {
+        const r = row.getBoundingClientRect();
+        const b = body.getBoundingClientRect();
+        if (r.top >= b.top && r.bottom <= b.bottom) return;
+      }
+    }
+    row.scrollIntoView({ block: 'center' });
+  }
+
+  /** レイヤ一覧の上の帯に、選んだ線のレイヤ（とグループ・部品・絞り込みのこと）を出す。選んでいなければしまう */
+  private updateLayerPickBar(): void {
+    const bar = el('layer-pick');
+    const scene = this.scene;
+    const info = this.info;
+    const i = this.layerPick;
+    if (!scene || !info || i < 0 || i >= scene.entities.count) {
+      bar.hidden = true;
+      bar.textContent = '';
+      return;
+    }
+    const k = scene.entities.layer[i];
+    const g = k >> 4;
+    const l = k & 15;
+    const group = info.groups[g];
+    const lInfo = group?.layers[l];
+    const notes: string[] = [];
+    let main: string;
+    // 名前の決め方は一覧の行と同じにする（帯と行で呼び名が食い違わないように）
+    if (info.layerMode === 'flat') {
+      main = `<b class="lp-layer">${escapeHtml(lInfo?.name || '（名前なし）')}</b>`;
+      const row = el('layer-list').querySelector<HTMLElement>(`.l-row[data-k="${k}"]`);
+      if (row?.hidden) notes.push('絞り込みで隠れています');
+    } else {
+      const lName = lInfo?.name?.trim() || `レイヤ ${hex1(l)}`;
+      const gName = group?.name?.trim() || `グループ ${hex1(g)}`;
+      main = `<b class="lp-layer">${escapeHtml(lName)}</b><span class="lp-group">（${escapeHtml(gName)}）</span>`;
+    }
+    const block = scene.entities.block[i];
+    if (block >= 0) notes.unshift(`部品『${scene.blockNames[block] ?? ''}』の一部`);
+    bar.innerHTML = `<div class="lp-main"><span class="lp-label">選んだ線：</span>${main}</div>`
+      + notes.map((n) => `<div class="lp-note">${escapeHtml(n)}</div>`).join('');
+    bar.hidden = false;
   }
 
   private entityVisible(i: number): boolean {
@@ -2960,11 +3097,9 @@ class App {
     if (i !== this.selected) el('inspect-panel').scrollTop = 0;
     this.selected = i;
     this.updateInspect();
-    // レイヤ一覧を開いたままなら、印と開いているグループも新しい図形に合わせる
-    if (!el('layer-panel').classList.contains('hidden')) {
-      if (i >= 0 && this.scene) this.expandedGroups.add(this.scene.entities.layer[i] >> 4);
-      this.buildLayerPanel();
-    }
+    // レイヤ一覧を縮めて開いたまま（レイヤ選択モードを休んでいる）なら、一覧の印と開いているグループも新しい図形に合わせる。
+    // モードのあいだは、図面のタップで属性の選択は変わらない（pickLayerAt）
+    if (!el('layer-panel').classList.contains('hidden')) this.setLayerPick(i);
     if (i >= 0) this.reveal(i);
     this.requestDraw(true);
     if (i >= 0 && navigator.vibrate) navigator.vibrate(4);
@@ -3210,9 +3345,17 @@ class App {
 
   /** 下から出るシートは同時に一つだけ。null ならすべて閉じる */
   private openSheet(id: Sheet | null): void {
+    const layerWasOpen = !el('layer-panel').classList.contains('hidden');
     // 開き直したレイヤ一覧は、縮めていても元の大きさで出す
     if (id === 'layer-panel') el('layer-panel').classList.remove('collapsed');
     for (const s of SHEETS) el(s).classList.toggle('hidden', s !== id);
+    const layerOpen = id === 'layer-panel';
+    if (layerOpen !== layerWasOpen) {
+      // レイヤ一覧を開くとレイヤ選択モードに入る。途中の長押しは捨て、属性で選んでいた図形があれば最初からそれを選んでおく
+      // （属性の選択はそのまま）。閉じると選んだ線の強調を消して、直前の操作（計測・累進・属性）に戻る
+      this.cancelHold();
+      this.setLayerPick(layerOpen ? this.selected : -1);
+    }
     for (const [btn, sheet] of [['btn-layers', 'layer-panel'], ['btn-display', 'display-panel']] as const) {
       el(btn).setAttribute('aria-expanded', String(id === sheet));
       // 横向きではシートを開いてもボタンが見えているので、開いているシートのボタンを緑にする
@@ -3420,10 +3563,15 @@ class App {
       file.value = '';
     });
 
-    el('btn-tool-ruishin').addEventListener('click', () => this.setTool('ruishin'));
-    el('btn-tool-measure').addEventListener('click', () => this.setTool('measure'));
+    // レイヤ一覧を開いたまま（横向きなど、ツールバーが見えている画面）道具を押したら、一覧を閉じてその道具にする
+    const toolButton = (tool: Tool): void => {
+      if (this.layerMode()) this.openSheet(null);
+      this.setTool(tool);
+    };
+    el('btn-tool-ruishin').addEventListener('click', () => toolButton('ruishin'));
+    el('btn-tool-measure').addEventListener('click', () => toolButton('measure'));
     this.bindRuishinUI();
-    el('btn-tool-inspect').addEventListener('click', () => this.setTool('inspect'));
+    el('btn-tool-inspect').addEventListener('click', () => toolButton('inspect'));
 
     el('btn-ortho').addEventListener('click', () => {
       // 入・切を切り替えたことは、スイッチの絵とボタンの色で分かる
@@ -3580,12 +3728,12 @@ class App {
 
     // ---- レイヤ ----
     el('btn-layers').addEventListener('click', () => {
+      // 開くと、属性で見ていた図形のレイヤのグループを開いて一覧を作り（openSheet）、その行を真ん中に出す
       if (!this.toggleSheet('layer-panel')) return;
-      // 属性を見ている図形のレイヤが見えるように、そのグループを開いておく
-      if (this.scene && this.selected >= 0) this.expandedGroups.add(this.scene.entities.layer[this.selected] >> 4);
-      this.buildLayerPanel();
-      el('layer-list').querySelector('.l-row.mark')?.scrollIntoView({ block: 'center' });
+      this.revealLayerRow(true);
     });
+    // 平らな一覧の絞り込みで、選んだ行が隠れたかどうかを帯に出し直す
+    el('layer-list').addEventListener('input', () => this.updateLayerPickBar());
     el('btn-layer-close').addEventListener('click', () => this.openSheet(null));
     el('btn-layer-jw').addEventListener('click', () => {
       const info = this.info;
@@ -3854,7 +4002,8 @@ class App {
       summary.textContent = '';
       return;
     }
-    const mark = this.selected >= 0 ? scene.entities.layer[this.selected] : null;
+    // 印（黄色の行）は、レイヤ選択で選んだ図形のレイヤ（一覧を開いたときは属性で見ていた図形から始まる）
+    const mark = this.layerPick >= 0 && this.layerPick < scene.entities.count ? scene.entities.layer[this.layerPick] : null;
     renderLayerList(list, info.groups, scene.layerCounts, this.layers, this.expandedGroups, mark, info.layerMode);
 
     let used = 0;
@@ -3898,6 +4047,7 @@ class App {
         this.scheduleFitCheck();
       }
       this.shapeCache = null;
+      this.layerPickShape = null;
       this.renderer.setLayerVisibility(mask);
       this.textLayer.setLayerVisibility(mask);
       this.snapIndex?.setVisibleLayers(mask);
