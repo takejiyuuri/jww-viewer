@@ -12,6 +12,7 @@
 //   別の所のタップ・図面を動かす・表示を変えると決め直す。長押しで拡大鏡を出し、指の下の線を黄色で示して、離した所の線を選ぶ
 // ・レイヤ・表示のパネルは、つまみと見出し（横の iPhone は左の縁）をずらして大きさを自由に変え、離した所で止まる。
 //   いちばん小さい・大きい大きさがあり、一覧を送っても・線を選んでも大きさは変わらない。大きさはパネルごとに覚え、回しても画面に収まる
+// ・レイヤと表示のパネルは、どの画面（縦横・SE・大きい iPhone・iPad）でも、開いたまま回しても、同じ所に同じ形で出て同じ向きに大きさを変える
 // 引数：出力先のフォルダ（スクリーンショット）。図面はこの中で組み立てる（実務の図面は使わない）。累進は public/ruishin-sample.jww
 import { chromium } from 'playwright';
 import path from 'node:path';
@@ -1105,6 +1106,124 @@ for (const [label, opts, key] of shapes) {
   await p.waitForTimeout(300);
   const broken = await panelBox(p, 'layer-panel');
   check('覚えた大きさが壊れていても、初めの大きさで出る（画面は壊れない）', broken.inScreen && broken.size === first.size, { broken: broken.size, first: first.size });
+  await p.context().close();
+}
+
+// =====================================================================
+// 6. レイヤと表示のパネルは、どの画面でも同じ所に同じ形で出て、同じ向きに大きさを変える（2026-11-23 オーナーの回帰確認の指摘）。
+//    縦の iPhone・iPad は下（ツールバーの上）で上下に、横の iPhone は右（同じ側）で左右に。回したときも同じ
+// =====================================================================
+/** パネル（id）の置き場所・つまみ・大きさを変える向き（見出しを縦と横にずらして、どちらで大きさが変わるか） */
+const panelShape = (page, id) => page.evaluate(async (id) => {
+  const a = window.__jww;
+  const p = document.getElementById(id);
+  const box = () => { const r = p.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, w: r.width, h: r.height }; };
+  const shown = (sel) => { const n = p.querySelector(sel); const r = n.getBoundingClientRect(); return getComputedStyle(n).display !== 'none' && r.width > 0 && r.height > 0; };
+  const t = p.querySelector('.sheet-head strong');
+  const drag = async (dx, dy) => {
+    const b = t.getBoundingClientRect();
+    const x = b.left + b.width / 2;
+    const y = b.top + b.height / 2;
+    const base = { pointerId: 41, pointerType: 'touch', isPrimary: true, bubbles: true };
+    t.dispatchEvent(new PointerEvent('pointerdown', { ...base, clientX: x, clientY: y }));
+    for (let i = 1; i <= 8; i++) {
+      t.dispatchEvent(new PointerEvent('pointermove', { ...base, clientX: x + (dx * i) / 8, clientY: y + (dy * i) / 8 }));
+      await new Promise((r) => setTimeout(r, 16));
+    }
+    t.dispatchEvent(new PointerEvent('pointerup', { ...base, clientX: x + dx, clientY: y + dy }));
+    await new Promise((r) => setTimeout(r, 150));
+  };
+  const keep = localStorage.getItem('jww-viewer:panel-size');
+  const b0 = box();
+  // 小さくする向きに 30px ずらす：縦は下へ、横の iPhone は右へ（どちらのパネルも、初めの大きさは小さくできる余裕がある）
+  await drag(0, 30);
+  const bV = box();
+  await drag(-30, 0);
+  const bV2 = box();
+  await drag(30, 0);
+  const bH = box();
+  await drag(0, -30);
+  const bH2 = box();
+  // 確かめるためにずらした大きさは、覚えなかったことにして元の大きさに戻す
+  if (keep === null) localStorage.removeItem('jww-viewer:panel-size'); else localStorage.setItem('jww-viewer:panel-size', keep);
+  a.panelSizes = JSON.parse(keep ?? '{"layer":{},"display":{}}');
+  a.fitSizedPanel(id);
+  const r = (v) => Math.round(v);
+  return {
+    side: a.sideSheets(),
+    place: b0.left + b0.w / 2 > a.cssW / 2 + 1 ? 'right' : (Math.abs(b0.left + b0.w / 2 - a.cssW / 2) <= 1 ? 'center' : 'left'),
+    left: r(b0.left), right: r(b0.right), top: r(b0.top), bottom: r(b0.bottom), w: r(b0.w), h: r(b0.h),
+    grab: shown('.grab'), edge: shown('.resize-edge'),
+    // 上下にずらして高さだけが変わったか、左右にずらして幅だけが変わったか
+    vertical: r(bV.h) < r(b0.h) && r(bV.w) === r(b0.w) && r(bV2.w) === r(bV.w),
+    horizontal: r(bH.w) < r(bV2.w) && r(bH.h) === r(bV2.h) && r(bH2.h) === r(bH.h),
+    sizes: [r(b0.w), r(b0.h), r(bV.w), r(bV.h), r(bV2.w), r(bV2.h), r(bH.w), r(bH.h), r(bH2.w), r(bH2.h)],
+  };
+}, id);
+const sameShape = (L, D) => L.side === D.side && L.place === D.place && Math.abs(L.left - D.left) <= 1 && Math.abs(L.right - D.right) <= 1
+  && (L.side ? Math.abs(L.top - D.top) <= 1 && Math.abs(L.bottom - D.bottom) <= 1 : Math.abs(L.bottom - D.bottom) <= 1)
+  && L.grab === D.grab && L.edge === D.edge && L.vertical === D.vertical && L.horizontal === D.horizontal;
+{
+  for (const [label, opts, key] of shapes) {
+    const p = await newPage(opts);
+    await openFile(p, 'layer-select.jww', jwwBytes);
+    await p.click('#btn-layers');
+    await p.waitForTimeout(300);
+    const L = await panelShape(p, 'layer-panel');
+    await p.screenshot({ path: path.join(outDir, `ls-19-${key}-layer.png`) });
+    await p.click('#btn-display');
+    await p.waitForTimeout(300);
+    const D = await panelShape(p, 'display-panel');
+    await p.screenshot({ path: path.join(outDir, `ls-19-${key}-display.png`) });
+    const want = L.side
+      ? L.place === 'right' && !L.grab && L.edge && L.horizontal && !L.vertical
+      : L.place === 'center' && L.grab && !L.edge && L.vertical && !L.horizontal;
+    check(`${label}：レイヤと表示のパネルは同じ所に同じ形で出て、同じ向きに大きさを変える（${L.side ? '右側で左右' : '下で上下'}）`,
+      want && sameShape(L, D), { L, D });
+    await p.context().close();
+  }
+  // 回したとき：開いたまま回しても、レイヤと表示は同じ所・同じ向きになり、それぞれ覚えた大きさで出る
+  const p = await newPage(phone(393, 852));
+  await openFile(p, 'layer-select.jww', jwwBytes);
+  const turns = [[852, 393], [393, 852], [932, 430], [320, 568], [568, 320], [820, 1180], [1180, 820], [393, 852]];
+  const seen = { 'layer-panel': [], 'display-panel': [] };
+  for (const [btn, id] of [['#btn-layers', 'layer-panel'], ['#btn-display', 'display-panel']]) {
+    await p.setViewportSize({ width: 393, height: 852 });
+    await p.waitForTimeout(400);
+    await p.click(btn);
+    await p.waitForTimeout(300);
+    for (const [w, h] of turns) {
+      await p.setViewportSize({ width: w, height: h });
+      await p.waitForTimeout(450);
+      const b = await panelBox(p, id);
+      const s = await panelShape(p, id);
+      seen[id].push({ w, h, side: b.side, place: s.place, left: Math.round(b.left), right: Math.round(b.right), top: Math.round(b.top), bottom: Math.round(b.bottom),
+        size: b.size, inScreen: b.inScreen, clear: b.clearOfToolbar, grab: s.grab, edge: s.edge, vertical: s.vertical, horizontal: s.horizontal });
+    }
+    await p.click(id === 'layer-panel' ? '#btn-layer-close' : '#btn-display-close');
+    await p.waitForTimeout(200);
+  }
+  const pairs = turns.map((_, i) => [seen['layer-panel'][i], seen['display-panel'][i]]);
+  const sameTurn = pairs.every(([l, d]) => l.side === d.side && l.place === d.place && Math.abs(l.right - d.right) <= 1 && Math.abs(l.left - d.left) <= 1
+    && (l.side ? l.top === d.top && l.bottom === d.bottom : l.bottom === d.bottom) && l.grab === d.grab && l.edge === d.edge
+    && l.vertical === d.vertical && l.horizontal === d.horizontal && l.inScreen && d.inScreen && l.clear && d.clear);
+  const dirOk = pairs.every(([l]) => (l.side ? l.horizontal && !l.vertical && l.edge && !l.grab : l.vertical && !l.horizontal && l.grab && !l.edge));
+  check('開いたまま回しても（iPhone の縦横・SE・大きい iPhone・iPad）、レイヤと表示は同じ所・同じ向きで、画面に収まる', sameTurn && dirOk, { pairs });
+  // 表示のパネルも、縦で変えた高さと横で変えた幅を別々に覚え、回すとそれぞれに戻る
+  await p.click('#btn-display');
+  await p.waitForTimeout(300);
+  const dh = await resizePanel(p, 'display-panel', -50);
+  await p.setViewportSize({ width: 852, height: 393 });
+  await p.waitForTimeout(450);
+  const dw = await resizePanel(p, 'display-panel', 70);
+  await p.setViewportSize({ width: 393, height: 852 });
+  await p.waitForTimeout(450);
+  const dBack = await panelBox(p, 'display-panel');
+  await p.setViewportSize({ width: 852, height: 393 });
+  await p.waitForTimeout(450);
+  const dLand = await panelBox(p, 'display-panel');
+  check('表示のパネルも、縦の高さと横の幅を別々に覚え、回すとそれぞれ覚えた大きさで出る（レイヤと同じ）',
+    dBack.size === dh && dLand.side && dLand.size === dw && dw === 410 && dLand.stored?.display?.h === dh && dLand.stored?.display?.w === dw, { dh, dw, dBack, dLand });
   await p.context().close();
 }
 
