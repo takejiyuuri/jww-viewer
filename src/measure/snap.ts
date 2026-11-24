@@ -696,6 +696,43 @@ export class SnapIndex {
     return { index, dist: index >= 0 ? Math.sqrt(segDist2(this.scene.linePos, index, x, y)) : Infinity };
   }
 
+  /**
+   * 見えている線分のうち、半径内のものを指に近い順に最大 limit 本（距離が同じなら線分の番号の小さい順）。
+   * 寸法の補助線も含める。レイヤ選択で、重なった線の候補を集めるのに使う
+   */
+  linesNear(x: number, y: number, radius: number, limit = 200): { index: number; dist: number }[] {
+    return this.nearbySegments(x, y, radius, limit, true)
+      .map((index) => ({ index, dist: Math.sqrt(segDist2(this.scene.linePos, index, x, y)) }));
+  }
+
+  /**
+   * 見えている単独点（実点・円の中心）のうち、半径内のものを近い順に（距離が同じなら番号の小さい順）
+   */
+  pointsNear(x: number, y: number, radius: number): { index: number; dist: number }[] {
+    const pts = this.scene.snapPoint;
+    const r2 = radius * radius;
+    const gx0 = this.clampGx(Math.floor((x - radius - this.minX) / this.cell));
+    const gx1 = this.clampGx(Math.floor((x + radius - this.minX) / this.cell));
+    const gy0 = this.clampGy(Math.floor((y - radius - this.minY) / this.cell));
+    const gy1 = this.clampGy(Math.floor((y + radius - this.minY) / this.cell));
+    const out: { index: number; d2: number }[] = [];
+    for (let gy = gy0; gy <= gy1; gy++) {
+      for (let gx = gx0; gx <= gx1; gx++) {
+        const c = gy * this.gw + gx;
+        for (let k = this.pOffsets[c]; k < this.pOffsets[c + 1]; k++) {
+          const i = this.pItems[k];
+          if (!this.pointVisible(i)) continue;
+          const dx = pts[i * 2] - x;
+          const dy = pts[i * 2 + 1] - y;
+          const d2 = dx * dx + dy * dy;
+          if (d2 <= r2) out.push({ index: i, d2 });
+        }
+      }
+    }
+    out.sort((a, b) => a.d2 - b.d2 || a.index - b.index);
+    return out.map((p) => ({ index: p.index, dist: Math.sqrt(p.d2) }));
+  }
+
   /** 見えている単独点（実点・円の中心）のうち、半径内でいちばん近いもの。なければ -1 */
   nearestPoint(x: number, y: number, radius: number): number {
     const pts = this.scene.snapPoint;

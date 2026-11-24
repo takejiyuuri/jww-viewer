@@ -12,13 +12,14 @@ import { MEASURE_COLORS, measureColor, measureInk } from './measure/colors.ts';
 import {
   listRecent, loadDisplay, loadLast, loadMeasurePrefs, loadRecent, loadViewState, recentKey, removeRecent, restoreRecent,
   saveDisplay, saveMeasurePrefs, saveOpened, saveViewState, type MeasurePrefs, type RecentFile, type RemovedRecent,
+  loadPanelSizes, savePanelSizes, type PanelSizes, type SizedPanel,
 } from './storage.ts';
 import { isNative, listenForFiles, statusBarFor, tapFeedback } from './native.ts';
 import {
   BACKGROUND_RGB, buildPalette, displayColor, type DisplaySettings,
 } from './render/theme.ts';
 import { LayerVisibility, renderLayerList, type LayerSnapshot } from './ui/layers.ts';
-import { describeEntity, entityShape, pickEntity } from './ui/inspect.ts';
+import { describeEntity, entityShape, pickCandidates, pickEntity } from './ui/inspect.ts';
 import { KIND, TRUNCATED_WARNING, fitScene, type Bounds } from './render/geometry.ts';
 import { hex1, layerTag } from './jww/names.ts';
 import { DETECT_BYTES, NATIVE_FORMATS, WEB_FORMATS, detectFormat, unsupportedReason, type DetectedFormat } from './formats/detect.ts';
@@ -60,7 +61,7 @@ const HOWTO_ITEMS = [
   '「寸法線上のみ」：入れると、起点は寸法線の上だけを動き、寸法線がほかの線と交わる所に吸い付きます',
   '戻る・進む：累進のパネル右上の ↶ で起点を 1 つ前に戻し、↷ で戻した操作をやり直します。「この列を戻す」「全列を戻す」で起点を最初の端に戻せます。レイヤの ↶ ↷ はレイヤの表示だけを戻し・進めます',
   '「属性」では図形をタップすると、レイヤ・線色・線種・長さが分かります',
-  '「レイヤ」でレイヤごとに表示を切り替えられます。最初は Jw_cad と同じ表示です。一覧を開いたまま図面の線をタップすると、その線のレイヤが黄色で分かります。「表示」で背景や線の色を切り替えられます',
+  '「レイヤ」でレイヤごとに表示を切り替えられます。最初は Jw_cad と同じ表示です。一覧を開いたまま図面の線をタップすると、その線のレイヤが黄色で分かります。重なった線は同じ所をもう一度タップすると次の線に、長押しすると拡大鏡で選べます。一覧はつまみを上下にずらして好きな高さにできます。「表示」で背景や線の色を切り替えられます',
 ].map((t) => `<li>${t}</li>`).join('');
 
 /** 図面情報に出す「使い方を見る」（押すと開き、もう一度押すと閉じる。図面や操作はそのまま） */
@@ -84,6 +85,8 @@ interface Insets {
   rightTop: number;
 }
 type Sheet = 'info-panel' | 'display-panel' | 'layer-panel' | 'files-panel' | 'records-panel';
+/** 指で大きさを変えられるシート（レイヤと表示。操作は同じ） */
+type SizedSheet = 'layer-panel' | 'display-panel';
 const SHEETS: Sheet[] = ['info-panel', 'display-panel', 'layer-panel', 'files-panel', 'records-panel'];
 
 /** 計測の記録。図面を開いているあいだだけ覚えておき、端末には残さない */
@@ -338,6 +341,15 @@ class App {
    */
   private layerPick = -1;
   private layerPickShape: { index: number; shape: Highlight } | null = null;
+  /**
+   * レイヤ選択で、最後にタップした所の重なりの候補（同じレイヤは 1 つにまとめたもの）と、いま選んでいる順番。
+   * 同じ所をもう一度タップすると次の候補にする。別の所のタップ・図面を動かす・表示を変えると決め直す
+   */
+  private overlap: { x: number; y: number; cx: number; cy: number; zoom: number; list: number[]; at: number } | null = null;
+  /** レイヤ選択で長押ししているあいだ、帯に出している図形（指の下の線。無ければ -1）。長押ししていなければ null */
+  private holdBarPick: number | null = null;
+  /** レイヤ・表示のパネルの、指で変えた大きさ（パネルごと、縦は高さ・横は幅） */
+  private panelSizes: PanelSizes = loadPanelSizes();
   /** 累進で表示しているあいだ隠している、元の寸法の数字（scene.texts の添字）。レイヤ選択では拾わない */
   private ruishinHiddenTexts: ReadonlySet<number> = new Set();
   /**
@@ -792,6 +804,7 @@ class App {
     this.shapeCache = null;
     this.layerPick = -1;
     this.layerPickShape = null;
+    this.overlap = null;
     this.updateLayerPickBar();
     // 別の図面では、属性のパネルは縮めずに出す（縮めたままだと長さや線色の行が見えない）
     el('inspect-panel').classList.remove('collapsed');
@@ -1213,6 +1226,10 @@ class App {
     this.safeRight = Math.max(0, parseFloat(probe.paddingRight) || 0);
     // パネルの幅が変わるので、計測の内訳の詰め方を決め直す
     if (this.scene) this.updateReadout();
+    // 開いているレイヤ・表示のパネルを、新しい画面（向き）に収まる大きさにする（覚えた大きさは変えない）
+    for (const id of ['layer-panel', 'display-panel'] as const) {
+      if (!el(id).classList.contains('hidden')) this.fitSizedPanel(id);
+    }
     // 画面の大きさ（向き）が変わると全体の範囲も変わる（大きさを比べるだけなので、その場で確かめる）
     this.checkFitStale();
     this.requestDraw(true);
@@ -1320,7 +1337,8 @@ class App {
    * その図形のレイヤ・色を隠しているあいだは描かない（一覧の行の黄色は残す。表示に戻せばまた描く）
    */
   private layerPickHighlight(): Highlight | null {
-    const i = this.layerPick;
+    // 長押しのあいだは、指の下の線（離すと選ぶ線）を黄色で示す
+    const i = this.holding && this.layerMode() ? this.previewEntity : this.layerPick;
     const scene = this.scene;
     if (!scene || i < 0 || !this.layerMode() || !this.entityVisible(i)) return null;
     if (this.layerPickShape?.index !== i) {
@@ -1407,8 +1425,12 @@ class App {
       if (this.swallowTap) return;
       // ボタンを隠しているあいだは見るだけ（値や戻す・消去が見えないので、点をつまんだり、長押しで置いたりしない）
       if (this.uiHidden()) return;
-      // レイヤ選択モードのあいだは、タップで線を選ぶだけにする（点・起点をつまんだり、長押しで置いたりしない）
-      if (this.layerMode()) return;
+      // レイヤ選択モードのあいだは、タップか長押しで線を選ぶだけにする（点・起点をつまんだり、置いたりしない）。
+      // 長押しは計測と同じ間合いで拡大鏡を出し、指の下の線を黄色で示す
+      if (this.layerMode()) {
+        this.holdTimer = window.setTimeout(() => this.startHold(e.clientX, e.clientY), 260);
+        return;
+      }
       if (this.tool === 'ruishin') {
         // 起点の丸をつまんだなら、その場で動かし始める
         const id = this.hitOrigin(e.clientX, e.clientY);
@@ -1488,6 +1510,16 @@ class App {
     this.pointers.delete(e.pointerId);
     // 残った指で基準の 2 点が入れ替わると倍率が飛ぶので、その場で張り直す
     this.pinch = this.pointers.size >= 2 ? this.pinchState() : null;
+
+    // レイヤ選択の長押し：離した所の線を選ぶ（点は置かない）。離した所を「同じ所」の起点にするので、続けてタップすると次の重なりへ
+    if (this.holding && this.layerMode()) {
+      this.cancelHold();
+      this.overlap = null;
+      this.pickLayerAt(e.clientX, e.clientY);
+      this.finishStroke();
+      this.requestDraw(true);
+      return;
+    }
 
     if (this.holding && this.tool === 'ruishin') {
       const hit = this.preview;
@@ -1668,8 +1700,8 @@ class App {
   private startHold(cssX: number, cssY: number): void {
     if (!this.scene) return;
     this.holding = true;
-    // 開いているシートも避ける（シートの上に見えている図面でも長押しできるので）
-    this.insets = this.measureInsets(true);
+    // 開いているシートも避ける（シートの上に見えている図面でも長押しできるので）。シートで隠している計測などのパネルは避けない
+    this.insets = this.measureInsets(true, true);
     if (navigator.vibrate) navigator.vibrate(8);
     // 切り抜き位置と文字の位置を合わせるため、ここで transform を畳んでおく
     this.textLayer.render(this.view);
@@ -1679,7 +1711,15 @@ class App {
 
   private updateHold(cssX: number, cssY: number): void {
     this.cursor = { x: cssX, y: cssY };
-    if (this.tool === 'inspect') {
+    if (this.layerMode()) {
+      // レイヤ選択：指の下の線（タップしたときと同じ 1 番目の候補）。帯もその線のレイヤにする（一覧は離したときに合わせる）
+      this.preview = null;
+      this.previewEntity = this.layerCandidates(cssX, cssY)[0] ?? -1;
+      if (this.previewEntity !== this.holdBarPick) {
+        this.holdBarPick = this.previewEntity;
+        this.updateLayerPickBar(this.previewEntity);
+      }
+    } else if (this.tool === 'inspect') {
       this.preview = null;
       this.previewEntity = this.pickAt(cssX, cssY);
     } else if (this.tool === 'ruishin') {
@@ -1694,8 +1734,9 @@ class App {
    * 図面の見えている範囲を狭めているもの（上のバー、下のパネルとツールバー、横向きで右に寄せたパネル、
    * 横向きで左右どちらかに縦に並べたツールバー）。
    * withSheets なら開いているシートも数える。全体表示では一時的なシートは数えない。
+   * forHold（長押しの拡大鏡の置き場所）なら、シートを開いて見せていない計測・属性のパネルは数えない。
    */
-  private measureInsets(withSheets = false): Insets {
+  private measureInsets(withSheets = false, forHold = false): Insets {
     const bar = document.getElementById('topbar')?.getBoundingClientRect();
     let bottomEdge = this.cssH;
     let leftEdge = 0;
@@ -1707,6 +1748,9 @@ class App {
     for (const id of ids) {
       const node = document.getElementById(id);
       if (!node || node.classList.contains('hidden')) continue;
+      // 長押しの拡大鏡は、シートを開いて見せていない計測・属性のパネル（style.css で visibility: hidden）は避けない
+      // （ほかでは、シートを閉じるとまた出るので避ける）
+      if (forHold && id !== 'toolbar' && getComputedStyle(node).visibility === 'hidden') continue;
       const r = node.getBoundingClientRect();
       if (r.width <= 0 || r.height <= 0) continue;
       // 右の安全領域が広い機種（横向きの iPhone 14 Pro など）では、右に寄せたパネルの左端が画面の中央より左に来るので、
@@ -1794,6 +1838,11 @@ class App {
   private cancelHold(): void {
     clearTimeout(this.holdTimer);
     this.holding = false;
+    // レイヤ選択の長押しをやめたら、帯を選んでいる線に戻す
+    if (this.holdBarPick !== null) {
+      this.holdBarPick = null;
+      this.updateLayerPickBar();
+    }
     this.preview = null;
     this.previewEntity = -1;
     this.cursor = null;
@@ -2283,11 +2332,8 @@ class App {
    * 下に広がるパネルなら上へ、横向きで右に寄せたパネルなら左へ。隠れていなければ動かさない。
    */
   private keepClearOfPanel(x: number, y: number): void {
-    let r: DOMRectReadOnly = el('readout').getBoundingClientRect();
+    const r = el('readout').getBoundingClientRect();
     if (r.width <= 0 || r.height <= 0) return;
-    // 縮めたレイヤ一覧は計測パネルのすぐ上に載り、パネルが伸びると一緒に上がるので、その見出しの分も避ける
-    const head = this.stackedLayerHead();
-    if (head > 0) r = new DOMRect(r.left, r.top - head, r.width, r.height + head);
     const k = this.dpr / this.view.zoom;
     const sx = (x - this.view.cx) / k + this.cssW / 2;
     const sy = this.cssH / 2 - (y - this.view.cy) / k;
@@ -3001,32 +3047,64 @@ class App {
   // ---------- レイヤ選択モード ----------
 
   /**
-   * レイヤ選択モードか。下の「レイヤ」でレイヤ一覧を開いているあいだがモード。
-   * 一覧を見出しだけに縮めているあいだと、ボタンを隠しているあいだは休む（今までどおり計測などができる）
+   * レイヤ選択モードか。下の「レイヤ」でレイヤ一覧を開いているあいだがモード（一覧をどこまで小さくしても続く）。
+   * ボタンを隠しているあいだは休む（ボタンを隠すと一覧も閉じる）
    */
   private layerMode(): boolean {
-    const panel = el('layer-panel');
-    return this.scene !== null && !panel.classList.contains('hidden') && !panel.classList.contains('collapsed') && !this.uiHidden();
+    return this.scene !== null && !el('layer-panel').classList.contains('hidden') && !this.uiHidden();
   }
 
-  /** レイヤ選択モードで、タップした所の線を選ぶ。何もない所なら選択を消す */
+  /** レイヤ選択で、指の位置で選べる図形の候補（重なりの選び分けの順。同じレイヤは 1 つ）。見えていない図形は入れない */
+  private layerCandidates(cssX: number, cssY: number): number[] {
+    if (!this.scene || !this.snapIndex) return [];
+    const w = this.toWorld(cssX, cssY);
+    const r = SNAP_RADIUS * this.worldPerCssPx();
+    return pickCandidates(this.scene, this.snapIndex, w.x, w.y, r,
+      (color, layer) => this.colorVisible[color] === 1 && this.layerMask[layer] === 1,
+      (ti) => !this.ruishinHiddenTexts.has(ti));
+  }
+
+  /**
+   * レイヤ選択モードで、タップした所の線を選ぶ。何もない所なら選択を消す。
+   * 同じ所（前のタップから約 12px 以内で、図面を動かしていない）をもう一度タップしたら、重なった次のレイヤの線にする
+   */
   private pickLayerAt(cssX: number, cssY: number): void {
-    const i = this.pickAt(cssX, cssY);
-    this.setLayerPick(i);
-    if (i >= 0) {
+    const o = this.overlap;
+    const v = this.view;
+    if (o && o.list.length > 1 && Math.hypot(cssX - o.x, cssY - o.y) <= 12 && o.cx === v.cx && o.cy === v.cy && o.zoom === v.zoom) {
+      this.cycleOverlap();
+      return;
+    }
+    const list = this.layerCandidates(cssX, cssY);
+    this.setLayerPick(list[0] ?? -1);
+    this.overlap = list.length > 0 ? { x: cssX, y: cssY, cx: v.cx, cy: v.cy, zoom: v.zoom, list, at: 0 } : null;
+    this.updateLayerPickBar();
+    if (list.length > 0) {
       tapFeedback();
       this.revealLayerRow(false);
     }
   }
 
+  /** 重なりの候補を次へ（最後の次は最初）。帯の「重なり ▸」と、同じ所のタップで使う */
+  private cycleOverlap(): void {
+    const o = this.overlap;
+    if (!o || o.list.length < 2) return;
+    o.at = (o.at + 1) % o.list.length;
+    this.setLayerPick(o.list[o.at], true);
+    tapFeedback();
+    this.revealLayerRow(false);
+  }
+
   /**
    * レイヤ選択で選ぶ図形を i にする（-1 で消す）。その行のグループを開いて、一覧の行と上の帯を合わせる。
-   * 表示・非表示も、表示の戻る・進むの履歴も変えない。図面も動かさない
+   * 表示・非表示も、表示の戻る・進むの履歴も変えない。図面も、パネルの大きさも変えない。
+   * keepOverlap でなければ、重なりの候補は捨てる（次のタップで決め直す）
    */
-  private setLayerPick(i: number): void {
+  private setLayerPick(i: number, keepOverlap = false): void {
     const scene = this.scene;
     this.layerPick = scene && i >= 0 && i < scene.entities.count ? i : -1;
     this.layerPickShape = null;
+    if (!keepOverlap) this.overlap = null;
     if (scene && this.layerPick >= 0) this.expandedGroups.add(scene.entities.layer[this.layerPick] >> 4);
     if (!el('layer-panel').classList.contains('hidden')) this.buildLayerPanel();
     this.updateLayerPickBar();
@@ -3035,31 +3113,41 @@ class App {
 
   /**
    * 選んだレイヤの行を、一覧の真ん中へ送る（前後の行も見えるように）。always でなければ、行が見えていないときだけ送る
-   * （タップで選ぶたびに一覧が動くと、見ていた所を見失う）。一覧を開いたときは always（今までどおり）
+   * （タップで選ぶたびに一覧が動くと、見ていた所を見失う）。一覧を開いたときは always（今までどおり）。
+   * 送るのは一覧の中だけ（パネルの大きさや位置は変えない）
    */
   private revealLayerRow(always: boolean): void {
     const row = el('layer-list').querySelector<HTMLElement>('.l-row.mark');
     if (!row || row.hidden || !row.offsetParent) return;
-    if (!always) {
-      const body = row.closest<HTMLElement>('.sheet-body');
-      if (body) {
-        const r = row.getBoundingClientRect();
-        const b = body.getBoundingClientRect();
-        if (r.top >= b.top && r.bottom <= b.bottom) return;
-      }
-    }
-    row.scrollIntoView({ block: 'center' });
+    const body = row.closest<HTMLElement>('.sheet-body');
+    if (!body) return;
+    const r = row.getBoundingClientRect();
+    const b = body.getBoundingClientRect();
+    // 見えている所は、一覧の枠から上下の余白を除いた所（パネルを小さくして一覧が見えていなければ、送っておく）
+    const top = b.top + body.clientTop;
+    const bottom = top + body.clientHeight;
+    if (!always && body.clientHeight > 0 && r.top >= top && r.bottom <= bottom) return;
+    body.scrollTop += r.top + r.height / 2 - (top + body.clientHeight / 2);
   }
 
-  /** レイヤ一覧の上の帯に、選んだ線のレイヤ（とグループ・部品・絞り込みのこと）を出す。選んでいなければしまう */
-  private updateLayerPickBar(): void {
+  /**
+   * レイヤ一覧の上の帯に、選んだ線のレイヤ（とグループ・部品・絞り込み・重なりのこと）を出す。
+   * モードのあいだはいつも出す（選ぶ前は案内）。帯は 2 行分の決まった高さで、選んでもパネルの大きさは変わらない。
+   * i を渡すと、その図形を出す（長押しで指の下にある線）
+   */
+  private updateLayerPickBar(i = this.layerPick): void {
     const bar = el('layer-pick');
     const scene = this.scene;
     const info = this.info;
-    const i = this.layerPick;
-    if (!scene || !info || i < 0 || i >= scene.entities.count) {
+    if (!scene || !info) {
       bar.hidden = true;
       bar.textContent = '';
+      return;
+    }
+    bar.hidden = false;
+    if (i < 0 || i >= scene.entities.count) {
+      bar.innerHTML = '<div class="lp-main lp-empty">線をタップすると、レイヤを示します</div>'
+        + '<div class="lp-sub"><span class="lp-note">長押しで拡大鏡を出して選べます</span></div>';
       return;
     }
     const k = scene.entities.layer[i];
@@ -3081,9 +3169,17 @@ class App {
     }
     const block = scene.entities.block[i];
     if (block >= 0) notes.unshift(`部品『${scene.blockNames[block] ?? ''}』の一部`);
+    // 重なりの候補が 2 つ以上あるときだけ、切り替えのボタンと短い案内を出す（長押しの途中は出さない）
+    const o = this.overlap;
+    const many = !this.holding && o !== null && o.list.length > 1 && o.list[o.at] === i;
+    if (many) notes.push('もう一度タップで次の線');
+    const next = many
+      ? `<button type="button" class="chip small lp-next" aria-label="重なった次の線にする（${o.at + 1}/${o.list.length}）">重なり ${o.at + 1}/${o.list.length} ▸</button>`
+      : '';
+    // 2 行目は 1 行に収め、入りきらなければ「…」で省く（帯の高さを変えない）。「重なり ▸」は 2 行目の右端
+    // （1 行目はレイヤ名を優先する）
     bar.innerHTML = `<div class="lp-main"><span class="lp-label">選んだ線：</span>${main}</div>`
-      + notes.map((n) => `<div class="lp-note">${escapeHtml(n)}</div>`).join('');
-    bar.hidden = false;
+      + `<div class="lp-sub"><span class="lp-note">${escapeHtml(notes.join('・'))}</span>${next}</div>`;
   }
 
   private entityVisible(i: number): boolean {
@@ -3097,9 +3193,7 @@ class App {
     if (i !== this.selected) el('inspect-panel').scrollTop = 0;
     this.selected = i;
     this.updateInspect();
-    // レイヤ一覧を縮めて開いたまま（レイヤ選択モードを休んでいる）なら、一覧の印と開いているグループも新しい図形に合わせる。
-    // モードのあいだは、図面のタップで属性の選択は変わらない（pickLayerAt）
-    if (!el('layer-panel').classList.contains('hidden')) this.setLayerPick(i);
+    // レイヤ選択モード（レイヤ一覧を開いているあいだ）は、図面のタップで属性の選択は変わらない（pickLayerAt）
     if (i >= 0) this.reveal(i);
     this.requestDraw(true);
     if (i >= 0 && navigator.vibrate) navigator.vibrate(4);
@@ -3134,9 +3228,6 @@ class App {
     const top = this.cssH / 2 - (maxY - this.view.cy) / k;
     const bottom = this.cssH / 2 - (minY - this.view.cy) / k;
     const ins = this.measureInsets();
-    // 縦向きで縮めたレイヤ一覧は、属性のパネルのすぐ上に載って一緒に上がるので、その見出しの下にも隠さない
-    // （横向きでは右下のパネルと同じ列に載るので、右のパネルを避ける動きで一緒に避けられる）
-    if (this.atBottom(el('layer-panel').getBoundingClientRect())) ins.bottom += this.stackedLayerHead();
     const pad = 16;
 
     let dy = 0;
@@ -3306,14 +3397,124 @@ class App {
     this.requestDraw(true);
   }
 
+  /** 覚えておく大きさの、パネルの呼び名 */
+  private sizedKey(id: SizedSheet): SizedPanel {
+    return id === 'layer-panel' ? 'layer' : 'display';
+  }
+
+  /** 横の iPhone で、レイヤ・表示のパネルを右に縦長に出すか（縦の iPhone と iPad は下のツールバーの上に出す）。高さを変える操作はどちらも同じ */
+  private sideSheets(): boolean {
+    return window.matchMedia('(orientation: landscape) and (max-height: 500px)').matches;
+  }
+
   /**
-   * 縮めたレイヤ一覧を、下（横向きでは右下）の計測・属性のパネルのすぐ上に載せているときの、その見出しの高さと間隔。
-   * 載せていなければ 0。一覧はパネルが伸びると少し遅れて一緒に上がるので、位置ではなく高さで見る
+   * レイヤ・表示のパネルの、いちばん低い高さ・いちばん高い高さ・初めの高さ（CSS ピクセル）。
+   * どの画面でも、パネルの下の縁はそのままで、上の縁を上下に動かして高さを変える
+   * （縦の iPhone・iPad は下のツールバーの上、横の iPhone は右側で、下の縁は画面の下の近く）。
+   * パネルの style の高さを外して（中身の高さで）置いた状態で測る
    */
-  private stackedLayerHead(): number {
-    const layer = el('layer-panel');
-    const h = layer.classList.contains('collapsed') ? layer.getBoundingClientRect().height : 0;
-    return h > 0 ? h + 8 : 0;
+  private panelLimits(panel: HTMLElement, side: boolean): { min: number; max: number; base: number } {
+    const r = panel.getBoundingClientRect();
+    const bar = document.getElementById('topbar')?.getBoundingClientRect();
+    const topLimit = bar && bar.height > 0 ? bar.bottom + 8 : this.safeTop + 8;
+    const room = r.bottom - topLimit;
+    const natural = panel.offsetHeight;
+    // いちばん低くても、レイヤは見出しと帯（選んだレイヤ名）、表示は見出しを出す
+    const pick = panel.querySelector<HTMLElement>('.layer-pick');
+    const head = panel.querySelector<HTMLElement>('.sheet-head');
+    const min = pick && !pick.hidden ? pick.offsetTop + pick.offsetHeight + 8 : (head ? head.offsetTop + head.offsetHeight : 48);
+    if (side) {
+      // 横の iPhone：図面は左に見えているので、上のバーの下まで伸ばせる（今までの高さ）。初めもその高さ。中身より高くはしない
+      const max = Math.max(min, Math.min(Math.round(room), natural));
+      return { min, max, base: max };
+    }
+    // 縦の画面：上に図面が少なくとも 100〜140px 見えるまで伸ばせる。中身より高くはしない（下に空きができないように）
+    const keep = Math.max(96, Math.min(140, room * 0.25));
+    const max = Math.max(min, Math.min(Math.round(room - keep), natural));
+    // 初めは今までとほぼ同じ所まで（レイヤは画面の半分、表示はそれより少し上）。
+    // 背の低い画面（iPhone SE）でも、一覧（中身）が少なくとも 140px 見える高さにする
+    const base = Math.max(r.bottom - this.cssH * (panel.id === 'layer-panel' ? 0.5 : 0.38), min + 140);
+    return { min, max, base };
+  }
+
+  /**
+   * 開いたレイヤ・表示のパネルを、前に指で変えた高さ（なければ初めの高さ）にして、画面に収める。
+   * 端末を回したときも呼ぶ。収めるために縮めても、覚えた高さは変えない（元の向きに戻すと元の高さ）
+   */
+  private fitSizedPanel(id: SizedSheet): void {
+    const panel = el(id);
+    if (panel.classList.contains('hidden')) return;
+    const side = this.sideSheets();
+    panel.style.height = '';
+    const lim = this.panelLimits(panel, side);
+    const saved = this.panelSizes[this.sizedKey(id)][side ? 'sh' : 'h'];
+    const size = Math.round(Math.max(lim.min, Math.min(lim.max, saved ?? lim.base)));
+    panel.style.height = `${size}px`;
+  }
+
+  /**
+   * レイヤ・表示のパネルの高さを、つまみと見出しを指で上下にずらして変える（縦の iPhone・横の iPhone・iPad で同じ操作）。
+   * 指を離した所で止める（吸い付けない）。左右にずらしても大きさは変わらない。
+   * 一覧の中をずらしたときは一覧を送るだけ（大きさは変えない）。見出しを押しただけでは何もしない。
+   * 見出しの中のボタン（戻る・進む・閉じる）は、そのボタンとして押せる
+   */
+  private makeResizable(id: SizedSheet): void {
+    const panel = el(id);
+    const grip = panel.querySelector<HTMLElement>('.sheet-head');
+    if (!grip) return;
+    let drag: { id: number; y: number; side: boolean; start: number; min: number; max: number; size: number } | null = null;
+    const finish = (): void => {
+      if (!drag) return;
+      const d = drag;
+      drag = null;
+      panel.classList.remove('resizing');
+      if (Math.abs(d.size - d.start) >= 1) {
+        // 指を離した高さを覚える（パネルごと、縦の画面と横の iPhone で別々に）
+        this.panelSizes[this.sizedKey(id)][d.side ? 'sh' : 'h'] = d.size;
+        savePanelSizes(this.panelSizes);
+        // 小さくしていた一覧を広げたら、選んでいるレイヤの行が見えていなければ見える所へ送る
+        if (id === 'layer-panel' && d.size > d.start) this.revealLayerRow(false);
+      }
+      this.requestDraw(true);
+    };
+    grip.addEventListener('pointerdown', (e) => {
+      if (drag || (e.target as HTMLElement).closest('button')) return;
+      const side = this.sideSheets();
+      const start = Math.round(panel.getBoundingClientRect().height);
+      // 中身の高さを測るため、いったん高さを外して測り、すぐ戻す（画面には出ない）
+      const keep = panel.style.height;
+      panel.style.height = '';
+      const lim = this.panelLimits(panel, side);
+      panel.style.height = keep;
+      // 今の高さが決まりの外（開いたあとに中身が減ったときなど）でも、触れただけで高さが飛ばないようにする
+      drag = { id: e.pointerId, y: e.clientY, side, start, min: Math.min(lim.min, start), max: Math.max(lim.max, start), size: start };
+      try {
+        grip.setPointerCapture(e.pointerId);
+      } catch {
+        // 指を取り込めなくても、見出しの上で動かしているあいだは同じように働く
+      }
+      panel.classList.add('resizing');
+    });
+    grip.addEventListener('pointermove', (e) => {
+      if (!drag || e.pointerId !== drag.id) return;
+      // 上へずらすほど高くする（左右の動きは使わない）
+      const size = Math.round(Math.max(drag.min, Math.min(drag.max, drag.start + drag.y - e.clientY)));
+      if (size === drag.size) return;
+      drag.size = size;
+      panel.style.height = `${size}px`;
+      this.requestDraw();
+    });
+    grip.addEventListener('pointerup', (e) => {
+      if (drag && e.pointerId === drag.id) finish();
+    });
+    // システムに指を取られたときも、その時の高さで止める
+    grip.addEventListener('pointercancel', (e) => {
+      if (drag && e.pointerId === drag.id) finish();
+    });
+    // アプリを離れて指の終わりが届かなかったときも、その時の高さで止める
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') finish();
+    });
   }
 
   /**
@@ -3346,8 +3547,6 @@ class App {
   /** 下から出るシートは同時に一つだけ。null ならすべて閉じる */
   private openSheet(id: Sheet | null): void {
     const layerWasOpen = !el('layer-panel').classList.contains('hidden');
-    // 開き直したレイヤ一覧は、縮めていても元の大きさで出す
-    if (id === 'layer-panel') el('layer-panel').classList.remove('collapsed');
     for (const s of SHEETS) el(s).classList.toggle('hidden', s !== id);
     const layerOpen = id === 'layer-panel';
     if (layerOpen !== layerWasOpen) {
@@ -3363,6 +3562,10 @@ class App {
     }
     el('btn-open').setAttribute('aria-expanded', String(id === 'files-panel'));
     el('btn-records').setAttribute('aria-expanded', String(id === 'records-panel'));
+    // レイヤ・表示のパネルは、前に指で変えた大きさ（なければ既定の大きさ）で出す
+    if (id === 'layer-panel' || id === 'display-panel') this.fitSizedPanel(id);
+    // 見えている所が変わるので描き直す（拡大鏡の置き場所にも効く）
+    this.requestDraw(true);
   }
 
   private toggleSheet(id: Sheet): boolean {
@@ -3563,9 +3766,10 @@ class App {
       file.value = '';
     });
 
-    // レイヤ一覧を開いたまま（横向きなど、ツールバーが見えている画面）道具を押したら、一覧を閉じてその道具にする
+    // レイヤ・表示のパネルを開いたまま（ツールバーはパネルの下・横に見えている）道具を押したら、パネルを閉じてその道具にする
+    // （レイヤ一覧ならレイヤ選択モードを終える）
     const toolButton = (tool: Tool): void => {
-      if (this.layerMode()) this.openSheet(null);
+      if (!el('layer-panel').classList.contains('hidden') || !el('display-panel').classList.contains('hidden')) this.openSheet(null);
       this.setTool(tool);
     };
     el('btn-tool-ruishin').addEventListener('click', () => toolButton('ruishin'));
@@ -3675,26 +3879,16 @@ class App {
     // ボタンやパネルを隠して図面を画面いっぱいに見る／戻す
     el('btn-ui-hide').addEventListener('click', () => this.setUiHidden(true));
     el('btn-ui-show').addEventListener('click', () => this.setUiHidden(false));
-    // レイヤ一覧と属性のパネルは、見出しを下へずらすと見出しだけに縮める
-    this.makeCollapsible(el('layer-panel'), el('layer-panel').querySelector<HTMLElement>('.sheet-head')!);
+    // 属性・累進のパネルは、見出しを下へずらすと見出しだけに縮める
     this.makeCollapsible(el('inspect-panel'), el('inspect-panel').querySelector<HTMLElement>('.panel-top')!);
     this.makeCollapsible(el('ruishin-panel'), el('ruishin-panel').querySelector<HTMLElement>('.panel-top')!);
-    // 縮めたレイヤ一覧を、下（横向きでは右下）の計測・属性のパネルの上に載せるため、そのパネルの高さを CSS に渡す。
-    // 縮めたレイヤ一覧の高さも渡し、横向きではその分だけパネルを低くして、一覧が上のバーにかからないようにする
-    if (window.ResizeObserver) {
-      const stack = new ResizeObserver(() => {
-        const root = document.documentElement.style;
-        const box = [el('readout'), el('inspect-panel'), el('ruishin-panel')].map((n) => n.getBoundingClientRect()).find((r) => r.height > 0);
-        root.setProperty('--panel-stack', `${box ? Math.round(box.height) + 8 : 0}px`);
-        const layer = el('layer-panel');
-        const head = layer.getBoundingClientRect().height;
-        if (layer.classList.contains('collapsed') && head > 0) root.setProperty('--layer-head', `${Math.ceil(head)}px`);
-      });
-      stack.observe(el('readout'));
-      stack.observe(el('inspect-panel'));
-      stack.observe(el('ruishin-panel'));
-      stack.observe(el('layer-panel'));
-    }
+    // レイヤ・表示のパネルは、つまみと見出しを指で上下にずらして、好きな高さにする（縦・横・iPad で同じ）
+    this.makeResizable('layer-panel');
+    this.makeResizable('display-panel');
+    // 帯の「重なり ▸」で、重なった次の線にする（帯は選ぶたびに作り直すので、帯で受ける）
+    el('layer-pick').addEventListener('click', (e) => {
+      if ((e.target as HTMLElement).closest('.lp-next')) this.cycleOverlap();
+    });
 
     el('btn-info').addEventListener('click', () => {
       if (this.toggleSheet('info-panel')) this.buildInfoPanel();
@@ -3769,7 +3963,10 @@ class App {
 
     // ---- 表示 ----
     el('btn-display').addEventListener('click', () => {
-      if (this.toggleSheet('display-panel')) this.buildDisplayPanel();
+      if (!this.toggleSheet('display-panel')) return;
+      this.buildDisplayPanel();
+      // 中身を作り直したので、その高さで大きさを決め直す（いちばん高い大きさは中身まで）
+      this.fitSizedPanel('display-panel');
     });
     el('btn-display-close').addEventListener('click', () => this.openSheet(null));
 
@@ -4048,6 +4245,8 @@ class App {
       }
       this.shapeCache = null;
       this.layerPickShape = null;
+      // 見えている線が変わったら、重なりの候補は次のタップで決め直す
+      this.overlap = null;
       this.renderer.setLayerVisibility(mask);
       this.textLayer.setLayerVisibility(mask);
       this.snapIndex?.setVisibleLayers(mask);

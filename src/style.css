@@ -1093,11 +1093,6 @@ body[data-bg="light"] .panel {
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
 }
 
-/* 表示シートは、切り替えた結果が上に見えるよう低めにする */
-#display-panel {
-  max-height: 62%;
-}
-
 /* ---- 表示シート ---- */
 .setting-row {
   display: flex;
@@ -1296,7 +1291,10 @@ body[data-bg="light"] .panel {
   left: 3px;
 }
 
-/* ---- つまみ：レイヤ一覧と属性のパネルは、見出しを下へずらすと見出しだけに縮み、上へずらすか押すと戻る ---- */
+/*
+ * ---- つまみ：属性・累進のパネルは、見出しを下へずらすと見出しだけに縮み、上へずらすか押すと戻る。
+ * レイヤ・表示のパネルは、つまみと見出しを上下にずらして高さを変える（縦の iPhone・横の iPhone・iPad で同じ） ----
+ */
 .grab {
   position: absolute;
   top: 5px;
@@ -1310,7 +1308,7 @@ body[data-bg="light"] .panel {
 }
 
 /* 見出しを指でずらせるように（ブラウザの送りに取られないように） */
-#layer-panel .sheet-head,
+.sheet.sized .sheet-head,
 #inspect-panel .panel-top,
 #ruishin-panel .panel-top {
   touch-action: none;
@@ -1327,13 +1325,11 @@ body[data-bg="light"] .panel {
 }
 
 /* 指について動かしたあと、元の位置へ戻るとき */
-#layer-panel,
 #inspect-panel,
 #ruishin-panel {
   transition: transform 0.18s ease-out;
 }
 
-#layer-panel.collapsed .sheet-body,
 #inspect-panel.collapsed #inspect-body,
 #inspect-panel.collapsed #inspect-actions,
 #ruishin-panel.collapsed #ruishin-body,
@@ -1348,16 +1344,64 @@ body[data-bg="light"] .panel {
 }
 
 /*
- * 縮めたレイヤ一覧は、見出しだけを下の計測・属性のパネル（--panel-stack は main.ts が測る）とツールバーの上に浮かべ、
- * ツールバーもパネルも使えるようにする（横向きは下の @media で、右下のパネルの上に載せる）
+ * ---- レイヤ・表示のパネル（指で大きさを変える。操作は同じ） ----
+ * 縦の iPhone と iPad では、下のツールバーのすぐ上に出す（ツールバーは見えたまま押せる）。
+ * 高さは main.ts が決める（指で変えた大きさ。初めは今までとほぼ同じ大きさ）。入りきらない中身は一覧の中で送る。
+ * 横の iPhone では、下の @media で右に縦長に出す。高さを変える操作は同じ（上の縁を上下に動かす）
  */
-#layer-panel.collapsed {
+.sheet.sized {
   left: calc(var(--safe-left) + 10px);
   right: calc(var(--safe-right) + 10px);
-  bottom: calc(var(--bar-height) + 6px + var(--panel-stack, 0px));
+  bottom: calc(var(--bar-height) + 6px);
+  max-height: none;
   padding-bottom: 0;
   border: 1px solid var(--line);
   border-radius: 16px;
+  /*
+   * いちばん小さくしたときに、一覧（の余白）がパネルの外へはみ出さないように。
+   * clip なら、行を見せる送り（scrollIntoView など）でパネルそのものが送られて見出しが隠れることもない
+   */
+  overflow: hidden;
+  overflow: clip;
+}
+
+/* 見出しと帯は縮めず、一覧だけを残りの高さにする（一覧の中を指で送るのは一覧だけ。大きさは変わらない） */
+.sheet.sized .sheet-head,
+.sheet.sized .layer-pick {
+  flex: none;
+}
+
+.sheet.sized .sheet-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overscroll-behavior: contain;
+}
+
+/* 幅を狭めても、見出しは 1 行のまま（文字やボタンを折り返さない）。一覧の上のボタンは、入りきらなければ折り返す */
+.sheet.sized .sheet-head {
+  gap: 8px;
+}
+
+.sheet.sized .sheet-head strong,
+.sheet.sized .sheet-head .chip {
+  white-space: nowrap;
+}
+
+/*
+ * レイヤの一覧の上のボタン（Jw_cad の状態・すべて表示・反転）は、幅を狭めて 1 行に入りきらないときだけ折り返す。
+ * 上下の行の押せる所（上下へ 8px 広げている）が重ならないよう、行の間を空ける
+ */
+#layer-panel .section-actions {
+  flex-wrap: wrap;
+  max-width: 100%;
+  row-gap: 16px;
+}
+
+/* レイヤ・表示のパネルを開いているあいだは、計測・累進・属性のパネルを見せない（中身はそのまま。閉じるとまた出る） */
+#shell:has(> .sheet.sized:not(.hidden)) #readout,
+#shell:has(> .sheet.sized:not(.hidden)) #inspect-panel,
+#shell:has(> .sheet.sized:not(.hidden)) #ruishin-panel {
+  visibility: hidden;
 }
 
 /* ---- ボタンやパネルを隠して、図面を画面いっぱいに見る ---- */
@@ -1531,11 +1575,6 @@ body.ui-hidden .ui-show {
 }
 
 /* ---- レイヤシート ---- */
-/* レイヤが多くても図面を隠しすぎないよう、画面の半分までにして中を送る */
-#layer-panel {
-  max-height: 50%;
-}
-
 /* 見出しの右側に、表示を戻る・進むボタンと「閉じる」を並べる（閉じると押し間違えないよう少し離す） */
 .sheet-head-end {
   display: flex;
@@ -1646,19 +1685,22 @@ body.ui-hidden .ui-show {
 
 /*
  * 選んだ線のレイヤを出す帯（見出しのすぐ下）。レイヤ名を優先し、グループ名は入りきらなければ「…」で省く。
- * 部品の一部であることや、絞り込みで行が隠れていることは 2 行目に添える
+ * 部品の一部であること・絞り込みで行が隠れていること・重なりの案内と「重なり ▸」は 2 行目に添える。
+ * 2 行分の決まった高さにして、線を選んでも注意書きが増えても、パネルの大きさが変わらないようにする
  */
 .layer-pick {
   margin: 8px 16px 4px;
-  padding: 7px 10px;
+  padding: 6px 10px;
+  height: 58px;
+  box-sizing: border-box;
   border-radius: 10px;
   background: rgba(250, 204, 21, 0.14);
   box-shadow: inset 4px 0 0 #facc15;
   font-size: 14px;
+  overflow: hidden;
 }
 
-.layer-pick[hidden],
-#layer-panel.collapsed .layer-pick {
+.layer-pick[hidden] {
   display: none;
 }
 
@@ -1666,6 +1708,36 @@ body.ui-hidden .ui-show {
   display: flex;
   align-items: baseline;
   min-width: 0;
+  height: 22px;
+  line-height: 22px;
+  white-space: nowrap;
+}
+
+/* 線を選ぶ前の案内 */
+.layer-pick .lp-empty {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  color: var(--dim);
+}
+
+/* 2 行目：注意書き（入りきらなければ「…」）と、重なりがあるときだけ右端に「重なり 1/2 ▸」 */
+.layer-pick .lp-sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  margin-top: 2px;
+}
+
+.layer-pick .lp-next {
+  flex: none;
+  margin-left: auto;
+  height: 22px;
+  padding: 0 9px;
+  font-size: 12px;
+  line-height: 20px;
   white-space: nowrap;
 }
 
@@ -1692,8 +1764,10 @@ body.ui-hidden .ui-show {
 }
 
 .layer-pick .lp-note {
-  margin-top: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 12px;
+  line-height: 16px;
   color: var(--dim);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2037,39 +2111,22 @@ body.ui-hidden .ui-show {
   }
 
   /*
-   * 縮めたレイヤ一覧は、右下の計測・属性のパネル（--panel-stack は main.ts が測る）の上に載せ、どちらも使えるようにする。
-   * 幅は下のパネルにそろえる
+   * レイヤ・表示のパネルは、縦の画面と同じく、上のつまみと見出しを上下にずらして高さを変える（高さは main.ts が決める）。
+   * 下の縁はそのまま（画面の下の近く）で、上の縁が動く。幅は変えない
    */
-  #layer-panel.collapsed {
+  #layer-panel,
+  #display-panel {
     top: auto;
-    left: auto;
-    right: var(--edge-right);
-    bottom: calc(var(--bar-bottom) + var(--panel-stack, 0px));
-    width: max(300px, min(360px, 48vw));
-  }
-
-  /* 下が計測のパネルのときは、計測のパネル（横向きでは少し広い）に幅をそろえる */
-  #shell:has(> #readout:not(.hidden)) #layer-panel.collapsed {
-    width: var(--readout-w);
   }
 
   /*
-   * 縮めたレイヤ一覧を載せているあいだは、下のパネルを低くして（中は送れる）、一覧の見出しが上のバーにかからないようにする。
-   * --layer-head は縮めた一覧の高さで、main.ts が測る
-   */
-  #shell:has(> #layer-panel.collapsed:not(.hidden)) .panel,
-  #shell:has(> #layer-panel.collapsed:not(.hidden)) #inspect-panel {
-    max-height: calc(100% - var(--safe-top) - 56px - var(--bar-bottom) - var(--layer-head, 62px) - 8px);
-  }
-
-  /*
-   * 縮めていないシートを開いているあいだは、その下の計測・属性のパネルを見せない。
+   * シートを開いているあいだは、その下の計測・属性のパネルを見せない。
    * パネルの方がシートより幅が広いので、シートの左に端がはみ出して見え、はみ出した所のボタンが押せてしまう。
    * 大きさは残す（縮めたレイヤ一覧を載せる高さの測り方は変えない）
    */
-  #shell:has(> .sheet:not(.hidden):not(.collapsed)) #readout,
-  #shell:has(> .sheet:not(.hidden):not(.collapsed)) #inspect-panel,
-  #shell:has(> .sheet:not(.hidden):not(.collapsed)) #ruishin-panel {
+  #shell:has(> .sheet:not(.hidden)) #readout,
+  #shell:has(> .sheet:not(.hidden)) #inspect-panel,
+  #shell:has(> .sheet:not(.hidden)) #ruishin-panel {
     visibility: hidden;
   }
 
@@ -2125,6 +2182,10 @@ body[data-bg="light"] #inspect-actions {
   .sheet {
     width: min(640px, 100%);
     margin-inline: auto;
+  }
+  /* レイヤ・表示のパネルは、左右の余白を残してツールバーの上に（高さは main.ts が決める） */
+  .sheet.sized {
+    width: min(640px, calc(100% - var(--safe-left) - var(--safe-right) - 20px));
   }
   #toolbar {
     width: min(640px, 100%);
