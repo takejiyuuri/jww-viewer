@@ -42,6 +42,7 @@
     "e2e:usability": "node tools/e2e-usability.mjs",
     "e2e:badges": "node tools/e2e-badges.mjs",
     "e2e:ruishin-measure": "node tools/e2e-ruishin-measure.mjs",
+    "e2e:layer-select": "node tools/e2e-layer-select.mjs",
     "sample:ruishin": "node tools/ruishin-sample.mjs"
   },
   "devDependencies": {

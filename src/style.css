@@ -1638,8 +1638,66 @@ body.ui-hidden .ui-show {
   border-radius: 8px;
 }
 
+/* レイヤ選択モードで選んだ線のレイヤの行（図面の黄色と同じ色。左端の帯で、色が分かりにくくても見つけられる） */
 .l-row.mark {
-  background: rgba(53, 208, 127, 0.12);
+  background: rgba(250, 204, 21, 0.2);
+  box-shadow: inset 4px 0 0 #facc15;
+}
+
+/*
+ * 選んだ線のレイヤを出す帯（見出しのすぐ下）。レイヤ名を優先し、グループ名は入りきらなければ「…」で省く。
+ * 部品の一部であることや、絞り込みで行が隠れていることは 2 行目に添える
+ */
+.layer-pick {
+  margin: 8px 16px 4px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  background: rgba(250, 204, 21, 0.14);
+  box-shadow: inset 4px 0 0 #facc15;
+  font-size: 14px;
+}
+
+.layer-pick[hidden],
+#layer-panel.collapsed .layer-pick {
+  display: none;
+}
+
+.layer-pick .lp-main {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.layer-pick .lp-label {
+  flex-shrink: 0;
+  color: var(--dim);
+}
+
+/* レイヤ名は縮めない（「選んだ線：」の 5 文字を除いた幅に収まらないときだけ「…」で省く） */
+.layer-pick .lp-layer {
+  flex: 0 0 auto;
+  max-width: calc(100% - 5em);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 詰めるのはグループ名だけ */
+.layer-pick .lp-group {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--dim);
+}
+
+.layer-pick .lp-note {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 平らな形式（DXF）のレイヤ一覧：グループの段がないので左に寄せる */
