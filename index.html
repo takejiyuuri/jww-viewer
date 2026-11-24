@@ -200,7 +200,8 @@
 
 <nav id="toolbar" aria-label="ツール">
   <button id="btn-tool-measure" class="tool on" aria-pressed="true"><svg class="ico"><use href="#i-measure"/></svg><span>計測</span></button>
-  <button id="btn-tool-ruishin" class="tool" aria-pressed="false"><svg class="ico"><use href="#i-ruishin"/></svg><span>累進</span></button>
+  <!-- 角の点（live-dot）は、累進寸法を表示したまま「計測」を使っているあいだだけ出す -->
+  <button id="btn-tool-ruishin" class="tool" aria-pressed="false" aria-label="累進"><svg class="ico"><use href="#i-ruishin"/></svg><span>累進</span><span class="live-dot" aria-hidden="true"></span></button>
   <button id="btn-tool-inspect" class="tool" aria-pressed="false"><svg class="ico"><use href="#i-inspect"/></svg><span>属性</span></button>
   <button id="btn-layers" class="tool"><svg class="ico"><use href="#i-layers"/></svg><span>レイヤ</span></button>
   <button id="btn-display" class="tool"><svg class="ico"><use href="#i-display"/></svg><span>表示</span></button>

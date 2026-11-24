@@ -55,7 +55,7 @@ const ABOUT_LINKS = '<p class="about-links">'
 const HOWTO_ITEMS = [
   '1 本指で図面を動かし、2 本指で拡大・縮小します。「全体」で図面全体に戻ります',
   '「計測」（最初はこれ）：タップで計測点を置き、距離・面積・体積・角度を測ります。長押しで拡大鏡、置いた点はつまんで動かせます。点は交点や線の上に吸い付きます。「すべて消去」で消した点は、次の点を置くまで「元に戻す」で戻せます',
-  '「累進」：パネルの「累進表示」を入れると、図面の寸法を起点からの累進寸法に直して表示します。切るか、ほかのツールに切り替えると元の寸法に戻ります',
+  '「累進」：パネルの「累進表示」を入れると、図面の寸法を起点からの累進寸法に直して表示します。「計測」に替えても累進寸法のまま測れます（「累進」ボタンの角に点が出ます）。「属性」のあいだと、「累進表示」を切ったときは元の寸法に戻ります',
   '起点の移動：寸法の列をタップして選び、起点の丸を指で動かします。交点や線の上に吸い付きます。寸法線の外へ動かすと、寸法線が起点まで伸びて見えます（図面は変わりません）',
   '「寸法線上のみ」：入れると、起点は寸法線の上だけを動き、寸法線がほかの線と交わる所に吸い付きます',
   '戻る・進む：累進のパネル右上の ↶ で起点を 1 つ前に戻し、↷ で戻した操作をやり直します。「この列を戻す」「全列を戻す」で起点を最初の端に戻せます。レイヤの ↶ ↷ はレイヤの表示だけを戻し・進めます',
@@ -1815,7 +1815,7 @@ class App {
   /** 累進で表示しているあいだは、列にした寸法の元の寸法値を隠す */
   private applyRuishinTexts(): void {
     const hidden = new Set<number>();
-    if (this.ruishinOn) {
+    if (this.ruishinShown()) {
       for (const c of this.chains) for (const s of c.spans) if (s.text >= 0) hidden.add(s.text);
     }
     this.textLayer.setHidden(hidden);
@@ -1921,8 +1921,16 @@ class App {
   }
 
   /** 計測の層に渡す累進寸法。起点を動かしている途中なら、指の下の吸着先を起点にして見せる */
+  /**
+   * 図面に累進寸法を描いているか。「累進表示」が入っていて、いまの道具が「属性」でないとき。
+   * 「計測」と「累進」のあいだは描いたまま、「属性」のあいだだけ隠して元の寸法で見せる（入・切と起点は覚えておく）
+   */
+  private ruishinShown(): boolean {
+    return this.ruishinOn && this.tool !== 'inspect';
+  }
+
   private ordinateLayer(): OrdinateLayer | null {
-    if (!this.ruishinOn || this.chains.length === 0) return null;
+    if (!this.ruishinShown() || this.chains.length === 0) return null;
     let origins = this.origins;
     const id = this.originDrag;
     const c = this.holding && id >= 0 && this.preview ? this.chainById(id) : undefined;
@@ -1998,6 +2006,18 @@ class App {
     if (!on) this.activeChain = -1;
     this.applyRuishinTexts();
     this.updateRuishinPanel();
+    this.updateRuishinMark();
+  }
+
+  /**
+   * 下の「累進」ボタンの角の小さな点。累進寸法を表示したまま「計測」を使っているあいだだけ出す
+   * （「累進」を選んでいるときはボタン自体が緑、「属性」のあいだは累進を隠しているので出さない）
+   */
+  private updateRuishinMark(): void {
+    const live = this.ruishinOn && this.tool === 'measure';
+    const b = el('btn-tool-ruishin');
+    b.classList.toggle('live', live);
+    b.setAttribute('aria-label', live ? '累進（累進寸法を表示中）' : '累進');
   }
 
   /** 新しく起点を動かした（戻した後なら、進む履歴は捨てる） */
@@ -3058,18 +3078,20 @@ class App {
     if (this.tool === tool) return;
     this.cancelHold();
     this.toggleColors(false);
-    const leavingOrEntering = this.tool === 'ruishin' || tool === 'ruishin';
+    const wasShown = this.ruishinShown();
     this.tool = tool;
-    // 「累進」を出たときは元の寸法に戻し、もう一度「累進」を選んだときも「累進表示」は切から始める
-    if (leavingOrEntering) this.setRuishinOn(false);
+    // 「累進表示」の入・切、起点、選んだ列は道具を替えても覚えておく。「計測」と「累進」のあいだは累進寸法を描いたまま、
+    // 「属性」のあいだだけ元の寸法に戻して見せる（「計測」か「累進」に戻ると、入っていればまた累進で見せる）
+    if (this.ruishinShown() !== wasShown) this.applyRuishinTexts();
+    this.updateRuishinMark();
     // 属性に切り替えたときは、属性のパネルを縮めずに出す（縮めたままだと長さや線色の行が見えない）
     if (tool === 'inspect') el('inspect-panel').classList.remove('collapsed');
     this.updatePanels();
     this.requestDraw();
     if (tool === 'ruishin') this.updateRuishinPanel();
-    this.hint(tool === 'inspect' ? '図形をタップすると属性を表示します'
-      : tool === 'ruishin' ? RUISHIN_OFF_HINT
-      : 'タップで計測点を置きます');
+    this.hint(tool === 'inspect' ? (this.ruishinOn ? RUISHIN_INSPECT_HINT : '図形をタップすると属性を表示します')
+      : tool === 'ruishin' ? (this.ruishinOn ? (this.anyOperable() ? RUISHIN_PICK_HINT : RUISHIN_ZOOM_HINT) : RUISHIN_OFF_HINT)
+      : this.ruishinOn ? RUISHIN_MEASURE_HINT : 'タップで計測点を置きます');
   }
 
   /** 下のパネル（計測・属性）とツールボタンの状態を、いまのツールに合わせる */
@@ -4167,8 +4189,11 @@ type OriginStep = Array<{ key: string; before: Origin; after: Origin }>;
 /** 累進の案内（列を選べる倍率のとき・まだ小さすぎるとき） */
 const RUISHIN_PICK_HINT = '列をタップして選び、起点の丸をドラッグして動かします';
 const RUISHIN_ZOOM_HINT = '拡大すると、寸法列を選べます';
-/** 「累進」を選んだとき（「累進表示」は切から始まる） */
+/** 「累進」を選んだとき（「累進表示」が切のとき） */
 const RUISHIN_OFF_HINT = '「累進表示」を押すと、寸法を累進寸法に直して表示します';
+/** 累進寸法を表示したまま道具を替えたときの、数秒で消える案内（ずっと出しておく案内は置かない） */
+const RUISHIN_MEASURE_HINT = 'タップで計測点を置きます（累進寸法は表示したまま）';
+const RUISHIN_INSPECT_HINT = '図形をタップすると属性を表示します（属性のあいだは元の寸法で表示）';
 const RUISHIN_OFF_NOTE = '元の寸法で表示しています。「累進表示」をオンにすると累進寸法になります。';
 
 function chainKeyOf(c: Chain): string {

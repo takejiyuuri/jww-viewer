@@ -273,6 +273,21 @@ export class Overlay {
         ctx.restore();
       }
 
+      // 累進寸法を表示しているときは、拡大鏡の中にも累進の数字・矢印・起点の丸を描く
+      // （元の寸法の数字は隠しているので、描かないと拡大鏡の中から寸法の数字が消えてしまう）
+      if (view2 && s.ordinate && s.ordinate.chains.length) {
+        const mx = x + size / 2;
+        const my = y + size / 2;
+        ctx.save();
+        this.roundRect(x, y, size, size, 14 * k);
+        ctx.clip();
+        drawOrdinates(ctx, (wx, wy) => [
+          mx + ((wx - view2.x) * view2.zoom * k) / view2.dpr,
+          my - ((wy - view2.y) * view2.zoom * k) / view2.dpr,
+        ], view2.zoom, k, this.background, s.ordinate);
+        ctx.restore();
+      }
+
       ctx.strokeStyle = INK[this.background].frame;
       ctx.lineWidth = 2 * k;
       this.roundRect(x, y, size, size, 14 * k);

@@ -2,7 +2,8 @@
 // 起点の丸をドラッグして通り芯の交点に吸着させると値が変わる、「寸法線上のみ」で寸法線の上だけを動く、
 // 「同じ向きを連動」は無い（起点はその列だけ動く）、「累進表示」を切ると元に戻る。
 // ミテハカールに統合した版：最初は「計測」、図面を開いた直後は元の寸法。「累進」の「累進表示」を入れたときだけ累進に直し、
-// 切るか別のツールにすると元に戻る。起点は戻る・進むができ、寸法線の外へ動かすと寸法線が起点まで伸びて見える。
+// 切ると元に戻る。「計測」と「累進」のあいだは累進表示を続け、「属性」のあいだだけ元に戻す（仕様書 8 章、詳しくは e2e-ruishin-measure）。
+// 起点は戻る・進むができ、寸法線の外へ動かすと寸法線が起点まで伸びて見える。
 // 最初の画面：「図面を開く」「見本の図面を開く」がすぐ押せ、操作の説明は「使い方を見る」で開閉する（図面情報からも見られる）。
 // 案内：列を選べない倍率では「拡大すると、寸法列を選べます」、戻すボタンの名前は「この列を戻す」「全列を戻す」。
 // 引数：出力先のフォルダ（スクリーンショット）。図面は public/ruishin-sample.jww（tools/ruishin-sample.mjs で作る）
@@ -453,7 +454,7 @@ await page.waitForTimeout(300);
   await ctx2.close();
 }
 
-// ---------- 10. 別のツールにすると元の寸法に戻り、もう一度「累進」を選んでも「累進表示」は切から ----------
+// ---------- 10. 「計測」と「累進」のあいだは累進表示を続け、「属性」のあいだだけ元の寸法（仕様書 8 章 a・b・d） ----------
 const useView = async (v = goodView) => {
   await page.evaluate((v) => { const a = window.__jww; Object.assign(a.view, v); a.requestDraw(true); }, v);
   await page.waitForTimeout(300);
@@ -465,16 +466,32 @@ const ensureRuishinOn = async () => {
 };
 {
   await ensureRuishinOn();
+  const mark = () => page.evaluate(() => {
+    const b = document.getElementById('btn-tool-ruishin');
+    const dot = b.querySelector('.live-dot');
+    return { live: b.classList.contains('live'), dot: !!dot && getComputedStyle(dot).display !== 'none', label: b.getAttribute('aria-label') };
+  });
   const on = await layerState();
+  const markRuishin = await mark();
   await page.click('#btn-tool-measure');
   await page.waitForTimeout(250);
   const measure = await layerState();
+  const markMeasure = await mark();
+  const measureHint = await page.evaluate(() => document.getElementById('hint').textContent);
   await page.click('#btn-tool-inspect');
+  await page.waitForTimeout(250);
+  const inspect = await layerState();
+  const markInspect = await mark();
   await page.click('#btn-tool-ruishin');
   await page.waitForTimeout(250);
   const again = await layerState();
-  check('別のツール（計測）にすると元の寸法に戻る', on.on && on.hidden === 14 && !measure.on && measure.hidden === 0 && !measure.layer, { on, measure });
-  check('もう一度「累進」を選ぶと「累進表示」は切から始まる', again.tool === 'ruishin' && !again.on && again.hidden === 0 && again.pressed === 'false', again);
+  check('「計測」に替えても累進寸法を表示したまま（元の寸法値は隠したまま）', on.on && on.hidden === 14 && measure.on && measure.hidden === 14 && measure.layer && !measure.panel, { on, measure });
+  check('累進を表示したまま計測しているあいだだけ「累進」ボタンの角に点が出る（読み上げは「累進寸法を表示中」）',
+    !markRuishin.dot && markMeasure.live && markMeasure.dot && markMeasure.label === '累進（累進寸法を表示中）' && !markInspect.dot && markInspect.label === '累進',
+    { markRuishin, markMeasure, markInspect });
+  check('「計測」に替えたときの案内は、累進寸法を表示したままと伝える', measureHint === 'タップで計測点を置きます（累進寸法は表示したまま）', { measureHint });
+  check('「属性」のあいだは累進を隠して元の寸法（入・切は覚えておく）', inspect.on && inspect.hidden === 0 && !inspect.layer, inspect);
+  check('「累進」に戻ると累進表示は入ったまま', again.tool === 'ruishin' && again.on && again.hidden === 14 && again.layer && again.pressed === 'true', again);
 }
 
 const setOriginT = (id, t) => page.evaluate(async ([id, t]) => {
