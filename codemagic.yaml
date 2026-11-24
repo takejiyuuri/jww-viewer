@@ -110,3 +110,44 @@ workflows:
         # 社外のテスターにも配るときだけ、App Store Connect の TestFlight → テスト情報（説明・連絡先など）を入れてから
         # true にして beta_groups を足す（社外向けは毎回 Beta App Review の審査がある）
         submit_to_testflight: false
+
+  # ---- 3. App Store のプレビュー動画（iPhone 16 Plus と iPad Pro 13インチのシミュレータで画面録画） ----
+  # 撮影用のビルドにだけ自動手順（tools/appstore-video/scenario.js）を入れる。TestFlight・App Store の版は変えない
+  ios-preview-video:
+    name: App Store プレビュー動画（iPhone 16 Plus・iPad Pro 13インチ）
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      node: 22
+      xcode: latest
+    scripts:
+      - name: npm の依存を入れる
+        script: npm ci
+      - name: 撮影用の Web をビルドし、動画の自動手順を入れる
+        script: |
+          # window.__jww（図面の座標を読む開発用の窓口）を出すため NODE_ENV=development でビルドする
+          NODE_ENV=development npx vite build
+          node tools/appstore-video/inject.mjs dist
+      - name: Web を iOS プロジェクトへ写す
+        script: npx cap sync ios
+      - name: シミュレータ向けにビルドする（署名なし）
+        script: |
+          set -o pipefail
+          xcodebuild \
+            -project ios/App/App.xcodeproj \
+            -scheme App \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/derived \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+      - name: iPhone 16 Plus で録画する
+        script: SHOT_DEVICE="iPhone 16 Plus" SHOT_LABEL=iphone tools/appstore-video/run-video.sh
+        ignore_failure: true
+      - name: iPad Pro 13インチで録画する
+        script: SHOT_DEVICE="iPad Pro 13-inch" SHOT_LABEL=ipad tools/appstore-video/run-video.sh
+    artifacts:
+      - videos/**/*.mov
+      - videos/**/*.png
+      - videos/**/*.txt
