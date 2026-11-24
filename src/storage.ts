@@ -464,7 +464,7 @@ export function saveViewState(name: string, state: ViewState): void {
 }
 
 // ---------- レイヤ・表示のパネルの大きさ ----------
-// 指で変えた大きさを、パネルごとに、縦（高さ）と横（幅）で別々に覚える。端末ごとの好みなので localStorage に置く。
+// 指で変えた高さを、パネルごとに、縦の画面と横の iPhone で別々に覚える。端末ごとの好みなので localStorage に置く。
 // 無ければ既定の大きさで出す（1.3 以前から更新したときも同じ）。読み書きできなくても、パネルは既定の大きさで使える
 
 export type SizedPanel = 'layer' | 'display';
@@ -472,8 +472,11 @@ export type SizedPanel = 'layer' | 'display';
 export interface PanelSize {
   /** 縦の画面（iPhone の縦・iPad）での高さ（CSS ピクセル） */
   h?: number;
-  /** 横の iPhone で右に寄せたときの幅（CSS ピクセル） */
-  w?: number;
+  /**
+   * 横の iPhone で右に寄せたときの高さ（CSS ピクセル）。
+   * TestFlight のビルド 16 までは横の幅（w）を覚えていたが、横も高さを変えるようにしたので読まない
+   */
+  sh?: number;
 }
 
 export type PanelSizes = Record<SizedPanel, PanelSize>;
@@ -493,9 +496,9 @@ export function loadPanelSizes(): PanelSizes {
       const p = v[id];
       if (!p || typeof p !== 'object') continue;
       const h = sizeValue(p.h);
-      const w = sizeValue(p.w);
+      const sh = sizeValue(p.sh);
       if (h !== undefined) sizes[id].h = h;
-      if (w !== undefined) sizes[id].w = w;
+      if (sh !== undefined) sizes[id].sh = sh;
     }
   } catch {
     // 読めなければ既定の大きさ

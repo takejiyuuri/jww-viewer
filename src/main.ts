@@ -61,7 +61,7 @@ const HOWTO_ITEMS = [
   '「寸法線上のみ」：入れると、起点は寸法線の上だけを動き、寸法線がほかの線と交わる所に吸い付きます',
   '戻る・進む：累進のパネル右上の ↶ で起点を 1 つ前に戻し、↷ で戻した操作をやり直します。「この列を戻す」「全列を戻す」で起点を最初の端に戻せます。レイヤの ↶ ↷ はレイヤの表示だけを戻し・進めます',
   '「属性」では図形をタップすると、レイヤ・線色・線種・長さが分かります',
-  '「レイヤ」でレイヤごとに表示を切り替えられます。最初は Jw_cad と同じ表示です。一覧を開いたまま図面の線をタップすると、その線のレイヤが黄色で分かります。重なった線は同じ所をもう一度タップすると次の線に、長押しすると拡大鏡で選べます。一覧はつまみをずらして好きな大きさにできます。「表示」で背景や線の色を切り替えられます',
+  '「レイヤ」でレイヤごとに表示を切り替えられます。最初は Jw_cad と同じ表示です。一覧を開いたまま図面の線をタップすると、その線のレイヤが黄色で分かります。重なった線は同じ所をもう一度タップすると次の線に、長押しすると拡大鏡で選べます。一覧はつまみを上下にずらして好きな高さにできます。「表示」で背景や線の色を切り替えられます',
 ].map((t) => `<li>${t}</li>`).join('');
 
 /** 図面情報に出す「使い方を見る」（押すと開き、もう一度押すと閉じる。図面や操作はそのまま） */
@@ -87,8 +87,6 @@ interface Insets {
 type Sheet = 'info-panel' | 'display-panel' | 'layer-panel' | 'files-panel' | 'records-panel';
 /** 指で大きさを変えられるシート（レイヤと表示。操作は同じ） */
 type SizedSheet = 'layer-panel' | 'display-panel';
-/** 横の iPhone で右に寄せたレイヤ・表示のパネルの、いちばん細い幅（見出しの「戻る・進む・閉じる」が収まる幅） */
-const PANEL_MIN_WIDTH = 270;
 const SHEETS: Sheet[] = ['info-panel', 'display-panel', 'layer-panel', 'files-panel', 'records-panel'];
 
 /** 計測の記録。図面を開いているあいだだけ覚えておき、端末には残さない */
@@ -3404,30 +3402,19 @@ class App {
     return id === 'layer-panel' ? 'layer' : 'display';
   }
 
-  /** 横の iPhone で、レイヤ・表示のパネルを右に縦長に出して、幅を変えるか（縦の iPhone と iPad は下に出して高さを変える） */
+  /** 横の iPhone で、レイヤ・表示のパネルを右に縦長に出すか（縦の iPhone と iPad は下のツールバーの上に出す）。高さを変える操作はどちらも同じ */
   private sideSheets(): boolean {
     return window.matchMedia('(orientation: landscape) and (max-height: 500px)').matches;
   }
 
   /**
-   * レイヤ・表示のパネルの、いちばん小さい大きさ・いちばん大きい大きさ・初めの大きさ（side なら幅、そうでなければ高さ。CSS ピクセル）。
-   * パネルの style の高さ・幅を外して（中身の大きさで）置いた状態で測る
+   * レイヤ・表示のパネルの、いちばん低い高さ・いちばん高い高さ・初めの高さ（CSS ピクセル）。
+   * どの画面でも、パネルの下の縁はそのままで、上の縁を上下に動かして高さを変える
+   * （縦の iPhone・iPad は下のツールバーの上、横の iPhone は右側で、下の縁は画面の下の近く）。
+   * パネルの style の高さを外して（中身の高さで）置いた状態で測る
    */
   private panelLimits(panel: HTMLElement, side: boolean): { min: number; max: number; base: number } {
     const r = panel.getBoundingClientRect();
-    if (side) {
-      // 右に寄せたパネルの左の縁を動かす。左に図面が少なくとも 3 分の 1（最大 200px）残るまで広げられる。
-      // いちばん細くても、見出しのボタン（戻る・進む・閉じる）が収まる幅は取る
-      const ins = this.measureInsets();
-      const room = r.right - (Math.max(ins.left, this.safeLeft) + 10);
-      const min = Math.min(PANEL_MIN_WIDTH, room);
-      const max = Math.max(min, Math.round(room - Math.min(200, room * 0.35)));
-      // 初めは今までの幅（style.css の max(290px, min(340px, 44%))）
-      const base = Math.max(290, Math.min(340, this.cssW * 0.44));
-      return { min, max, base };
-    }
-    // 下のツールバーの上に置いたパネルの上の縁を動かす。上に図面が少なくとも 100〜140px 見えるまで伸ばせる。
-    // 中身より高くはしない（下に空きができないように）
     const bar = document.getElementById('topbar')?.getBoundingClientRect();
     const topLimit = bar && bar.height > 0 ? bar.bottom + 8 : this.safeTop + 8;
     const room = r.bottom - topLimit;
@@ -3436,6 +3423,12 @@ class App {
     const pick = panel.querySelector<HTMLElement>('.layer-pick');
     const head = panel.querySelector<HTMLElement>('.sheet-head');
     const min = pick && !pick.hidden ? pick.offsetTop + pick.offsetHeight + 8 : (head ? head.offsetTop + head.offsetHeight : 48);
+    if (side) {
+      // 横の iPhone：図面は左に見えているので、上のバーの下まで伸ばせる（今までの高さ）。初めもその高さ。中身より高くはしない
+      const max = Math.max(min, Math.min(Math.round(room), natural));
+      return { min, max, base: max };
+    }
+    // 縦の画面：上に図面が少なくとも 100〜140px 見えるまで伸ばせる。中身より高くはしない（下に空きができないように）
     const keep = Math.max(96, Math.min(140, room * 0.25));
     const max = Math.max(min, Math.min(Math.round(room - keep), natural));
     // 初めは今までとほぼ同じ所まで（レイヤは画面の半分、表示はそれより少し上）。
@@ -3445,102 +3438,80 @@ class App {
   }
 
   /**
-   * 開いたレイヤ・表示のパネルを、前に指で変えた大きさ（なければ初めの大きさ）にして、画面に収める。
-   * 端末を回したときも呼ぶ。収めるために縮めても、覚えた大きさは変えない（元の向きに戻すと元の大きさ）
+   * 開いたレイヤ・表示のパネルを、前に指で変えた高さ（なければ初めの高さ）にして、画面に収める。
+   * 端末を回したときも呼ぶ。収めるために縮めても、覚えた高さは変えない（元の向きに戻すと元の高さ）
    */
   private fitSizedPanel(id: SizedSheet): void {
     const panel = el(id);
     if (panel.classList.contains('hidden')) return;
     const side = this.sideSheets();
     panel.style.height = '';
-    panel.style.width = '';
     const lim = this.panelLimits(panel, side);
-    const saved = this.panelSizes[this.sizedKey(id)][side ? 'w' : 'h'];
+    const saved = this.panelSizes[this.sizedKey(id)][side ? 'sh' : 'h'];
     const size = Math.round(Math.max(lim.min, Math.min(lim.max, saved ?? lim.base)));
-    if (side) panel.style.width = `${size}px`;
-    else panel.style.height = `${size}px`;
-    this.setSideSheetWidth(side ? size : null);
-  }
-
-  /** 横の iPhone で、右に出したレイヤ・表示のパネルの幅を CSS に渡す（知らせをパネルにかけないため）。null なら外す */
-  private setSideSheetWidth(width: number | null): void {
-    const root = document.documentElement.style;
-    if (width === null) root.removeProperty('--side-sheet-w');
-    else root.setProperty('--side-sheet-w', `${width}px`);
+    panel.style.height = `${size}px`;
   }
 
   /**
-   * レイヤ・表示のパネルの大きさを、つまみと見出し（横の iPhone では左の縁のつまみも）を指でずらして変える。
-   * 縦の iPhone・iPad では上下にずらして高さを、横の iPhone では左右にずらして幅を変え、指を離した所で止める（吸い付けない）。
+   * レイヤ・表示のパネルの高さを、つまみと見出しを指で上下にずらして変える（縦の iPhone・横の iPhone・iPad で同じ操作）。
+   * 指を離した所で止める（吸い付けない）。左右にずらしても大きさは変わらない。
    * 一覧の中をずらしたときは一覧を送るだけ（大きさは変えない）。見出しを押しただけでは何もしない。
    * 見出しの中のボタン（戻る・進む・閉じる）は、そのボタンとして押せる
    */
   private makeResizable(id: SizedSheet): void {
     const panel = el(id);
-    const grips = [panel.querySelector<HTMLElement>('.sheet-head'), panel.querySelector<HTMLElement>('.resize-edge')]
-      .filter((n): n is HTMLElement => n !== null);
-    let drag: { id: number; x: number; y: number; side: boolean; start: number; min: number; max: number; size: number } | null = null;
+    const grip = panel.querySelector<HTMLElement>('.sheet-head');
+    if (!grip) return;
+    let drag: { id: number; y: number; side: boolean; start: number; min: number; max: number; size: number } | null = null;
     const finish = (): void => {
       if (!drag) return;
       const d = drag;
       drag = null;
       panel.classList.remove('resizing');
       if (Math.abs(d.size - d.start) >= 1) {
-        // 指を離した大きさを覚える（パネルごと、縦は高さ・横は幅で別々に）
-        this.panelSizes[this.sizedKey(id)][d.side ? 'w' : 'h'] = d.size;
+        // 指を離した高さを覚える（パネルごと、縦の画面と横の iPhone で別々に）
+        this.panelSizes[this.sizedKey(id)][d.side ? 'sh' : 'h'] = d.size;
         savePanelSizes(this.panelSizes);
         // 小さくしていた一覧を広げたら、選んでいるレイヤの行が見えていなければ見える所へ送る
         if (id === 'layer-panel' && d.size > d.start) this.revealLayerRow(false);
       }
       this.requestDraw(true);
     };
-    for (const grip of grips) {
-      grip.addEventListener('pointerdown', (e) => {
-        if (drag || (e.target as HTMLElement).closest('button')) return;
-        const side = this.sideSheets();
-        const r = panel.getBoundingClientRect();
-        const start = Math.round(side ? r.width : r.height);
-        // 中身の高さを測るため、いったん大きさを外して測り、すぐ戻す（画面には出ない）
-        const keepH = panel.style.height;
-        const keepW = panel.style.width;
-        panel.style.height = '';
-        panel.style.width = '';
-        const lim = this.panelLimits(panel, side);
-        panel.style.height = keepH;
-        panel.style.width = keepW;
-        // 今の大きさが決まりの外（開いたあとに中身が減ったときなど）でも、触れただけで大きさが飛ばないようにする
-        drag = { id: e.pointerId, x: e.clientX, y: e.clientY, side, start, min: Math.min(lim.min, start), max: Math.max(lim.max, start), size: start };
-        try {
-          grip.setPointerCapture(e.pointerId);
-        } catch {
-          // 指を取り込めなくても、つまみの上で動かしているあいだは同じように働く
-        }
-        panel.classList.add('resizing');
-      });
-      grip.addEventListener('pointermove', (e) => {
-        if (!drag || e.pointerId !== drag.id) return;
-        // 上（横の iPhone では左）へずらすほど大きくする
-        const delta = drag.side ? drag.x - e.clientX : drag.y - e.clientY;
-        const size = Math.round(Math.max(drag.min, Math.min(drag.max, drag.start + delta)));
-        if (size === drag.size) return;
-        drag.size = size;
-        if (drag.side) {
-          panel.style.width = `${size}px`;
-          this.setSideSheetWidth(size);
-        } else {
-          panel.style.height = `${size}px`;
-        }
-        this.requestDraw();
-      });
-      grip.addEventListener('pointerup', (e) => {
-        if (drag && e.pointerId === drag.id) finish();
-      });
-      // システムに指を取られたときも、その時の大きさで止める
-      grip.addEventListener('pointercancel', (e) => {
-        if (drag && e.pointerId === drag.id) finish();
-      });
-    }
-    // アプリを離れて指の終わりが届かなかったときも、その時の大きさで止める
+    grip.addEventListener('pointerdown', (e) => {
+      if (drag || (e.target as HTMLElement).closest('button')) return;
+      const side = this.sideSheets();
+      const start = Math.round(panel.getBoundingClientRect().height);
+      // 中身の高さを測るため、いったん高さを外して測り、すぐ戻す（画面には出ない）
+      const keep = panel.style.height;
+      panel.style.height = '';
+      const lim = this.panelLimits(panel, side);
+      panel.style.height = keep;
+      // 今の高さが決まりの外（開いたあとに中身が減ったときなど）でも、触れただけで高さが飛ばないようにする
+      drag = { id: e.pointerId, y: e.clientY, side, start, min: Math.min(lim.min, start), max: Math.max(lim.max, start), size: start };
+      try {
+        grip.setPointerCapture(e.pointerId);
+      } catch {
+        // 指を取り込めなくても、見出しの上で動かしているあいだは同じように働く
+      }
+      panel.classList.add('resizing');
+    });
+    grip.addEventListener('pointermove', (e) => {
+      if (!drag || e.pointerId !== drag.id) return;
+      // 上へずらすほど高くする（左右の動きは使わない）
+      const size = Math.round(Math.max(drag.min, Math.min(drag.max, drag.start + drag.y - e.clientY)));
+      if (size === drag.size) return;
+      drag.size = size;
+      panel.style.height = `${size}px`;
+      this.requestDraw();
+    });
+    grip.addEventListener('pointerup', (e) => {
+      if (drag && e.pointerId === drag.id) finish();
+    });
+    // システムに指を取られたときも、その時の高さで止める
+    grip.addEventListener('pointercancel', (e) => {
+      if (drag && e.pointerId === drag.id) finish();
+    });
+    // アプリを離れて指の終わりが届かなかったときも、その時の高さで止める
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') finish();
     });
@@ -3593,7 +3564,6 @@ class App {
     el('btn-records').setAttribute('aria-expanded', String(id === 'records-panel'));
     // レイヤ・表示のパネルは、前に指で変えた大きさ（なければ既定の大きさ）で出す
     if (id === 'layer-panel' || id === 'display-panel') this.fitSizedPanel(id);
-    else this.setSideSheetWidth(null);
     // 見えている所が変わるので描き直す（拡大鏡の置き場所にも効く）
     this.requestDraw(true);
   }
@@ -3912,7 +3882,7 @@ class App {
     // 属性・累進のパネルは、見出しを下へずらすと見出しだけに縮める
     this.makeCollapsible(el('inspect-panel'), el('inspect-panel').querySelector<HTMLElement>('.panel-top')!);
     this.makeCollapsible(el('ruishin-panel'), el('ruishin-panel').querySelector<HTMLElement>('.panel-top')!);
-    // レイヤ・表示のパネルは、つまみと見出しを指でずらして、好きな大きさにする（縦は高さ、横の iPhone は幅）
+    // レイヤ・表示のパネルは、つまみと見出しを指で上下にずらして、好きな高さにする（縦・横・iPad で同じ）
     this.makeResizable('layer-panel');
     this.makeResizable('display-panel');
     // 帯の「重なり ▸」で、重なった次の線にする（帯は選ぶたびに作り直すので、帯で受ける）

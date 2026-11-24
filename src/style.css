@@ -1293,7 +1293,7 @@ body[data-bg="light"] .panel {
 
 /*
  * ---- つまみ：属性・累進のパネルは、見出しを下へずらすと見出しだけに縮み、上へずらすか押すと戻る。
- * レイヤ・表示のパネルは、つまみと見出しを上下にずらして高さを変える（横の iPhone では左の縁のつまみで幅を変える） ----
+ * レイヤ・表示のパネルは、つまみと見出しを上下にずらして高さを変える（縦の iPhone・横の iPhone・iPad で同じ） ----
  */
 .grab {
   position: absolute;
@@ -1347,7 +1347,7 @@ body[data-bg="light"] .panel {
  * ---- レイヤ・表示のパネル（指で大きさを変える。操作は同じ） ----
  * 縦の iPhone と iPad では、下のツールバーのすぐ上に出す（ツールバーは見えたまま押せる）。
  * 高さは main.ts が決める（指で変えた大きさ。初めは今までとほぼ同じ大きさ）。入りきらない中身は一覧の中で送る。
- * 横の iPhone では、下の @media で右に縦長に出し、幅を main.ts が決める
+ * 横の iPhone では、下の @media で右に縦長に出す。高さを変える操作は同じ（上の縁を上下に動かす）
  */
 .sheet.sized {
   left: calc(var(--safe-left) + 10px);
@@ -1395,11 +1395,6 @@ body[data-bg="light"] .panel {
   flex-wrap: wrap;
   max-width: 100%;
   row-gap: 16px;
-}
-
-/* 左の縁のつまみは、幅を変える横の iPhone だけ */
-.resize-edge {
-  display: none;
 }
 
 /* レイヤ・表示のパネルを開いているあいだは、計測・累進・属性のパネルを見せない（中身はそのまま。閉じるとまた出る） */
@@ -2116,35 +2111,12 @@ body.ui-hidden .ui-show {
   }
 
   /*
-   * レイヤ・表示のパネルは、左の縁の縦のつまみ（と見出し）を左右にずらして幅を変える（幅は main.ts が決める）。
-   * 上のつまみは高さを変えるものに見えるので出さない
+   * レイヤ・表示のパネルは、縦の画面と同じく、上のつまみと見出しを上下にずらして高さを変える（高さは main.ts が決める）。
+   * 下の縁はそのまま（画面の下の近く）で、上の縁が動く。幅は変えない
    */
-  .sheet.sized .grab {
-    display: none;
-  }
-
-  .resize-edge {
-    display: block;
-    position: absolute;
-    left: 0;
-    top: 0;
-    bottom: 0;
-    /* 一覧の左の余白（16px）の中に収め、行を押すのとは重ねない */
-    width: 16px;
-    touch-action: none;
-    z-index: 1;
-  }
-
-  .resize-edge::after {
-    content: "";
-    position: absolute;
-    left: 5px;
-    top: 50%;
-    width: 5px;
-    height: 36px;
-    margin-top: -18px;
-    border-radius: 3px;
-    background: rgba(255, 255, 255, 0.28);
+  #layer-panel,
+  #display-panel {
+    top: auto;
   }
 
   /*
@@ -2159,13 +2131,12 @@ body.ui-hidden .ui-show {
   }
 
   /*
-   * 知らせは、右側に出るシート（幅 max(290px, min(340px, 44%))。レイヤ・表示のパネルは指で変えた幅）とツールバーを除いた所の真ん中に出す。
+   * 知らせは、右側に出るシート（幅 max(290px, min(340px, 44%))）とツールバーを除いた所の真ん中に出す。
    * シートを開いていても見出しに重ならない
    */
   .hint {
     --hint-from: var(--edge-left);
-    /* レイヤ・表示のパネルの幅を指で変えたときは、その幅（--side-sheet-w は main.ts が渡す） */
-    --hint-to: calc(100% - var(--edge-right) - var(--side-sheet-w, max(290px, min(340px, 44%))) - 10px);
+    --hint-to: calc(100% - var(--edge-right) - max(290px, min(340px, 44%)) - 10px);
     left: calc((var(--hint-from) + var(--hint-to)) / 2);
     max-width: calc(var(--hint-to) - var(--hint-from));
     text-align: center;

@@ -315,7 +315,7 @@ const covered = (page, ids) => page.evaluate((ids) => ids.filter((id) => {
   await ctx.close();
 }
 
-// ---------- 6. 横向き：レイヤ一覧は右に縦長。左の縁のつまみを左右にずらして幅を変える（上下にずらしても変わらない） ----------
+// ---------- 6. 横向き：レイヤ一覧は右に縦長。縦と同じく見出しを上下にずらして高さを変える（左右にずらしても変わらない） ----------
 {
   const { ctx, page } = await open({ viewport: { width: 852, height: 393 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
   await page.click('#btn-layers');
@@ -323,17 +323,19 @@ const covered = (page, ids) => page.evaluate((ids) => ids.filter((id) => {
   const o = await panel(page, 'layer-panel', '.sheet-body');
   const sliver = await behindSheet(page);
   check('横向き 852 でシートを開いているあいだは、シートの左にはみ出す計測のパネルを見せず、押せない', sliver.vis === 'hidden' && !sliver.onPanel, sliver);
+  const box = () => page.evaluate(() => { const r = document.getElementById('layer-panel').getBoundingClientRect(); return { w: r.width, h: r.height, bottom: r.bottom, edge: !!document.querySelector('#layer-panel .resize-edge'), grab: getComputedStyle(document.querySelector('#layer-panel .grab')).display }; });
+  const b0 = await box();
+  await dragHead(page, '#layer-panel .sheet-head', 0, { dx: -60 });
+  const b1 = await box();
+  check('横向きでは、見出しを左右にずらしても大きさは変わらない（左の縁のつまみも無い）', Math.abs(b1.w - b0.w) < 0.5 && Math.abs(b1.h - b0.h) < 0.5 && !b0.edge, { b0, b1 });
   await dragHead(page, '#layer-panel .sheet-head', 120);
+  const b2 = await box();
+  await dragHead(page, '#layer-panel .sheet-head', -50);
+  const b3 = await box();
   const c = await panel(page, 'layer-panel', '.sheet-body');
-  const w = () => page.evaluate(() => document.getElementById('layer-panel').getBoundingClientRect().width);
-  const w0 = await w();
-  check('横向きでは、見出しを下へずらしても縮まない（右に縦長のまま）', Math.abs(c.h - o.h) < 0.5 && c.bodyShown, { o: o.h, c: c.h });
-  await dragHead(page, '#layer-panel .sheet-head', 0, { dx: -60, from: '#layer-panel .resize-edge' });
-  const w1 = await w();
-  await dragHead(page, '#layer-panel .sheet-head', 0, { dx: 25, from: '#layer-panel .resize-edge' });
-  const w2 = await w();
-  check('横向きでは、左の縁のつまみを左へずらすと広がり、右へずらすと狭まる（離した所で止まる）',
-    Math.abs(w1 - (w0 + 60)) <= 1 && Math.abs(w2 - (w1 - 25)) <= 1, { w0, w1, w2 });
+  check('横向きでも縦と同じく、上のつまみと見出しを下へずらすと低く、上へずらすと高くなる（離した所で止まる。幅と下の縁は変わらない）',
+    b0.grab === 'block' && Math.abs(b2.h - (b0.h - 120)) <= 1 && Math.abs(b3.h - (b2.h + 50)) <= 1 && Math.abs(b3.w - b0.w) < 0.5
+      && Math.abs(b3.bottom - b0.bottom) < 0.5 && c.bodyShown && o.h > 0, { b0, b2, b3 });
   // ダイナミックアイランドの側（ツールバーの列の反対側）の端で長押ししても、拡大鏡は安全領域に入れない
   const island = await page.evaluate(async () => {
     const a = window.__jww;
@@ -557,7 +559,7 @@ const covered = (page, ids) => page.evaluate((ids) => ids.filter((id) => {
   });
   await page.click('#btn-layers');
   await frame(page);
-  await dragHead(page, '#layer-panel .sheet-head', 0, { dx: -400, from: '#layer-panel .resize-edge' });
+  await dragHead(page, '#layer-panel .sheet-head', -400);
   await page.waitForTimeout(200);
   await frame(page);
   const r = await page.evaluate(() => {
@@ -570,7 +572,7 @@ const covered = (page, ids) => page.evaluate((ids) => ids.filter((id) => {
   });
   // 属性のパネル（その見出しの丸矢印も）は、一覧を開いているあいだ隠している（一覧の見出しに同じ丸矢印がある）
   const under = await covered(page, ['btn-info', 'btn-ui-hide', 'btn-open', 'btn-layer-list-undo', 'btn-layer-list-redo']);
-  check('低い横画面で属性のパネルが高くても、レイヤ一覧（いちばん広くしても）は上のバーにかからず（⤢・i が押せる）、属性のパネルは隠れている',
+  check('低い横画面で属性のパネルが高くても、レイヤ一覧（いちばん高くしても）は上のバーにかからず（⤢・i が押せる）、属性のパネルは隠れている',
     r.layerTop >= r.barBottom && r.layerLeft > 150 && r.inspect === 'hidden' && under.length === 0, { ...r, under });
   await ctx.close();
 }

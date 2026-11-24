@@ -10,9 +10,9 @@
 // ・iPhone SE・横向き・iPad で、帯と行が崩れない。ツールバーの道具を押すと一覧を閉じてその道具になる
 // ・（段階 2）重なった線は、同じ所をもう一度タップするか帯の「重なり ▸」で次のレイヤの線へ（同じレイヤは 1 つ、順番はいつも同じ）。
 //   別の所のタップ・図面を動かす・表示を変えると決め直す。長押しで拡大鏡を出し、指の下の線を黄色で示して、離した所の線を選ぶ
-// ・レイヤ・表示のパネルは、つまみと見出し（横の iPhone は左の縁）をずらして大きさを自由に変え、離した所で止まる。
+// ・レイヤ・表示のパネルは、つまみと見出しを上下にずらして高さを自由に変え、離した所で止まる（縦の iPhone・横の iPhone・iPad で同じ操作）。
 //   いちばん小さい・大きい大きさがあり、一覧を送っても・線を選んでも大きさは変わらない。大きさはパネルごとに覚え、回しても画面に収まる
-// ・レイヤと表示のパネルは、どの画面（縦横・SE・大きい iPhone・iPad）でも、開いたまま回しても、同じ所に同じ形で出て同じ向きに大きさを変える
+// ・レイヤと表示のパネルは、どの画面（縦横・SE・大きい iPhone・iPad）でも、開いたまま回しても、同じ所に同じ形で出て、上下の操作で高さを変える（左右では変わらない）
 // 引数：出力先のフォルダ（スクリーンショット）。図面はこの中で組み立てる（実務の図面は使わない）。累進は public/ruishin-sample.jww
 import { chromium } from 'playwright';
 import path from 'node:path';
@@ -254,31 +254,26 @@ const holdStill = (page, c, ms = 650) => page.evaluate(async ([x, y, ms]) => {
 const EMPTY_BAR = '線をタップすると、レイヤを示します長押しで拡大鏡を出して選べます';
 
 /**
- * パネル（id）のつまみをずらす。縦の画面では見出し（の「レイヤ」などの文字の所）を上下に、横の iPhone では左の縁のつまみを左右に。
- * delta は大きくする向きを正にした量（縦は上へ、横は左へ）。grip に 'head' を渡すと横の iPhone でも見出しをつかむ。
- * ずらしたあとの大きさ（縦は高さ、横は幅）を返す
+ * パネル（id）の見出し（の「レイヤ」などの文字の所）を上下にずらす（縦の iPhone・横の iPhone・iPad で同じ操作）。
+ * delta は高くする向き（上）を正にした量。ずらしたあとの高さを返す
  */
-const resizePanel = (page, id, delta, grip = 'auto') => page.evaluate(async ([id, delta, grip]) => {
+const resizePanel = (page, id, delta) => page.evaluate(async ([id, delta]) => {
   const p = document.getElementById(id);
-  const side = window.__jww.sideSheets();
-  const g = side && grip !== 'head' ? p.querySelector('.resize-edge') : p.querySelector('.sheet-head');
-  const t = side && grip !== 'head' ? g : g.querySelector('strong');
+  const t = p.querySelector('.sheet-head strong');
   const b = t.getBoundingClientRect();
   const x = b.left + b.width / 2;
   const y = b.top + b.height / 2;
   const base = { pointerId: 31, pointerType: 'touch', isPrimary: true, bubbles: true };
   t.dispatchEvent(new PointerEvent('pointerdown', { ...base, clientX: x, clientY: y }));
   for (let i = 1; i <= 10; i++) {
-    const d = (delta * i) / 10;
-    t.dispatchEvent(new PointerEvent('pointermove', { ...base, clientX: side ? x - d : x, clientY: side ? y : y - d }));
+    t.dispatchEvent(new PointerEvent('pointermove', { ...base, clientX: x, clientY: y - (delta * i) / 10 }));
     await new Promise((r) => setTimeout(r, 16));
   }
-  t.dispatchEvent(new PointerEvent('pointerup', { ...base, clientX: side ? x - delta : x, clientY: side ? y : y - delta }));
+  t.dispatchEvent(new PointerEvent('pointerup', { ...base, clientX: x, clientY: y - delta }));
   await new Promise((r) => setTimeout(r, 200));
-  const r = p.getBoundingClientRect();
-  return Math.round(side ? r.width : r.height);
-}, [id, delta, grip]);
-/** パネル（id）の大きさ（縦は高さ、横の iPhone は幅）と、画面の中に収まっているか */
+  return Math.round(p.getBoundingClientRect().height);
+}, [id, delta]);
+/** パネル（id）の高さと、画面の中に収まっているか */
 const panelBox = (page, id) => page.evaluate((id) => {
   const a = window.__jww;
   const p = document.getElementById(id).getBoundingClientRect();
@@ -286,7 +281,7 @@ const panelBox = (page, id) => page.evaluate((id) => {
   const top = document.getElementById('topbar').getBoundingClientRect();
   const side = a.sideSheets();
   return {
-    side, size: Math.round(side ? p.width : p.height), left: p.left, right: p.right, top: p.top, bottom: p.bottom,
+    side, size: Math.round(p.height), left: p.left, right: p.right, top: p.top, bottom: p.bottom,
     inScreen: p.left >= -0.5 && p.right <= innerWidth + 0.5 && p.top >= top.bottom - 0.5 && p.bottom <= innerHeight + 0.5,
     // 縦の画面ではツールバーにかからない（ツールバーのすぐ上）。横の iPhone ではツールバーの列にかからない
     clearOfToolbar: side ? (p.right <= tb.left + 0.5 || p.left >= tb.right - 0.5) : p.bottom <= tb.top + 0.5,
@@ -1059,22 +1054,33 @@ for (const [label, opts, key] of shapes) {
   const d3 = await panelBox(p, 'display-panel');
   check('アプリを開き直しても、レイヤ・表示それぞれ前に変えた大きさで出る', l3.size === hL && d3.size === hD, { l3: l3.size, d3: d3.size, hL, hD });
   await p.click('#btn-display-close');
-  // 横にすると、横の幅（初めは今までの幅）で出し、幅を変えられる。縦に戻すと縦の大きさに戻る
+  // 横にすると、右に縦長に今までの高さ（上のバーの下まで）で出し、縦と同じく見出しを上下にずらして高さを変えられる。
+  // 縦に戻すと縦の高さに戻る（横の高さは別に覚える）
   await p.click('#btn-layers');
   await p.waitForTimeout(300);
   await p.setViewportSize({ width: 852, height: 393 });
   await p.waitForTimeout(500);
   const w0 = await panelBox(p, 'layer-panel');
-  check('横にすると、一覧は右に縦長で、今までの幅で出る（画面に収まる）', w0.side && w0.size === 340 && w0.inScreen && w0.clearOfToolbar, w0);
-  const w1 = await resizePanel(p, 'layer-panel', 90);
-  const w2 = await resizePanel(p, 'layer-panel', -40, 'head');
-  check('横の iPhone では、左の縁のつまみ（と見出し）を左右にずらして幅を変える', w1 === 430 && w2 === 390, { w1, w2 });
+  const wTop = await p.evaluate(() => document.getElementById('layer-panel').getBoundingClientRect().top - document.getElementById('topbar').getBoundingClientRect().bottom);
+  check('横にすると、一覧は右に縦長で、上のバーのすぐ下から出る（今までの大きさ。画面に収まる）',
+    w0.side && Math.round(w0.right - w0.left) === 340 && wTop >= 0 && wTop <= 10 && w0.inScreen && w0.clearOfToolbar, { w0, wTop });
+  const w1 = await resizePanel(p, 'layer-panel', -120);
+  const w2 = await resizePanel(p, 'layer-panel', 50);
+  const w3 = await panelBox(p, 'layer-panel');
+  check('横の iPhone でも、見出しを上下にずらして高さを変え、離した所で止まる（幅と下の縁は変わらない）',
+    w1 === w0.size - 120 && w2 === w1 + 50 && Math.round(w3.right - w3.left) === 340 && Math.abs(w3.bottom - w0.bottom) <= 0.5, { w0: w0.size, w1, w2, w3 });
   const sl = await st(p);
-  check('横で幅を変えても、レイヤ選択モードは続く', sl.mode, sl);
+  check('横で高さを変えても、レイヤ選択モードは続く', sl.mode, sl);
   await p.setViewportSize({ width: 393, height: 852 });
   await p.waitForTimeout(500);
   const back = await panelBox(p, 'layer-panel');
-  check('縦に戻すと、縦で変えた高さに戻る（横の幅は別に覚える）', !back.side && back.size === hL && back.stored?.layer?.w === 390 && back.inScreen, back);
+  check('縦に戻すと、縦で変えた高さに戻る（横の高さは別に覚える）', !back.side && back.size === hL && back.stored?.layer?.sh === w2 && back.inScreen, back);
+  await p.setViewportSize({ width: 852, height: 393 });
+  await p.waitForTimeout(500);
+  const wBack = await panelBox(p, 'layer-panel');
+  check('もう一度横にすると、横で変えた高さで出る', wBack.side && wBack.size === w2, { wBack: wBack.size, w2 });
+  await p.setViewportSize({ width: 393, height: 852 });
+  await p.waitForTimeout(500);
   // 大きくしたあと、狭い画面（SE）に回しても画面に収まる。覚えた大きさは変えない
   const big = await resizePanel(p, 'layer-panel', 3000);
   await p.setViewportSize({ width: 320, height: 568 });
@@ -1110,8 +1116,8 @@ for (const [label, opts, key] of shapes) {
 }
 
 // =====================================================================
-// 6. レイヤと表示のパネルは、どの画面でも同じ所に同じ形で出て、同じ向きに大きさを変える（2026-11-23 オーナーの回帰確認の指摘）。
-//    縦の iPhone・iPad は下（ツールバーの上）で上下に、横の iPhone は右（同じ側）で左右に。回したときも同じ
+// 6. レイヤと表示のパネルは、どの画面でも同じ所に同じ形で出て、同じ上下の操作で高さを変える（2026-11-23 オーナーの回帰確認の指摘）。
+//    縦の iPhone・iPad は下（ツールバーの上）、横の iPhone は右（同じ側）。どれも見出しを上下にずらし、左右にずらしても変わらない。回したときも同じ
 // =====================================================================
 /** パネル（id）の置き場所・つまみ・大きさを変える向き（見出しを縦と横にずらして、どちらで大きさが変わるか） */
 const panelShape = (page, id) => page.evaluate(async (id) => {
@@ -1153,7 +1159,7 @@ const panelShape = (page, id) => page.evaluate(async (id) => {
     side: a.sideSheets(),
     place: b0.left + b0.w / 2 > a.cssW / 2 + 1 ? 'right' : (Math.abs(b0.left + b0.w / 2 - a.cssW / 2) <= 1 ? 'center' : 'left'),
     left: r(b0.left), right: r(b0.right), top: r(b0.top), bottom: r(b0.bottom), w: r(b0.w), h: r(b0.h),
-    grab: shown('.grab'), edge: shown('.resize-edge'),
+    grab: shown('.grab'), edge: p.querySelector('.resize-edge') !== null,
     // 上下にずらして高さだけが変わったか、左右にずらして幅だけが変わったか
     vertical: r(bV.h) < r(b0.h) && r(bV.w) === r(b0.w) && r(bV2.w) === r(bV.w),
     horizontal: r(bH.w) < r(bV2.w) && r(bH.h) === r(bV2.h) && r(bH2.h) === r(bH.h),
@@ -1161,7 +1167,7 @@ const panelShape = (page, id) => page.evaluate(async (id) => {
   };
 }, id);
 const sameShape = (L, D) => L.side === D.side && L.place === D.place && Math.abs(L.left - D.left) <= 1 && Math.abs(L.right - D.right) <= 1
-  && (L.side ? Math.abs(L.top - D.top) <= 1 && Math.abs(L.bottom - D.bottom) <= 1 : Math.abs(L.bottom - D.bottom) <= 1)
+  && Math.abs(L.bottom - D.bottom) <= 1
   && L.grab === D.grab && L.edge === D.edge && L.vertical === D.vertical && L.horizontal === D.horizontal;
 {
   for (const [label, opts, key] of shapes) {
@@ -1175,10 +1181,8 @@ const sameShape = (L, D) => L.side === D.side && L.place === D.place && Math.abs
     await p.waitForTimeout(300);
     const D = await panelShape(p, 'display-panel');
     await p.screenshot({ path: path.join(outDir, `ls-19-${key}-display.png`) });
-    const want = L.side
-      ? L.place === 'right' && !L.grab && L.edge && L.horizontal && !L.vertical
-      : L.place === 'center' && L.grab && !L.edge && L.vertical && !L.horizontal;
-    check(`${label}：レイヤと表示のパネルは同じ所に同じ形で出て、同じ向きに大きさを変える（${L.side ? '右側で左右' : '下で上下'}）`,
+    const want = (L.side ? L.place === 'right' : L.place === 'center') && L.grab && !L.edge && L.vertical && !L.horizontal;
+    check(`${label}：レイヤと表示のパネルは同じ所に同じ形で出て、同じく見出しを上下にずらして高さを変える（${L.side ? '右側' : '下'}。左右では変わらない）`,
       want && sameShape(L, D), { L, D });
     await p.context().close();
   }
@@ -1205,25 +1209,26 @@ const sameShape = (L, D) => L.side === D.side && L.place === D.place && Math.abs
   }
   const pairs = turns.map((_, i) => [seen['layer-panel'][i], seen['display-panel'][i]]);
   const sameTurn = pairs.every(([l, d]) => l.side === d.side && l.place === d.place && Math.abs(l.right - d.right) <= 1 && Math.abs(l.left - d.left) <= 1
-    && (l.side ? l.top === d.top && l.bottom === d.bottom : l.bottom === d.bottom) && l.grab === d.grab && l.edge === d.edge
+    && l.bottom === d.bottom && l.grab === d.grab && l.edge === d.edge
     && l.vertical === d.vertical && l.horizontal === d.horizontal && l.inScreen && d.inScreen && l.clear && d.clear);
-  const dirOk = pairs.every(([l]) => (l.side ? l.horizontal && !l.vertical && l.edge && !l.grab : l.vertical && !l.horizontal && l.grab && !l.edge));
-  check('開いたまま回しても（iPhone の縦横・SE・大きい iPhone・iPad）、レイヤと表示は同じ所・同じ向きで、画面に収まる', sameTurn && dirOk, { pairs });
-  // 表示のパネルも、縦で変えた高さと横で変えた幅を別々に覚え、回すとそれぞれに戻る
+  const dirOk = pairs.every(([l]) => l.vertical && !l.horizontal && l.grab && !l.edge);
+  check('開いたまま回しても（iPhone の縦横・SE・大きい iPhone・iPad）、レイヤと表示は同じ所で、どれも上下の操作のまま、画面に収まる', sameTurn && dirOk, { pairs });
+  // 表示のパネルも、縦で変えた高さと横で変えた高さを別々に覚え、回すとそれぞれに戻る
   await p.click('#btn-display');
   await p.waitForTimeout(300);
   const dh = await resizePanel(p, 'display-panel', -50);
   await p.setViewportSize({ width: 852, height: 393 });
   await p.waitForTimeout(450);
-  const dw = await resizePanel(p, 'display-panel', 70);
+  const dl0 = await panelBox(p, 'display-panel');
+  const dw = await resizePanel(p, 'display-panel', -70);
   await p.setViewportSize({ width: 393, height: 852 });
   await p.waitForTimeout(450);
   const dBack = await panelBox(p, 'display-panel');
   await p.setViewportSize({ width: 852, height: 393 });
   await p.waitForTimeout(450);
   const dLand = await panelBox(p, 'display-panel');
-  check('表示のパネルも、縦の高さと横の幅を別々に覚え、回すとそれぞれ覚えた大きさで出る（レイヤと同じ）',
-    dBack.size === dh && dLand.side && dLand.size === dw && dw === 410 && dLand.stored?.display?.h === dh && dLand.stored?.display?.w === dw, { dh, dw, dBack, dLand });
+  check('表示のパネルも、縦の高さと横の高さを別々に覚え、回すとそれぞれ覚えた高さで出る（レイヤと同じ）',
+    dBack.size === dh && dLand.side && dw === dl0.size - 70 && dLand.size === dw && dLand.stored?.display?.h === dh && dLand.stored?.display?.sh === dw, { dh, dw, dl0: dl0.size, dBack, dLand });
   await p.context().close();
 }
 
